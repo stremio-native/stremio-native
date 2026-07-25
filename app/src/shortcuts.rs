@@ -1,23 +1,41 @@
+use std::sync::Arc;
+
 use slint::{
     ComponentHandle,
     winit_030::{EventResult, WinitWindowAccessor, winit},
 };
 
-use crate::MainWindow;
+use crate::{MainWindow, media_session::MediaSession};
 
 /// Installs the keyboard events that Slint cannot represent, notably the
 /// operating system's media keys. Normal application and player shortcuts
 /// remain declarative in `app.slint` so editable controls retain standard key
 /// behavior.
-pub fn install_platform_shortcuts(ui: &MainWindow) {
+///
+/// This is also the first point at which the native window is guaranteed to
+/// exist, so it hands the window handle to the OS media controls.
+pub fn install_platform_shortcuts(ui: &MainWindow, media_session: Arc<MediaSession>) {
     let weak_ui = ui.as_weak();
     let mut native_window_style_applied = false;
+    let mut media_controls_attached = false;
 
     ui.window().on_winit_window_event(move |window, event| {
         if !native_window_style_applied {
             native_window_style_applied = window
                 .with_winit_window(crate::window_style::apply)
                 .unwrap_or(false);
+        }
+        if !media_controls_attached
+            && let Some(hwnd) = window.with_winit_window(crate::window_style::window_hwnd)
+        {
+            // On Windows this carries the HWND SMTC requires; elsewhere it is
+            // `None` and the controls attach without one.
+            media_session.attach(hwnd);
+            // The taskbar thumbnail play/pause button also needs the HWND.
+            if let Some(raw_hwnd) = hwnd {
+                crate::taskbar_media::init(raw_hwnd, weak_ui.clone());
+            }
+            media_controls_attached = true;
         }
 
         let Some(ui) = weak_ui.upgrade() else {

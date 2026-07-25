@@ -39,6 +39,7 @@ mod config;
 pub mod db;
 mod deep_link;
 pub mod image_cache;
+mod media_session;
 mod models;
 mod mpv_integration;
 mod performance;
@@ -48,6 +49,7 @@ mod plugins;
 mod shaders;
 mod shortcuts;
 mod single_instance;
+mod taskbar_media;
 mod thumbnail_preview;
 mod tray;
 mod window_style;
@@ -123,6 +125,10 @@ async fn run_app(
     // Icon fonts are registered/embedded at compile time via app.slint imports.
     tracing::info!("Icon fonts registered at compile time.");
 
+    // Establish the process identity before the window (and thus the media
+    // controls) exists, so the OS media overlay can attribute playback to us.
+    window_style::set_app_user_model_id();
+
     // 5. Initialize Slint MainWindow UI
     let ui = MainWindow::new()?;
     tracing::info!("MainWindow created");
@@ -143,7 +149,8 @@ async fn run_app(
     ui.set_settings_tidb_show_credits(initial_config.tidb_show_credits);
     ui.set_settings_tidb_show_preview(initial_config.tidb_show_preview);
     ui.set_loading(true);
-    shortcuts::install_platform_shortcuts(&ui);
+    let os_media_session = Arc::new(media_session::MediaSession::for_window(&ui));
+    shortcuts::install_platform_shortcuts(&ui, os_media_session.clone());
 
     // Request the native window before scheduling any optional shell service or
     // application-engine work. The event loop below owns first-paint priority.
@@ -156,6 +163,7 @@ async fn run_app(
         ui.show()?;
     }
 
+    let (installer_request, installer_launcher) = updater::installer_handoff();
     let startup_ui = ui.clone_strong();
     let startup_navigation = navigation.clone();
     let startup_handle = slint::spawn_local(async move {
@@ -170,7 +178,7 @@ async fn run_app(
                 None
             }
         };
-        let updater = updater::setup(&startup_ui, tray.as_ref());
+        let updater = updater::setup(&startup_ui, tray.as_ref(), installer_request);
         let failure_ui = startup_ui.as_weak();
         let result = finish_startup(
             startup_ui,
@@ -179,6 +187,7 @@ async fn run_app(
             commands,
             tray,
             updater,
+            os_media_session,
         )
         .await;
         if let Err(error) = &result {
@@ -215,11 +224,12 @@ async fn run_app(
         Some(result) => result.and_then(AppSession::shutdown),
         None => Ok(()),
     };
+    let installer_result = installer_launcher.launch_pending();
 
     ui_result?;
     hide_result?;
     session_result?;
-    Ok(())
+    installer_result
 }
 
 struct AppSession {
@@ -338,6 +348,7 @@ async fn finish_startup(
     commands: tokio::sync::mpsc::UnboundedReceiver<single_instance::AppCommand>,
     tray: Option<AppTray>,
     updater: updater::UpdaterHandle,
+    media_session: Arc<media_session::MediaSession>,
 ) -> anyhow::Result<AppSession> {
     let ui_weak = ui.as_weak();
 
@@ -507,6 +518,7 @@ async fn finish_startup(
             hardware_decoding,
             navigation.clone(),
             discord_rpc.clone(),
+            media_session.clone(),
             tokio::runtime::Handle::current(),
             prepared_files,
         ) {

@@ -1,7 +1,9 @@
 use std::{
+    path::PathBuf,
     sync::{
         Arc, RwLock,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     time::Duration,
 };
@@ -64,9 +66,14 @@ enum DialogStatus {
 struct Updater {
     available: RwLock<Option<AvailableUpdate>>,
     busy: Arc<AtomicBool>,
+    installer_request: InstallerRequest,
 }
 
 struct BusyGuard(Arc<AtomicBool>);
+
+pub(crate) struct InstallerRequest(mpsc::SyncSender<PathBuf>);
+
+pub(crate) struct InstallerLauncher(mpsc::Receiver<PathBuf>);
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
@@ -84,6 +91,32 @@ struct UpdateViews {
     tray: Option<Weak<AppTray>>,
 }
 
+impl InstallerRequest {
+    fn queue(&self, installer: PathBuf) -> Result<()> {
+        self.0
+            .try_send(installer)
+            .context("failed to queue the staged installer for shutdown")
+    }
+}
+
+impl InstallerLauncher {
+    fn take_pending(self) -> Option<PathBuf> {
+        self.0.try_recv().ok()
+    }
+
+    pub(crate) fn launch_pending(self) -> Result<()> {
+        let Some(installer) = self.take_pending() else {
+            return Ok(());
+        };
+
+        tracing::info!(
+            path = %installer.display(),
+            "launching staged application installer after shutdown"
+        );
+        launch_installer(&installer)
+    }
+}
+
 impl UpdaterHandle {
     pub fn shutdown(&self) {
         self.scheduled_check.abort();
@@ -96,7 +129,16 @@ impl Drop for UpdaterHandle {
     }
 }
 
-pub fn setup(ui: &MainWindow, tray: Option<&AppTray>) -> UpdaterHandle {
+pub(crate) fn installer_handoff() -> (InstallerRequest, InstallerLauncher) {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    (InstallerRequest(sender), InstallerLauncher(receiver))
+}
+
+pub(crate) fn setup(
+    ui: &MainWindow,
+    tray: Option<&AppTray>,
+    installer_request: InstallerRequest,
+) -> UpdaterHandle {
     ui.set_settings_update_state(SettingsUpdateState::Current as i32);
     ui.set_settings_update_version(env!("CARGO_PKG_VERSION").into());
     ui.set_settings_update_action_kind(SettingsUpdateAction::CheckNow as i32);
@@ -111,6 +153,7 @@ pub fn setup(ui: &MainWindow, tray: Option<&AppTray>) -> UpdaterHandle {
     let updater = Arc::new(Updater {
         available: RwLock::new(None),
         busy: Arc::new(AtomicBool::new(false)),
+        installer_request,
     });
     let views = UpdateViews {
         ui: ui.as_weak(),
@@ -273,14 +316,18 @@ impl Updater {
 
         project_installing(views.clone(), &update.release.version);
         let version = update.release.version.clone();
-        let result = tokio::task::spawn_blocking(move || stage_and_launch_installer(&version))
+        let result = tokio::task::spawn_blocking(move || stage_installer(&version))
             .await
             .context("updater task failed")
-            .and_then(|result| result);
+            .and_then(|result| result)
+            .and_then(|installer| self.installer_request.queue(installer));
 
         match result {
             Ok(()) => {
-                tracing::info!(version = %update.release.version, "application installer launched");
+                tracing::info!(
+                    version = %update.release.version,
+                    "application installer staged; shutting down before launch"
+                );
                 let _ = slint::invoke_from_event_loop(|| {
                     let _ = slint::quit_event_loop();
                 });
@@ -331,7 +378,7 @@ fn has_native_installer(_release: &Release) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn stage_and_launch_installer(version: &str) -> Result<()> {
+fn stage_installer(version: &str) -> Result<PathBuf> {
     let update_dir = std::path::PathBuf::from("storage")
         .join("updates")
         .join(display_version(version));
@@ -361,13 +408,19 @@ fn stage_and_launch_installer(version: &str) -> Result<()> {
         bail!("self_update did not stage the installer");
     }
 
-    std::process::Command::new(&installer)
+    Ok(installer)
+}
+
+#[cfg(target_os = "windows")]
+fn launch_installer(installer: &std::path::Path) -> Result<()> {
+    std::process::Command::new(installer)
         .args([
             "/SP-",
             "/SILENT",
             "/SUPPRESSMSGBOXES",
             "/CLOSEAPPLICATIONS",
             "/RESTARTAPPLICATIONS",
+            "/LOG",
         ])
         .spawn()
         .with_context(|| format!("failed to launch {}", installer.display()))?;
@@ -375,7 +428,12 @@ fn stage_and_launch_installer(version: &str) -> Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn stage_and_launch_installer(_version: &str) -> Result<()> {
+fn stage_installer(_version: &str) -> Result<PathBuf> {
+    bail!("automatic installation is not available on this platform")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn launch_installer(_installer: &std::path::Path) -> Result<()> {
     bail!("automatic installation is not available on this platform")
 }
 
@@ -513,5 +571,18 @@ mod tests {
             ..Release::default()
         };
         assert!(release_notes_text(&release).chars().count() < 6_010);
+    }
+
+    #[test]
+    fn installer_handoff_preserves_the_staged_path() {
+        let (request, launcher) = installer_handoff();
+        request
+            .queue(PathBuf::from("stremio-installer.exe"))
+            .unwrap();
+
+        assert_eq!(
+            launcher.take_pending(),
+            Some(PathBuf::from("stremio-installer.exe"))
+        );
     }
 }

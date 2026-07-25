@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.3"
+  #define AppVersion "1.0.4"
 #endif
 
 #ifndef BuildRoot
@@ -18,13 +18,15 @@ AppId={{9B7477C6-8E3D-4EA7-A128-EB249D052C6C}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=Stremio
-DefaultDirName={localappdata}\Programs\Stremio
+DefaultDirName={localappdata}\Programs\stremio-native
 DefaultGroupName=Stremio
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+; Older clients launch Setup before their shutdown has completed. Restart Manager
+; still requests a graceful close first; force is the fallback for a stuck client.
+CloseApplications=force
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -48,10 +50,12 @@ Source: "{#BuildRoot}\msvc-runtime\*.dll"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#BuildRoot}\licenses\mpv\LICENSE.GPL"; DestDir: "{app}\licenses\mpv"; Flags: ignoreversion
 Source: "{#BuildRoot}\licenses\mpv\LICENSE.LGPL"; DestDir: "{app}\licenses\mpv"; Flags: ignoreversion
 
+; AppUserModelID must match SetCurrentProcessExplicitAppUserModelID in the app so
+; Windows resolves the friendly name and icon shown in the media overlay / taskbar.
 [Icons]
-Name: "{group}\Stremio"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
-Name: "{autodesktop}\Stremio"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{userstartup}\Stremio"; Filename: "{app}\{#AppExeName}"; Parameters: "--start-hidden"; WorkingDir: "{app}"; Tasks: startup
+Name: "{group}\Stremio"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; AppUserModelID: "com.stremio.native"
+Name: "{autodesktop}\Stremio"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; AppUserModelID: "com.stremio.native"
+Name: "{userstartup}\Stremio"; Filename: "{app}\{#AppExeName}"; Parameters: "--start-hidden"; WorkingDir: "{app}"; Tasks: startup; AppUserModelID: "com.stremio.native"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\stremio"; ValueType: string; ValueData: "URL:Stremio Protocol"; Flags: uninsdeletekey

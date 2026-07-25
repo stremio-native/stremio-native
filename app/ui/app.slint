@@ -402,6 +402,9 @@ export component MainWindow inherits Window {
     in-out property <float> player-volume: 1.0;
     in-out property <bool> player-muted: false;
     in-out property <float> player-progress: 0.0;
+    // Total duration in seconds, so OS media-control seek requests (which are
+    // absolute) can be converted back to the 0..1 fraction `player-seek` takes.
+    in-out property <float> player-duration-seconds: 0.0;
     in-out property <string> player-elapsed-time-str: "00:00";
     in-out property <string> player-total-time-str: "00:00";
     in-out property <[string]> player-subtitles-tracks: [];

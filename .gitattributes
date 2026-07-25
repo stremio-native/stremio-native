@@ -3,3 +3,8 @@
 # Keep third-party patched crates available for reproducible builds without
 # counting their source toward this repository's GitHub language statistics.
 vendor/** linguist-vendored
+docs/mpv-docs/** linguist-vendored
+docs/mpv-src/** linguist-vendored
+docs/slint-src/** linguist-vendored
+docs/thumbfast/** linguist-vendored
+flatpak/flatpak-builder-tools/** linguist-vendored

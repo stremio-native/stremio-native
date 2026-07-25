@@ -1,6 +1,6 @@
 [package]
 name = "stremio-native"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 license = "GPL-3.0-only"
 
@@ -48,11 +48,21 @@ zip.workspace = true
 sys-locale.workspace = true
 uuid = { version = "1.24.0", features = ["v4"] }
 discord-rich-presence = { workspace = true }
+souvlaki = { workspace = true }
+keepawake = { workspace = true }
 rodio.workspace = true
 mlua = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell"] }
+# Ergonomic COM for the taskbar thumbnail toolbar (ITaskbarList3) play/pause button.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
 
 
 [build-dependencies]

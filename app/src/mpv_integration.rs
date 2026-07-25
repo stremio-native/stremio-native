@@ -221,6 +221,12 @@ struct SessionState {
     last_discord_activity: Option<DiscordActivity>,
     last_discord_projection_at: Option<Instant>,
     last_discord_paused: Option<bool>,
+    // OS media-session throttle: metadata is keyed on (generation, duration) so
+    // it refreshes on an episode switch or once the duration resolves, while the
+    // playback status/position is pushed on a play/pause change or ~1s cadence.
+    last_media_meta_key: Option<(u64, i64)>,
+    last_media_playing: Option<bool>,
+    last_media_push_at: Option<Instant>,
     tidb_segments: Vec<crate::theintrodb::TidbSegment>,
     tidb_fetched_id: Option<String>,
     tidb_task: Option<tokio::task::JoinHandle<()>>,
@@ -474,6 +480,7 @@ pub struct NativePlaybackBridge {
     session: Arc<Mutex<SessionState>>,
     statistics_poll: Arc<Mutex<Option<StatisticsPoll>>>,
     discord_rpc: Arc<crate::discord::DiscordRpc>,
+    media_session: Arc<crate::media_session::MediaSession>,
     autohide_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     runtime_handle: tokio::runtime::Handle,
     shaders: SharedShaderCoordinator,
@@ -518,12 +525,17 @@ pub(crate) async fn prepare_playback_files() -> anyhow::Result<PreparedPlaybackF
 }
 
 impl NativePlayback {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "startup wiring passes each independent collaborator (UI, core, navigation, presence integrations, runtime) once; a bundle struct would only be built and destructured at this single call site"
+    )]
     pub fn start(
         ui: &MainWindow,
         core: &Arc<Runtime<DesktopEnv, AppModel>>,
         hardware_decoding: bool,
         navigation: NavigationController,
         discord_rpc: Arc<crate::discord::DiscordRpc>,
+        media_session: Arc<crate::media_session::MediaSession>,
         runtime_handle: tokio::runtime::Handle,
         prepared_files: PreparedPlaybackFiles,
     ) -> anyhow::Result<Self> {
@@ -659,6 +671,7 @@ impl NativePlayback {
         let event_controller = controller_slot.clone();
         let event_scheduler = ui_state_scheduler.clone();
         let event_discord_rpc = discord_rpc.clone();
+        let event_media_session = media_session.clone();
         let event_autohide_task = autohide_task.clone();
         let event_runtime_handle = runtime_handle.clone();
         let event_shader_coordinator = shader_coordinator.clone();
@@ -674,6 +687,7 @@ impl NativePlayback {
                     &event_ui,
                     &event_scheduler,
                     &event_discord_rpc,
+                    &event_media_session,
                     &event_autohide_task,
                     &event_runtime_handle,
                     &event_shader_coordinator,
@@ -691,6 +705,7 @@ impl NativePlayback {
             session,
             statistics_poll,
             discord_rpc,
+            media_session,
             autohide_task: autohide_task.clone(),
             runtime_handle,
             shaders: shader_coordinator,
@@ -1330,9 +1345,14 @@ impl NativePlaybackBridge {
             let session = self.session.clone();
             let navigation = navigation.clone();
             let discord_rpc = self.discord_rpc.clone();
+            let media_session = self.media_session.clone();
             let autohide_task = self.autohide_task.clone();
             let thumbnails = self.thumbnails.clone();
             move || {
+                // Release the OS media controls and wake lock up front, so an exit
+                // that emits no further playback state can't strand either.
+                media_session.clear();
+                crate::taskbar_media::set_state(crate::taskbar_media::ButtonState::Hidden);
                 if let Some(ui) = weak.upgrade() {
                     if !navigation.is_player_visible() {
                         return;
@@ -1499,6 +1519,7 @@ fn handle_event(
     ui: &slint::Weak<MainWindow>,
     ui_state_scheduler: &Arc<UiStateScheduler>,
     discord_rpc: &Arc<crate::discord::DiscordRpc>,
+    media_session: &Arc<crate::media_session::MediaSession>,
     autohide_task: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     runtime_handle: &tokio::runtime::Handle,
     shader_coordinator: &SharedShaderCoordinator,
@@ -1527,7 +1548,15 @@ fn handle_event(
                 Ok(mut current) => *current = state.clone(),
                 Err(poisoned) => *poisoned.into_inner() = state.clone(),
             }
-            dispatch_state_to_core(&state, session, core, discord_rpc, ui, runtime_handle);
+            dispatch_state_to_core(
+                &state,
+                session,
+                core,
+                discord_rpc,
+                media_session,
+                ui,
+                runtime_handle,
+            );
             schedule_ui_state(
                 ui,
                 state_slot,
@@ -1660,7 +1689,7 @@ struct DiscordMedia {
 
 struct CorePlaybackProjection {
     discord_enabled: bool,
-    discord_media: Option<DiscordMedia>,
+    media: Option<DiscordMedia>,
     tidb_request: Option<TidbRequest>,
     resolved_video_hash: Option<Option<String>>,
 }
@@ -1668,6 +1697,7 @@ struct CorePlaybackProjection {
 fn project_core_playback_state(
     model: &AppModel,
     duration_secs: i64,
+    needs_media_meta: bool,
     needs_discord_media: bool,
     needs_tidb_request: bool,
     needs_video_hash: bool,
@@ -1717,7 +1747,10 @@ fn project_core_playback_state(
         None
     };
 
-    let discord_media = (needs_discord_media && discord_enabled).then(|| {
+    // Built for the OS media session whenever its metadata is stale, and for
+    // Discord on its own cadence. Gating the Discord case on `discord_enabled`
+    // here keeps this off the hot path when Discord is disabled.
+    let media = (needs_media_meta || (needs_discord_media && discord_enabled)).then(|| {
         let title = model
             .player
             .selected
@@ -1775,7 +1808,7 @@ fn project_core_playback_state(
 
     CorePlaybackProjection {
         discord_enabled,
-        discord_media,
+        media,
         tidb_request,
         resolved_video_hash,
     }
@@ -1786,13 +1819,14 @@ fn dispatch_state_to_core(
     session: &Arc<Mutex<SessionState>>,
     core: &Arc<Runtime<DesktopEnv, AppModel>>,
     discord_rpc: &Arc<crate::discord::DiscordRpc>,
+    media_session: &Arc<crate::media_session::MediaSession>,
     ui: &slint::Weak<MainWindow>,
     runtime_handle: &tokio::runtime::Handle,
 ) {
     let now = Instant::now();
     let current_time_secs = state.time.round().max(0.0) as i64;
     let duration_secs = state.duration.round().max(0.0) as i64;
-    let (needs_tidb_request, needs_discord_media, needs_video_hash) = {
+    let (needs_tidb_request, needs_discord_media, needs_media_meta, needs_video_hash) = {
         let current = lock_session(session);
         (
             state.loaded && duration_secs > 0 && current.tidb_fetched_id.is_none(),
@@ -1801,6 +1835,9 @@ fn dispatch_state_to_core(
                     .last_discord_projection_at
                     .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(5))
                     || current.last_discord_paused != Some(state.paused)),
+            state.loaded
+                && current.last_media_meta_key
+                    != Some((current.playback_generation, duration_secs)),
             !current.video_hash_resolved,
         )
     };
@@ -1809,6 +1846,7 @@ fn dispatch_state_to_core(
         project_core_playback_state(
             &model,
             duration_secs,
+            needs_media_meta,
             needs_discord_media,
             needs_tidb_request,
             needs_video_hash,
@@ -1897,7 +1935,7 @@ fn dispatch_state_to_core(
     if discord_enabled && state.loaded {
         if let Some(media) = core_projection
             .as_ref()
-            .and_then(|projection| projection.discord_media.as_ref())
+            .and_then(|projection| projection.media.as_ref())
         {
             let discord_state = if state.paused {
                 if duration_secs > 0 {
@@ -1958,6 +1996,55 @@ fn dispatch_state_to_core(
         };
         if should_clear {
             let _ = discord_rpc.clear_activity();
+        }
+    }
+
+    // OS media session (system controls + wake lock). Independent of Discord:
+    // reflects playback whether or not Discord presence is enabled.
+    if state.loaded {
+        if needs_media_meta
+            && let Some(media) = core_projection
+                .as_ref()
+                .and_then(|projection| projection.media.as_ref())
+        {
+            media_session.set_metadata(&media.title, media.image.as_deref(), duration_secs);
+            let mut current = lock_session(session);
+            current.last_media_meta_key = Some((current.playback_generation, duration_secs));
+        }
+
+        let playing = !state.paused;
+        let push_playback = {
+            let mut current = lock_session(session);
+            let changed = current.last_media_playing != Some(playing)
+                || current
+                    .last_media_push_at
+                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1));
+            if changed {
+                current.last_media_playing = Some(playing);
+                current.last_media_push_at = Some(now);
+            }
+            changed
+        };
+        if push_playback {
+            media_session.set_playback(playing, current_time_secs);
+            crate::taskbar_media::set_state(if playing {
+                crate::taskbar_media::ButtonState::Playing
+            } else {
+                crate::taskbar_media::ButtonState::Paused
+            });
+            crate::taskbar_media::set_progress(current_time_secs, duration_secs);
+        }
+    } else {
+        let should_clear = {
+            let mut current = lock_session(session);
+            let changed = current.last_media_meta_key.take().is_some()
+                || current.last_media_playing.take().is_some();
+            current.last_media_push_at = None;
+            changed
+        };
+        if should_clear {
+            media_session.clear();
+            crate::taskbar_media::set_state(crate::taskbar_media::ButtonState::Hidden);
         }
     }
 
@@ -2231,6 +2318,7 @@ fn apply_state_to_ui(
     if previous.is_none_or(|previous| previous.duration.round().max(0.0) as u64 != duration_second)
     {
         ui.set_player_total_time_str(format_time(state.duration).into());
+        ui.set_player_duration_seconds(state.duration.max(0.0) as f32);
     }
 
     let audio_tracks_changed =

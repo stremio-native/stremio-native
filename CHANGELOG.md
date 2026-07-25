@@ -2,6 +2,25 @@
 
 This file records notable changes to Stremio Native relative to the initial source snapshot.
 
+## 1.0.4 - 2026-07-25
+
+### Downloads
+- **Windows**: [Installer](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/StremioSetup-v1.0.4-x64.exe) | [Updater package](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-v1.0.4-x86_64-pc-windows-msvc.zip)
+- **Linux**: [Binary](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-v1.0.4-x86_64-unknown-linux-gnu)
+- **Debian / Ubuntu**: [DEB Package](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native_1.0.4-1_amd64.deb)
+- **Arch Linux**: [Package](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-1.0.4-1-x86_64.pkg.tar.zst)
+- **Fedora**: [RPM Package](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-1.0.4-1.fc44.x86_64.rpm)
+
+### Reliable Windows self-updates
+- Stages the downloaded installer first, hands it to the outer application lifecycle, and launches it only after the UI, playback engine, tray, and stream server have shut down.
+- Enables Inno Setup logging and a force-close fallback for older clients that launch Setup before their shutdown completes.
+- Moves fresh native installations to `%LOCALAPPDATA%\Programs\stremio-native`, avoiding collisions with the official Stremio installation while preserving the registered directory for upgrades.
+
+### Native operating-system media controls
+- Adds SMTC on Windows, MPRIS on Linux, and MediaRemote integration on macOS for metadata, playback status, play/pause, seeking, stop, and next-episode commands.
+- Adds a Windows taskbar thumbnail play/pause control and taskbar playback progress, with a stable AppUserModelID for correct application naming and icon resolution.
+- Holds an operating-system sleep inhibitor only while video is playing and releases it on pause, stop, player close, or process shutdown.
+
 ## 1.0.3 - 2026-07-24
 
 ### Browser-style smooth scrolling

@@ -42,6 +42,10 @@ tracing-chrome = "0.7.2"
 tracing-subscriber = "0.3.23"
 url = "2.5.8"
 discord-rich-presence = "1.1.0"
+# Pure-Rust zbus backend so Linux builds need no system libdbus. The Windows
+# (SMTC) and macOS (MediaRemote) backends ignore this feature.
+souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
+keepawake = "0.6.0"
 rodio = "0.22.2"
 mlua = { version = "0.12.0", features = ["lua54", "vendored", "serialize"] }
 turso = { version = "0.7.1", default-features = false }

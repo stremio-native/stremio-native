@@ -30,12 +30,12 @@ See the [changelog](CHANGELOG.md) for the current build's implementation notes a
 
 | Platform | Format | Link |
 | :--- | :--- | :--- |
-| **Windows** | Installer | [StremioSetup-v1.0.2-x64.exe](https://github.com/perpetus/stremio-native/releases/download/v1.0.2/StremioSetup-v1.0.2-x64.exe) |
-| **Windows** | Portable ZIP | [stremio-native-v1.0.2-x86_64-pc-windows-msvc.zip](https://github.com/perpetus/stremio-native/releases/download/v1.0.2/stremio-native-v1.0.2-x86_64-pc-windows-msvc.zip) |
-| **Arch Linux** | Pacman `.pkg.tar.zst` | [stremio-native-1.0.2-1-x86_64.pkg.tar.zst](https://github.com/perpetus/stremio-native/releases/download/v1.0.2/stremio-native-1.0.2-1-x86_64.pkg.tar.zst) |
-| **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.2_amd64.deb](https://github.com/perpetus/stremio-native/releases/download/v1.0.2/stremio-native_1.0.2_amd64.deb) |
-| **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.2-1.x86_64.rpm](https://github.com/perpetus/stremio-native/releases/download/v1.0.2/stremio-native-1.0.2-1.x86_64.rpm) |
-| **Linux** | Standalone binary | [stremio-native-v1.0.2-x86_64-unknown-linux-gnu](https://github.com/perpetus/stremio-native/releases/download/v1.0.2/stremio-native-v1.0.2-x86_64-unknown-linux-gnu) |
+| **Windows** | Installer | [StremioSetup-v1.0.4-x64.exe](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/StremioSetup-v1.0.4-x64.exe) |
+| **Windows** | Updater ZIP | [stremio-native-v1.0.4-x86_64-pc-windows-msvc.zip](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-v1.0.4-x86_64-pc-windows-msvc.zip) |
+| **Arch Linux** | Pacman `.pkg.tar.zst` | [stremio-native-1.0.4-1-x86_64.pkg.tar.zst](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-1.0.4-1-x86_64.pkg.tar.zst) |
+| **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.4-1_amd64.deb](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native_1.0.4-1_amd64.deb) |
+| **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.4-1.fc44.x86_64.rpm](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-1.0.4-1.fc44.x86_64.rpm) |
+| **Linux** | Standalone binary | [stremio-native-v1.0.4-x86_64-unknown-linux-gnu](https://github.com/perpetus/stremio-native/releases/download/v1.0.4/stremio-native-v1.0.4-x86_64-unknown-linux-gnu) |
 
 ---
 
