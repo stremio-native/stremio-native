@@ -16,12 +16,13 @@ use stremio_core::{
     types::{
         addon::{ExtraValue, ResourcePath, ResourceRequest},
         resource::{Stream, StreamBehaviorHints, StreamSource},
+        streams::StreamsItem,
     },
 };
 use url::Url;
 
 use crate::{
-    AppModel, MainWindow, NavigationController, NavigationIntent, Tab,
+    AppModel, AppModelField, MainWindow, NavigationController, NavigationIntent, Tab,
     models::details::{load_meta_details_for_video, open_details_route},
     single_instance::AppCommand,
 };
@@ -36,7 +37,7 @@ enum DeepLink {
     },
     Search(String),
     Discover(ResourceRequest),
-    Library(LibraryRequest),
+    Library(LibraryRequest, bool),
     Calendar(YearMonthDate),
     AddonDetails(Url),
     Player(Box<PlayerDeepLink>),
@@ -93,6 +94,9 @@ pub fn handle(
     match deep_link {
         DeepLink::Activate => show_window(ui),
         DeepLink::Tab(tab) => {
+            if tab == Tab::Library {
+                ui.set_library_continue_watching_mode(false);
+            }
             ui.invoke_tab_changed(tab.index());
             show_window(ui);
         }
@@ -119,11 +123,16 @@ pub fn handle(
             });
             show_window(ui);
         }
-        DeepLink::Library(request) => {
+        DeepLink::Library(request, continue_watching) => {
+            ui.set_library_continue_watching_mode(continue_watching);
             ui.invoke_tab_changed(Tab::Library.index());
             crate::models::library::clear_sync_state();
             runtime.dispatch(RuntimeAction {
-                field: None,
+                field: Some(if continue_watching {
+                    AppModelField::ContinueWatching
+                } else {
+                    AppModelField::Library
+                }),
                 action: Action::Load(ActionLoad::LibraryWithFilters(LibrarySelected { request })),
             });
             show_window(ui);
@@ -197,8 +206,8 @@ fn parse_stremio(url: Url) -> anyhow::Result<DeepLink> {
             }
         }
         "discover" => parse_discover(&url, &segments),
-        "library" => parse_library(&url, &segments),
-        "continuewatching" => Ok(DeepLink::Tab(Tab::Board)),
+        "library" => parse_library(&url, &segments, false),
+        "continuewatching" => parse_library(&url, &segments, true),
         "calendar" => parse_calendar(&segments),
         "addons" => parse_addons(&segments),
         "error" => Ok(DeepLink::Error(
@@ -280,14 +289,75 @@ fn parse_player(segments: &[String]) -> anyhow::Result<DeepLink> {
     })))
 }
 
+fn base32_decode(s: &str) -> Option<Vec<u8>> {
+    let mut bits = 0u64;
+    let mut bit_count = 0;
+    let mut out = Vec::new();
+    for byte in s.bytes() {
+        let val = match byte {
+            b'a'..=b'z' => byte - b'a',
+            b'A'..=b'Z' => byte - b'A',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => return None,
+        };
+        bits = (bits << 5) | u64::from(val);
+        bit_count += 5;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            out.push((bits >> bit_count) as u8);
+        }
+    }
+    Some(out)
+}
+
+fn parse_info_hash(xt: &str) -> Option<[u8; 20]> {
+    let hash_str = xt
+        .strip_prefix("urn:btih:")
+        .or_else(|| xt.strip_prefix("urn:btmh:"))?;
+    let hash_str = hash_str.split('&').next()?;
+    if hash_str.len() == 40 {
+        let bytes = hex::decode(hash_str).ok()?;
+        bytes.try_into().ok()
+    } else if hash_str.len() == 32 {
+        let bytes = base32_decode(hash_str)?;
+        bytes.try_into().ok()
+    } else {
+        None
+    }
+}
+
 fn parse_magnet(url: Url) -> anyhow::Result<DeepLink> {
+    let info_hash = url
+        .query_pairs()
+        .find_map(|(name, value)| (name == "xt").then(|| parse_info_hash(&value)).flatten())
+        .or_else(|| parse_info_hash(url.path()))
+        .ok_or_else(|| anyhow::anyhow!("invalid magnet URI: missing or invalid info hash (xt)"))?;
+
     let name = url
         .query_pairs()
         .find_map(|(name, value)| (name == "dn").then(|| value.into_owned()));
+
+    let announce = url
+        .query_pairs()
+        .filter(|(name, _)| name == "tr")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+
+    let file_idx = url.query_pairs().find_map(|(name, value)| {
+        (name == "so" || name == "ix" || name == "file_idx")
+            .then(|| value.parse::<u16>().ok())
+            .flatten()
+    });
+
     Ok(DeepLink::Player(Box::new(PlayerDeepLink {
         selected: PlayerSelected {
             stream: Stream {
-                source: StreamSource::Url { url },
+                source: StreamSource::Torrent {
+                    info_hash,
+                    file_idx,
+                    announce,
+                    file_must_include: Vec::new(),
+                },
                 name: name.clone(),
                 description: None,
                 thumbnail: None,
@@ -329,7 +399,11 @@ fn parse_discover(url: &Url, segments: &[String]) -> anyhow::Result<DeepLink> {
     )))
 }
 
-fn parse_library(url: &Url, segments: &[String]) -> anyhow::Result<DeepLink> {
+fn parse_library(
+    url: &Url,
+    segments: &[String],
+    continue_watching: bool,
+) -> anyhow::Result<DeepLink> {
     let media_type = segments
         .get(1)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("all"))
@@ -338,11 +412,14 @@ fn parse_library(url: &Url, segments: &[String]) -> anyhow::Result<DeepLink> {
         .as_deref()
         .map(parse_library_sort)
         .unwrap_or_default();
-    Ok(DeepLink::Library(LibraryRequest {
-        r#type: media_type,
-        sort,
-        page: Default::default(),
-    }))
+    Ok(DeepLink::Library(
+        LibraryRequest {
+            r#type: media_type,
+            sort,
+            page: Default::default(),
+        },
+        continue_watching,
+    ))
 }
 
 fn parse_calendar(segments: &[String]) -> anyhow::Result<DeepLink> {
@@ -424,6 +501,46 @@ fn open_player(
         field: None,
         action: Action::Load(ActionLoad::Player(Box::new(player.selected))),
     });
+}
+
+/// Open the exact stream persisted for a library/Continue Watching item.
+/// This is the native equivalent of following `LibraryItemDeepLinks.player`
+/// in the web client, without encoding and reparsing a Stremio URL.
+pub(crate) fn open_saved_stream(
+    ui: &MainWindow,
+    runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    navigation: &NavigationController,
+    item: StreamsItem,
+) {
+    let media_type = item.r#type;
+    let media_id = item.meta_id;
+    let video_id = item.video_id;
+    let stream_request = ResourceRequest::new(
+        item.stream_transport_url,
+        ResourcePath::without_extra("stream", &media_type, &video_id),
+    );
+    let meta_request = ResourceRequest::new(
+        item.meta_transport_url,
+        ResourcePath::without_extra("meta", &media_type, &media_id),
+    );
+    let subtitles_path = ResourcePath::without_extra("subtitles", &media_type, &video_id);
+
+    open_player(
+        ui,
+        runtime,
+        navigation,
+        PlayerDeepLink {
+            selected: PlayerSelected {
+                stream: item.stream,
+                stream_request: Some(stream_request),
+                meta_request: Some(meta_request),
+                subtitles_path: Some(subtitles_path),
+            },
+            media_type: Some(media_type),
+            media_id: Some(media_id),
+            video_id: Some(video_id),
+        },
+    );
 }
 
 fn show_window(ui: &MainWindow) {
@@ -511,6 +628,22 @@ mod tests {
             "stremio:///search?query=better%20call%20saul".to_owned(),
         ))?;
         assert!(matches!(link, DeepLink::Search(query) if query == "better call saul"));
+        Ok(())
+    }
+
+    #[test]
+    fn continue_watching_link_selects_filtered_library_model() -> anyhow::Result<()> {
+        let link = parse_command(AppCommand::Open(
+            "stremio:///continuewatching?sort=lastwatched".to_owned(),
+        ))?;
+        assert!(matches!(link, DeepLink::Library(_, true)));
+        Ok(())
+    }
+
+    #[test]
+    fn regular_library_link_keeps_regular_library_model() -> anyhow::Result<()> {
+        let link = parse_command(AppCommand::Open("stremio:///library/series".to_owned()))?;
+        assert!(matches!(link, DeepLink::Library(_, false)));
         Ok(())
     }
 }

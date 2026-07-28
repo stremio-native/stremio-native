@@ -3,7 +3,6 @@ use futures::{FutureExt, future};
 use http::Request;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::OnceLock;
 use tokio::runtime::Handle;
@@ -13,6 +12,8 @@ use stremio_core::{
     models::{ctx::Ctx, streaming_server::StreamingServer},
     runtime::{Env, EnvError, EnvFuture, TryEnvFuture},
 };
+
+mod http_cache;
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static TOKIO_HANDLE: OnceLock<Handle> = OnceLock::new();
@@ -78,7 +79,7 @@ fn get_http_client() -> &'static reqwest::Client {
     })
 }
 
-fn sanitized_url_for_log(raw: &str) -> String {
+pub(crate) fn sanitized_url_for_log(raw: &str) -> String {
     let Ok(parsed) = url::Url::parse(raw) else {
         return "<invalid-url>".to_owned();
     };
@@ -145,6 +146,9 @@ impl DesktopEnv {
     {
         let (parts, body) = request.into_parts();
         let client = get_http_client();
+        if let Some(cache_request) = http_cache::CacheRequest::classify(&parts) {
+            return http_cache::fetch(cache_request, client.clone()).await;
+        }
         let method = match parts.method {
             http::Method::GET => reqwest::Method::GET,
             http::Method::POST => reqwest::Method::POST,
@@ -245,28 +249,14 @@ pub fn install_database(database: turso::Database) -> Result<(), DatabaseAlready
     DB.set(database).map_err(|_| DatabaseAlreadyInstalled)
 }
 
-async fn get_db_conn() -> Result<turso::Connection, EnvError> {
+pub(crate) async fn get_db_conn() -> Result<turso::Connection, EnvError> {
     let conn = DB_CONNECTION
         .get_or_try_init(|| async {
-            let db = match DB.get() {
-                Some(db) => db,
-                None => {
-                    let db_path = std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .join("storage")
-                        .join("stremio.db");
-                    let db_path_str = db_path.to_string_lossy().into_owned();
-                    let db = turso::Builder::new_local(&db_path_str)
-                        .build()
-                        .await
-                        .map_err(|e| EnvError::Other(e.to_string()))?;
-
-                    let _ = DB.set(db);
-                    DB.get().ok_or_else(|| {
-                        EnvError::Other("core database initialization raced and failed".to_owned())
-                    })?
-                }
-            };
+            let db = DB.get().ok_or_else(|| {
+                EnvError::Other(
+                    "application database must be installed before core storage is used".to_owned(),
+                )
+            })?;
             let conn = db.connect().map_err(|e| EnvError::Other(e.to_string()))?;
             conn.execute_batch(
                 "PRAGMA synchronous = NORMAL;
@@ -281,6 +271,11 @@ async fn get_db_conn() -> Result<turso::Connection, EnvError> {
         .await?;
 
     Ok(conn.clone())
+}
+
+/// Runs bounded age/LRU maintenance for the shared HTTP response cache.
+pub async fn maintain_http_cache() -> Result<(), EnvError> {
+    http_cache::maintain().await.map_err(EnvError::Other)
 }
 
 impl Env for DesktopEnv {

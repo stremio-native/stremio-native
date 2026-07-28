@@ -4,6 +4,7 @@ import { MediaCardItem } from "../components/media_card.slint";
 import { MediaCatalogRow } from "../components/media_carousel.slint";
 import { MetaRowPlaceholder } from "../components/meta_row.slint";
 import { EmptyState } from "../components/feedback.slint";
+import { PillButton } from "../components/button.slint";
 
 export struct BoardSection {
     title: string,
@@ -15,27 +16,86 @@ export struct BoardSection {
     error-message: string,
     items: [MediaCardItem],
     is-continue-watching: bool,
+    poster-shape: string,
+}
+
+component StreamingServerWarning inherits Rectangle {
+    in property <length> unit: Theme.root-font-size;
+
+    callback dismiss;
+    callback reload;
+    callback open-settings;
+
+    height: 5 * root.unit;
+    border-radius: Theme.border-radius;
+    background: Theme.warning;
+    border-width: 0px;
+
+    HorizontalLayout {
+        padding-left: root.unit;
+        padding-right: root.unit;
+        spacing: root.unit;
+        alignment: center;
+
+        Text {
+            horizontal-stretch: 1;
+            text: @tr("SETTINGS_SERVER_UNAVAILABLE" => "Streaming server is not available.");
+            color: Theme.primary-foreground;
+            font-size: 0.95 * root.unit;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        PillButton {
+            width: 7 * root.unit;
+            height: 3 * root.unit;
+            unit: root.unit;
+            label: @tr("Install");
+            surface-color: Theme.background.with-alpha(0.28);
+            hover-color: Theme.background.with-alpha(0.45);
+            clicked => { root.dismiss(); }
+        }
+        PillButton {
+            width: 7 * root.unit;
+            height: 3 * root.unit;
+            unit: root.unit;
+            label: @tr("Later");
+            surface-color: Theme.background.with-alpha(0.28);
+            hover-color: Theme.background.with-alpha(0.45);
+            clicked => { root.reload(); }
+        }
+        PillButton {
+            width: 13 * root.unit;
+            height: 3 * root.unit;
+            unit: root.unit;
+            label: @tr("Don't show again");
+            surface-color: Theme.background.with-alpha(0.28);
+            hover-color: Theme.background.with-alpha(0.45);
+            clicked => { root.open-settings(); }
+        }
+    }
 }
 
 export component BoardPage inherits Rectangle {
-    width: 1280px;
-    height: 720px;
     in property <[MediaCardItem]> continue-watching: [];
     in property <[BoardSection]> sections: [];
     in property <bool> loading: false;
+    in property <bool> show-server-warning: false;
 
     callback item-selected(string, string, string);
+    callback play-clicked(string);
     callback remove-continue-watching(string);
     callback see-all-continue-watching;
     callback see-all-clicked(int);
     callback catalog-visible(int);
     callback poster-requested(string);
+    callback dismiss-server-warning;
+    callback reload-server;
+    callback open-server-settings;
 
     in property <length> unit: Theme.root-font-size;
-    property <int> visible-count: root.width > 2100px ? 9 :
-        (root.width > 1500px ? 8 : (root.width > 1200px ? 7 : (root.width > 900px ? 6 : 4)));
-    property <length> card-width: (root.width - 2 * root.unit) / root.visible-count;
-    property <length> card-height: (root.card-width - 2 * root.unit) * 1.464 + 6 * root.unit;
+    property <length> card-width: 12 * root.unit;
+    property <length> card-height: (root.card-width - 2 * root.unit) * Theme.poster-shape-ratio + 6 * root.unit;
 
     background: transparent;
 
@@ -71,8 +131,15 @@ export component BoardPage inherits Rectangle {
         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
 
         for section in root.sections : Rectangle {
+            property <string> p-shape: section.poster-shape != "" ? section.poster-shape : "poster";
+            property <length> section-card-height: p-shape == "landscape"
+                ? (root.card-width - 2 * root.unit) * Theme.landscape-shape-ratio + 6 * root.unit
+                : (p-shape == "square"
+                    ? (root.card-width - 2 * root.unit) + 6 * root.unit
+                    : root.card-height);
+
             width: parent.width;
-            height: 3 * root.unit + root.card-height;
+            height: 3 * root.unit + section-card-height + 2 * root.unit;
             background: transparent;
 
             init => {
@@ -85,6 +152,7 @@ export component BoardPage inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 unit: root.unit;
+                poster-shape: p-shape;
                 title: section.is-continue-watching
                     ? @tr("BOARD_CONTINUE_WATCHING" => "Continue watching")
                     : section.title;
@@ -92,9 +160,13 @@ export component BoardPage inherits Rectangle {
                 message: section.error-message;
                 show-see-all: true;
                 card-width: root.card-width;
-                card-height: root.card-height;
+                card-height: section-card-height;
                 items: section.items;
                 show-close-button: section.is-continue-watching;
+                show-play-button: section.is-continue-watching;
+                library-context-menu: section.is-continue-watching;
+                continue-watching-context-menu: section.is-continue-watching;
+                show-watched-context-action: false;
                 see-all-requested => {
                     if (section.is-continue-watching) {
                         root.see-all-continue-watching();
@@ -105,7 +177,15 @@ export component BoardPage inherits Rectangle {
                 item-selected(id, media-type, video-id) => {
                     root.item-selected(id, media-type, video-id);
                 }
+                play-clicked(id) => {
+                    root.play-clicked(id);
+                }
                 remove-clicked(id) => {
+                    if (section.is-continue-watching) {
+                        root.remove-continue-watching(id);
+                    }
+                }
+                dismiss-clicked(id) => {
                     if (section.is-continue-watching) {
                         root.remove-continue-watching(id);
                     }
@@ -113,5 +193,15 @@ export component BoardPage inherits Rectangle {
                 poster-requested(url) => { root.poster-requested(url); }
             }
         }
+    }
+
+    if (root.show-server-warning) : StreamingServerWarning {
+        x: root.unit;
+        y: parent.height - self.height - root.unit;
+        width: max(0px, parent.width - 2 * root.unit);
+        unit: root.unit;
+        dismiss => { root.dismiss-server-warning(); }
+        reload => { root.reload-server(); }
+        open-settings => { root.open-server-settings(); }
     }
 }

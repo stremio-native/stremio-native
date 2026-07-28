@@ -111,8 +111,14 @@ export component SearchPage inherits Rectangle {
         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
 
         for section in root.sections : Rectangle {
+            property <string> p-shape: section.poster-shape != "" ? section.poster-shape : "poster";
+            property <length> section-card-height: p-shape == "landscape"
+                ? (root.card-width - 2 * root.unit) * Theme.landscape-shape-ratio + 6 * root.unit
+                : (p-shape == "square"
+                    ? (root.card-width - 2 * root.unit) + 6 * root.unit
+                    : root.card-height);
             width: parent.width;
-            height: 3 * root.unit + root.card-height;
+            height: 3 * root.unit + section-card-height;
             background: transparent;
             property <int> visible-catalog-index: section.catalog-index;
 
@@ -141,8 +147,9 @@ export component SearchPage inherits Rectangle {
                 unit: root.unit;
                 title: section.title;
                 message: section.error-message;
+                poster-shape: p-shape;
                 card-width: root.card-width;
-                card-height: root.card-height;
+                card-height: section-card-height;
                 items: section.items;
                 item-selected(id, media-type, video-id) => {
                     root.item-selected(id, media-type, video-id);

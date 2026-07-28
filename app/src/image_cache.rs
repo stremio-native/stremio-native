@@ -180,7 +180,7 @@ fn client() -> &'static reqwest::Client {
         );
 
         reqwest::Client::builder()
-            .user_agent("Stremio-Rust/0.1")
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .default_headers(headers)
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(8))
@@ -437,18 +437,39 @@ fn decode_image(bytes: &[u8]) -> Result<ImageEntry, String> {
     let decoder = reader.into_decoder().map_err(|error| error.to_string())?;
     let (width, height) = decoder.dimensions();
 
-    // Most posters arrive as RGBA PNG/WebP data. Decode those directly into
-    // Slint's backing allocation instead of creating an intermediate image and
-    // then copying it into SharedPixelBuffer.
-    if width <= MAX_DECODE_WIDTH
-        && height <= MAX_DECODE_HEIGHT
-        && decoder.color_type() == image::ColorType::Rgba8
-    {
-        let mut decoded = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-        decoder
-            .read_image(decoded.make_mut_bytes())
-            .map_err(|error| error.to_string())?;
-        return Ok(decoded);
+    // Decode posters straight into Slint's backing allocation instead of building
+    // an intermediate `DynamicImage` and copying out of it. Posters are already
+    // small, so only the oversized fallback below needs to resize.
+    if width <= MAX_DECODE_WIDTH && height <= MAX_DECODE_HEIGHT {
+        match decoder.color_type() {
+            image::ColorType::Rgba8 => {
+                let mut decoded = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+                decoder
+                    .read_image(decoded.make_mut_bytes())
+                    .map_err(|error| error.to_string())?;
+                return Ok(decoded);
+            }
+            // Opaque art — the common case, including lossy WebP/JPEG posters —
+            // decodes as RGB. Read it into a tight RGB buffer and widen to RGBA in
+            // one pass, avoiding the generic decode path's alpha-conversion and its
+            // extra full-image copy.
+            image::ColorType::Rgb8 => {
+                let mut rgb = vec![0u8; width as usize * height as usize * 3];
+                decoder
+                    .read_image(&mut rgb)
+                    .map_err(|error| error.to_string())?;
+                let mut decoded = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+                for (src, dst) in rgb
+                    .chunks_exact(3)
+                    .zip(decoded.make_mut_bytes().chunks_exact_mut(4))
+                {
+                    dst[..3].copy_from_slice(src);
+                    dst[3] = 255;
+                }
+                return Ok(decoded);
+            }
+            _ => {}
+        }
     }
 
     let image = image::load_from_memory(bytes).map_err(|error| error.to_string())?;
@@ -470,12 +491,75 @@ fn decode_image(bytes: &[u8]) -> Result<ImageEntry, String> {
 }
 
 fn cache_root() -> PathBuf {
-    PathBuf::from("storage").join("image-cache-v1")
+    crate::paths::get().image_cache().to_path_buf()
 }
 
-fn cache_path(url: &str) -> PathBuf {
+pub fn cache_path(url: &str) -> PathBuf {
     let hash = blake3::hash(url.as_bytes()).to_hex();
-    cache_root().join(&hash[..2]).join(format!("{hash}.img"))
+    cache_root().join(&hash[..2]).join(format!("{hash}.jpg"))
+}
+
+fn cover_art_path(url: &str) -> PathBuf {
+    let hash = blake3::hash(url.as_bytes()).to_hex();
+    // Share the sharded poster directory so disk maintenance prunes these too.
+    cache_root()
+        .join(&hash[..2])
+        .join(format!("{hash}.smtc.png"))
+}
+
+/// Returns an already-generated OS-media-controls cover for `url`, if present.
+/// Cheap synchronous existence check for the fast path.
+pub fn cover_art_cached(url: &str) -> Option<PathBuf> {
+    let path = cover_art_path(url);
+    path.exists().then_some(path)
+}
+
+/// Produces a cover image for `url` in a format the OS media controls can always
+/// decode, returning its path.
+///
+/// Posters are cached in whatever the server sent — often WebP or AVIF, which
+/// Windows SMTC (decoding thumbnails through WIC) cannot render without optional
+/// codecs. This decodes the poster and re-encodes it as PNG in the shared cache.
+/// Returns `None` if the image cannot be fetched or decoded.
+pub async fn cover_art_file(url: String) -> Option<PathBuf> {
+    let png_path = cover_art_path(&url);
+    if png_path.exists() {
+        return Some(png_path);
+    }
+
+    // Reuse the poster bytes already on disk when possible; otherwise fetch them.
+    let source = match read_file_bytes(cache_path(&url)).await {
+        Some(bytes) => bytes,
+        None => download_with_retry(&url).await.ok()?,
+    };
+
+    let output = png_path.clone();
+    tokio::task::spawn_blocking(move || -> Option<()> {
+        use image::ImageEncoder as _;
+        let decoded = decode_image(&source).ok()?;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                decoded.as_bytes(),
+                decoded.width(),
+                decoded.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .ok()?;
+        write_cache_file(&output, &png).ok()
+    })
+    .await
+    .ok()
+    .flatten()?;
+
+    Some(png_path)
+}
+
+async fn read_file_bytes(path: PathBuf) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || std::fs::read(&path).ok())
+        .await
+        .ok()
+        .flatten()
 }
 
 fn write_cache_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -674,6 +758,20 @@ mod tests {
         let decoded = decode_image(&encoded).expect("decode fixture");
         assert_eq!((decoded.width(), decoded.height()), (2, 1));
         assert_eq!(decoded.as_bytes(), source);
+    }
+
+    #[test]
+    fn opaque_rgb_images_widen_to_rgba_with_full_alpha() {
+        let source = [255, 0, 0, 0, 128, 255];
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded)
+            .write_image(&source, 2, 1, image::ExtendedColorType::Rgb8)
+            .expect("encode fixture");
+
+        let decoded = decode_image(&encoded).expect("decode fixture");
+        assert_eq!((decoded.width(), decoded.height()), (2, 1));
+        // RGB pixels are preserved and every alpha byte is opaque.
+        assert_eq!(decoded.as_bytes(), [255, 0, 0, 255, 0, 128, 255, 255]);
     }
 
     #[test]

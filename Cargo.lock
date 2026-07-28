@@ -2037,6 +2037,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
+ "blake3",
  "chrono",
  "futures",
  "http",
@@ -4829,12 +4831,6 @@ dependencies = [
  "byteorder",
  "png 0.17.16",
 ]
-
-[[package]]
-name = "iconflow"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdea0c209457d8685cf6f1aae4eabc71d69f3c6ee6bb1fab0861a52251763936"
 
 [[package]]
 name = "icu_collator"
@@ -7765,6 +7761,7 @@ dependencies = [
  "sevenz-rust",
  "sha2 0.11.0",
  "thiserror 2.0.19",
+ "tracing",
 ]
 
 [[package]]
@@ -9588,7 +9585,6 @@ dependencies = [
  "serde",
  "serde_json",
  "server",
- "settings-gui",
  "tokio",
  "tower",
 ]
@@ -10254,11 +10250,11 @@ dependencies = [
  "blake3",
  "chrono",
  "core-env",
+ "dirs",
  "discord-rich-presence",
  "futures",
  "hex",
  "http",
- "iconflow",
  "image",
  "keepawake",
  "mimalloc",
@@ -10274,7 +10270,6 @@ dependencies = [
  "serde_json",
  "server",
  "server-connector",
- "settings-gui",
  "slint",
  "slint-build",
  "souvlaki",

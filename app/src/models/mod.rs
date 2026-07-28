@@ -4,8 +4,10 @@ pub mod board;
 pub mod calendar;
 pub mod details;
 pub mod discover;
+pub mod events;
 pub mod library;
 pub mod onboarding;
+pub mod pagination;
 pub mod search;
 pub mod settings;
 
@@ -267,7 +269,9 @@ fn bounded_catalog_load_range(
     let end = last_visible
         .saturating_add(CATALOG_PRELOAD_ROWS)
         .min(catalog_count - 1);
-    (start..=end).any(&mut is_unloaded).then_some(start..end)
+    (start..=end)
+        .any(&mut is_unloaded)
+        .then_some(start..end.saturating_add(1))
 }
 
 pub(crate) fn fingerprint_catalog_projection(
@@ -345,6 +349,18 @@ pub(crate) fn project_catalog_section(
         first.make_ascii_uppercase();
     }
 
+    let poster_shape = catalog
+        .iter()
+        .filter_map(|page| page.content.as_ref().and_then(Loadable::ready))
+        .flatten()
+        .next()
+        .map(|item| match item.poster_shape {
+            stremio_core::types::resource::PosterShape::Landscape => "landscape",
+            stremio_core::types::resource::PosterShape::Square => "square",
+            _ => "poster",
+        })
+        .unwrap_or("poster");
+
     Some(BoardSection {
         title: format!("{catalog_name} – {media_type}").into(),
         r_type: request.path.r#type.as_str().into(),
@@ -355,6 +371,7 @@ pub(crate) fn project_catalog_section(
         error_message: error_message.into(),
         items: ModelRc::new(slint::VecModel::from(cards)),
         is_continue_watching: false,
+        poster_shape: poster_shape.into(),
     })
 }
 
@@ -380,6 +397,8 @@ pub(crate) fn catalog_media_card(item: &MetaItemPreview) -> MediaCardItem {
         show_checkmark: false,
         show_progress: false,
         progress_value: 0.0,
+        new_videos: 0,
+        can_play: false,
     }
 }
 
@@ -653,7 +672,7 @@ mod tests {
 
         let range = bounded_catalog_load_range(unloaded.len(), 4, 4, |index| unloaded[index]);
 
-        assert_eq!(range, Some(0..9));
+        assert_eq!(range, Some(0..10));
     }
 
     #[test]

@@ -1,10 +1,11 @@
-use crate::DiscoverRow;
 use crate::models::details::load_meta_details_for_video;
+use crate::models::pagination::{PaginationIdentity, PaginationScope, gate as pagination_gate};
 use crate::models::{
     Fingerprint, SyncFingerprint, catalog_media_card, clear_sync_fingerprint,
     sync_fingerprint_changed,
 };
 use crate::{AppModel, AppModelField, MainWindow, NavigationController, NavigationIntent};
+use crate::{DiscoverFilterOption, DiscoverRow};
 use core_env::DesktopEnv;
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -24,6 +25,7 @@ static LAST_SYNC_STATE: OnceLock<Mutex<Option<SyncFingerprint>>> = OnceLock::new
 
 pub fn clear_sync_state() {
     clear_sync_fingerprint(&LAST_SYNC_STATE);
+    pagination_gate().reset(PaginationScope::Discover);
 }
 
 pub fn setup(
@@ -36,11 +38,25 @@ pub fn setup(
     ui.on_discover_load_next_page({
         let runtime = runtime.clone();
         move || {
-            let has_next_page = runtime
-                .model()
-                .ok()
-                .is_some_and(|model| model.discover.selectable.next_page.is_some());
-            if has_next_page {
+            let identity = runtime.model().ok().and_then(|model| {
+                model
+                    .discover
+                    .selectable
+                    .next_page
+                    .as_ref()
+                    .and_then(|next_page| {
+                        PaginationIdentity::new(
+                            PaginationScope::Discover,
+                            model
+                                .discover
+                                .selected
+                                .as_ref()
+                                .map(|selected| &selected.request),
+                            &next_page.request,
+                        )
+                    })
+            });
+            if pagination_gate().try_begin(identity) {
                 runtime.dispatch(RuntimeAction {
                     field: Some(AppModelField::Discover),
                     action: Action::CatalogWithFilters(ActionCatalogWithFilters::LoadNextPage),
@@ -55,6 +71,7 @@ pub fn setup(
         let ui_weak = ui_weak.clone();
         move |r_type| {
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_discover_has_next_page(false);
                 ui.set_discover_scroll_y(0.0);
             }
             clear_sync_state();
@@ -88,6 +105,7 @@ pub fn setup(
         let ui_weak = ui_weak.clone();
         move |cat_name| {
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_discover_has_next_page(false);
                 ui.set_discover_scroll_y(0.0);
             }
             clear_sync_state();
@@ -121,6 +139,7 @@ pub fn setup(
         let ui_weak = ui_weak.clone();
         move |genre_val| {
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_discover_has_next_page(false);
                 ui.set_discover_scroll_y(0.0);
             }
             clear_sync_state();
@@ -155,12 +174,88 @@ pub fn setup(
         }
     });
 
+    ui.on_discover_extra_changed({
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        move |name, value| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_discover_has_next_page(false);
+                ui.set_discover_scroll_y(0.0);
+            }
+            clear_sync_state();
+            let request = runtime.model().ok().and_then(|model| {
+                model
+                    .discover
+                    .selectable
+                    .extra
+                    .iter()
+                    .find(|extra| extra.name == name.as_str())
+                    .and_then(|extra| {
+                        extra.options.iter().find(|option| {
+                            option.value.as_deref().unwrap_or_default() == value.as_str()
+                        })
+                    })
+                    .map(|option| option.request.clone())
+            });
+            if let Some(request) = request {
+                runtime.dispatch(RuntimeAction {
+                    field: None,
+                    action: Action::Load(ActionLoad::CatalogWithFilters(Some(CatalogSelected {
+                        request,
+                    }))),
+                });
+            }
+        }
+    });
+
+    ui.on_discover_metadata_filter_selected({
+        let ui_weak = ui_weak.clone();
+        move |value| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_search_query(value.clone());
+                ui.invoke_global_search_submitted(value);
+            }
+        }
+    });
+
+    ui.on_discover_install_selected_addon({
+        let runtime = runtime.clone();
+        move || {
+            let selected_base = runtime.model().ok().and_then(|model| {
+                model
+                    .discover
+                    .selected
+                    .as_ref()
+                    .map(|selected| selected.request.base.clone())
+            });
+            let descriptor = selected_base.and_then(|base| {
+                runtime.model().ok().and_then(|model| {
+                    model
+                        .remote_addons
+                        .catalog
+                        .iter()
+                        .filter_map(|page| page.content.as_ref().and_then(Loadable::ready))
+                        .flatten()
+                        .find(|addon| addon.transport_url == base)
+                        .cloned()
+                })
+            });
+            if let Some(descriptor) = descriptor {
+                runtime.dispatch(RuntimeAction {
+                    field: None,
+                    action: Action::Ctx(ActionCtx::InstallAddon(descriptor)),
+                });
+            }
+        }
+    });
+
     // Search query callback
     ui.on_discover_search_changed({
         let runtime = runtime.clone();
         let ui_weak = ui_weak.clone();
         move |query| {
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_discover_has_next_page(false);
                 ui.set_discover_scroll_y(0.0);
             }
             clear_sync_state();
@@ -340,8 +435,23 @@ pub fn sync(
     ui: &MainWindow,
     discover: &CatalogWithFilters<MetaItemPreview>,
     _ui_weak: &slint::Weak<MainWindow>,
-    _runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    navigation: &NavigationController,
 ) {
+    let pagination_identity = discover
+        .selectable
+        .next_page
+        .as_ref()
+        .and_then(|next_page| {
+            PaginationIdentity::new(
+                PaginationScope::Discover,
+                discover.selected.as_ref().map(|selected| &selected.request),
+                &next_page.request,
+            )
+        });
+    pagination_gate().observe(PaginationScope::Discover, pagination_identity);
+    ui.set_discover_has_next_page(pagination_identity.is_some());
+
     // Calculate items count first to compute indices
     let estimated_count = {
         let _span = tracing::info_span!("compute_discover_metrics").entered();
@@ -405,11 +515,45 @@ pub fn sync(
         }
     }
 
+    let (selected_addon_installed, selected_addon_name) = runtime
+        .model()
+        .ok()
+        .map(|model| {
+            let selected_base = discover
+                .selected
+                .as_ref()
+                .map(|selected| &selected.request.base);
+            let installed = selected_base.is_none_or(|base| {
+                model
+                    .ctx
+                    .profile
+                    .addons
+                    .iter()
+                    .any(|addon| &addon.transport_url == base)
+            });
+            let name = selected_base
+                .and_then(|base| {
+                    model
+                        .remote_addons
+                        .catalog
+                        .iter()
+                        .filter_map(|page| page.content.as_ref().and_then(Loadable::ready))
+                        .flatten()
+                        .find(|addon| &addon.transport_url == base)
+                        .map(|addon| addon.manifest.name.clone())
+                })
+                .unwrap_or_default();
+            (installed, name)
+        })
+        .unwrap_or((true, String::new()));
+
     let mut fingerprint = Fingerprint::new();
     fingerprint.usize(columns);
     fingerprint.str(&active_type);
     fingerprint.str(&active_catalog);
     fingerprint.str(&active_genre);
+    fingerprint.bool(selected_addon_installed);
+    fingerprint.str(&selected_addon_name);
     for selectable_type in &discover.selectable.types {
         fingerprint.str(&selectable_type.r#type);
         fingerprint.bool(selectable_type.selected);
@@ -418,13 +562,10 @@ pub fn sync(
         fingerprint.str(&catalog.catalog);
         fingerprint.bool(catalog.selected);
     }
-    if let Some(genre_extra) = discover
-        .selectable
-        .extra
-        .iter()
-        .find(|extra| extra.name == "genre")
-    {
-        for option in &genre_extra.options {
+    for extra in &discover.selectable.extra {
+        fingerprint.str(&extra.name);
+        fingerprint.bool(extra.is_required);
+        for option in &extra.options {
             fingerprint.optional_str(option.value.as_deref());
             fingerprint.bool(option.selected);
         }
@@ -482,10 +623,33 @@ pub fn sync(
     ui.set_discover_genres(slint::ModelRc::new(genres_model));
     ui.set_discover_active_genre(active_genre.into());
 
+    let extra_options = discover
+        .selectable
+        .extra
+        .iter()
+        .filter(|extra| extra.name != "search" && extra.name != "genre")
+        .flat_map(|extra| {
+            let label = prettify_extra_name(&extra.name);
+            extra
+                .options
+                .iter()
+                .map(move |option| DiscoverFilterOption {
+                    extra_name: extra.name.as_str().into(),
+                    extra_label: label.as_str().into(),
+                    value: option.value.as_deref().unwrap_or_default().into(),
+                    label: option.value.as_deref().unwrap_or("All").into(),
+                    selected: option.selected,
+                })
+        })
+        .collect::<Vec<_>>();
+    ui.set_discover_extra_options(slint::ModelRc::new(slint::VecModel::from(extra_options)));
+    ui.set_discover_selected_addon_installed(selected_addon_installed);
+    ui.set_discover_selected_addon_name(selected_addon_name.into());
+
     let visible_items = {
         let _span = tracing::info_span!("map_visible_items").entered();
         let mut visible_items = Vec::with_capacity(raw_items.len());
-        for item in raw_items {
+        for item in &raw_items {
             visible_items.push(catalog_media_card(item));
         }
         visible_items
@@ -507,4 +671,27 @@ pub fn sync(
     };
 
     ui.set_discover_rows(slint::ModelRc::new(rows_model));
+
+    // Auto-select the first item for preview on catalog load if no item is selected yet (matching web behavior)
+    if navigation.snapshot().discover_preview_id.is_none()
+        && let Some(first_item) = raw_items.first()
+    {
+        let media_id = first_item.id.clone();
+        let media_type = first_item.r#type.clone();
+        let video_id = first_item.behavior_hints.default_video_id.clone();
+        let transition = navigation.dispatch(NavigationIntent::SelectDiscoverPreview {
+            media_id: media_id.clone(),
+        });
+        if transition.changed {
+            load_meta_details_for_video(runtime, media_id, Some(media_type), video_id);
+        }
+    }
+}
+
+fn prettify_extra_name(name: &str) -> String {
+    let mut label = name.replace(['_', '-'], " ");
+    if let Some(first) = label.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    label
 }

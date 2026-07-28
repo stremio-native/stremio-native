@@ -379,9 +379,7 @@ fn has_native_installer(_release: &Release) -> bool {
 
 #[cfg(target_os = "windows")]
 fn stage_installer(version: &str) -> Result<PathBuf> {
-    let update_dir = std::path::PathBuf::from("storage")
-        .join("updates")
-        .join(display_version(version));
+    let update_dir = crate::paths::get().updates().join(display_version(version));
     std::fs::create_dir_all(&update_dir)
         .with_context(|| format!("failed to create {}", update_dir.display()))?;
     let installer = update_dir.join("stremio-installer.exe");

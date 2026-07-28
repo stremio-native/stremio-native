@@ -1,4 +1,5 @@
 use crate::models::details::{load_meta_details_for_video, open_details_route};
+use crate::models::pagination::{PaginationIdentity, PaginationScope, gate as pagination_gate};
 use crate::models::{
     Fingerprint, SyncFingerprint, clear_sync_fingerprint, library_details_video_id,
     sync_fingerprint_changed,
@@ -10,12 +11,13 @@ use slint::ComponentHandle;
 use std::sync::{Arc, Mutex, OnceLock};
 use stremio_core::{
     models::library_with_filters::{
-        LibraryRequest, LibraryWithFilters, NotRemovedFilter, Selected, Sort,
+        LibraryFilter, LibraryRequest, LibraryWithFilters, Selected, Sort,
     },
     runtime::{
         Runtime, RuntimeAction,
         msg::{Action, ActionLibraryWithFilters, ActionLoad},
     },
+    types::streams::StreamsItemKey,
 };
 
 static SEARCH_QUERY: OnceLock<Mutex<String>> = OnceLock::new();
@@ -69,6 +71,8 @@ fn type_label(value: Option<&str>) -> &'static str {
 
 pub fn clear_sync_state() {
     clear_sync_fingerprint(&LAST_SYNC_STATE);
+    pagination_gate().reset(PaginationScope::Library);
+    pagination_gate().reset(PaginationScope::ContinueWatching);
 }
 
 pub fn setup(
@@ -80,14 +84,55 @@ pub fn setup(
 
     ui.on_library_load_next_page({
         let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
         move || {
-            let has_next_page = runtime
-                .model()
-                .ok()
-                .is_some_and(|model| model.library.selectable.next_page.is_some());
-            if has_next_page {
+            let continue_watching = ui_weak
+                .upgrade()
+                .is_some_and(|ui| ui.get_library_continue_watching_mode());
+            let identity = runtime.model().ok().and_then(|model| {
+                if continue_watching {
+                    model
+                        .continue_watching
+                        .selectable
+                        .next_page
+                        .as_ref()
+                        .and_then(|next_page| {
+                            PaginationIdentity::new(
+                                PaginationScope::ContinueWatching,
+                                model
+                                    .continue_watching
+                                    .selected
+                                    .as_ref()
+                                    .map(|selected| &selected.request),
+                                &next_page.request,
+                            )
+                        })
+                } else {
+                    model
+                        .library
+                        .selectable
+                        .next_page
+                        .as_ref()
+                        .and_then(|next_page| {
+                            PaginationIdentity::new(
+                                PaginationScope::Library,
+                                model
+                                    .library
+                                    .selected
+                                    .as_ref()
+                                    .map(|selected| &selected.request),
+                                &next_page.request,
+                            )
+                        })
+                }
+            });
+            if pagination_gate().try_begin(identity) {
                 runtime.dispatch(RuntimeAction {
-                    field: Some(AppModelField::Library),
+                    field: Some(if continue_watching {
+                        AppModelField::ContinueWatching
+                    } else {
+                        AppModelField::Library
+                    }),
                     action: Action::LibraryWithFilters(ActionLibraryWithFilters::LoadNextPage),
                 });
             }
@@ -100,6 +145,7 @@ pub fn setup(
         let ui_weak = ui_weak.clone();
         move |t| {
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_library_has_next_page(false);
                 ui.set_library_scroll_y(0.0);
             }
             clear_sync_state();
@@ -109,10 +155,17 @@ pub fn setup(
                 .upgrade()
                 .map(|ui| sort_from_label(ui.get_library_active_sort().as_str()))
                 .unwrap_or_default();
+            let continue_watching = ui_weak
+                .upgrade()
+                .is_some_and(|ui| ui.get_library_continue_watching_mode());
 
             tokio::spawn(async move {
                 rt.dispatch(RuntimeAction {
-                    field: None,
+                    field: Some(if continue_watching {
+                        AppModelField::ContinueWatching
+                    } else {
+                        AppModelField::Library
+                    }),
                     action: Action::Load(ActionLoad::LibraryWithFilters(Selected {
                         request: LibraryRequest {
                             r#type: r_type,
@@ -133,14 +186,22 @@ pub fn setup(
                 .upgrade()
                 .and_then(|ui| type_from_label(ui.get_library_active_type().as_str()));
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_library_has_next_page(false);
                 ui.set_library_scroll_y(0.0);
             }
             clear_sync_state();
             let rt = runtime.clone();
             let sort = sort_from_label(label.as_str());
+            let continue_watching = ui_weak
+                .upgrade()
+                .is_some_and(|ui| ui.get_library_continue_watching_mode());
             tokio::spawn(async move {
                 rt.dispatch(RuntimeAction {
-                    field: None,
+                    field: Some(if continue_watching {
+                        AppModelField::ContinueWatching
+                    } else {
+                        AppModelField::Library
+                    }),
                     action: Action::Load(ActionLoad::LibraryWithFilters(Selected {
                         request: LibraryRequest {
                             r#type: r_type,
@@ -159,6 +220,7 @@ pub fn setup(
         let ui_weak = ui_weak.clone();
         move |query| {
             if let Some(ui) = ui_weak.upgrade() {
+                ui.set_library_has_next_page(false);
                 ui.set_library_scroll_y(0.0);
             }
             clear_sync_state();
@@ -172,7 +234,11 @@ pub fn setup(
             {
                 let ui_sync = ui_weak.clone();
                 let rt_sync = runtime.clone();
-                sync(&ui, &model.library, &ui_sync, &rt_sync);
+                if ui.get_library_continue_watching_mode() {
+                    sync(&ui, &model.continue_watching, &ui_sync, &rt_sync, true);
+                } else {
+                    sync(&ui, &model.library, &ui_sync, &rt_sync, false);
+                }
             }
         }
     });
@@ -192,20 +258,129 @@ pub fn setup(
             load_meta_details_for_video(&runtime, id, Some(media_type), video_id);
         }
     });
+
+    ui.on_library_remove_item({
+        let runtime = runtime.clone();
+        move |id| {
+            runtime.dispatch(RuntimeAction {
+                field: None,
+                action: Action::Ctx(stremio_core::runtime::msg::ActionCtx::RemoveFromLibrary(
+                    id.to_string(),
+                )),
+            });
+        }
+    });
+
+    ui.on_library_watched_changed({
+        let runtime = runtime.clone();
+        move |id, is_watched| {
+            runtime.dispatch(RuntimeAction {
+                field: None,
+                action: Action::Ctx(
+                    stremio_core::runtime::msg::ActionCtx::LibraryItemMarkAsWatched {
+                        id: id.to_string(),
+                        is_watched,
+                    },
+                ),
+            });
+        }
+    });
+
+    ui.on_library_dismiss_item({
+        let runtime = runtime.clone();
+        move |id| {
+            let id = id.to_string();
+            runtime.dispatch(RuntimeAction {
+                field: None,
+                action: Action::Ctx(stremio_core::runtime::msg::ActionCtx::RewindLibraryItem(
+                    id.clone(),
+                )),
+            });
+            runtime.dispatch(RuntimeAction {
+                field: None,
+                action: Action::Ctx(
+                    stremio_core::runtime::msg::ActionCtx::DismissNotificationItem(id),
+                ),
+            });
+        }
+    });
+
+    ui.on_library_play_item({
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        let navigation = navigation.clone();
+        move |id| {
+            let id = id.to_string();
+            let saved_stream = runtime.model().ok().and_then(|model| {
+                let item = model.ctx.library.items.get(&id)?;
+                let video_id = item.state.video_id.as_ref()?;
+                model
+                    .ctx
+                    .streams
+                    .items
+                    .get(&StreamsItemKey {
+                        meta_id: id.clone(),
+                        video_id: video_id.clone(),
+                    })
+                    .cloned()
+            });
+            if let (Some(ui), Some(saved_stream)) = (ui_weak.upgrade(), saved_stream) {
+                crate::deep_link::open_saved_stream(&ui, &runtime, &navigation, saved_stream);
+            }
+        }
+    });
 }
 
 #[tracing::instrument(skip_all)]
-pub fn sync(
+pub fn sync<F: LibraryFilter>(
     ui: &MainWindow,
-    library: &LibraryWithFilters<NotRemovedFilter>,
+    library: &LibraryWithFilters<F>,
     _ui_weak: &slint::Weak<MainWindow>,
-    _runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    continue_watching_mode: bool,
 ) {
+    let pagination_scope = if continue_watching_mode {
+        PaginationScope::ContinueWatching
+    } else {
+        PaginationScope::Library
+    };
+    let pagination_identity = library.selectable.next_page.as_ref().and_then(|next_page| {
+        PaginationIdentity::new(
+            pagination_scope,
+            library.selected.as_ref().map(|selected| &selected.request),
+            &next_page.request,
+        )
+    });
+    pagination_gate().observe(pagination_scope, pagination_identity);
+    ui.set_library_has_next_page(pagination_identity.is_some());
+
     let query = get_search_query()
         .lock()
         .map(|q| q.clone())
         .unwrap_or_default();
     let normalized_query = query.to_lowercase();
+    let (authenticated, notification_counts, saved_stream_keys) = runtime
+        .model()
+        .ok()
+        .map(|model| {
+            let counts = model
+                .ctx
+                .notifications
+                .items
+                .iter()
+                .map(|(id, items)| (id.clone(), items.len()))
+                .collect::<std::collections::HashMap<_, _>>();
+            let saved_stream_keys = model
+                .ctx
+                .streams
+                .items
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            (model.ctx.profile.auth.is_some(), counts, saved_stream_keys)
+        })
+        .unwrap_or_default();
+    ui.set_library_authenticated(authenticated);
 
     // 1. Filter raw items based on query
     let (raw_items, columns) = {
@@ -229,6 +404,8 @@ pub fn sync(
     let mut fingerprint = Fingerprint::new();
     fingerprint.usize(columns);
     fingerprint.str(&normalized_query);
+    fingerprint.bool(authenticated);
+    fingerprint.bool(continue_watching_mode);
     if let Some(selected) = &library.selected {
         fingerprint.optional_str(selected.request.r#type.as_deref());
         fingerprint.str(sort_label(&selected.request.sort));
@@ -241,6 +418,12 @@ pub fn sync(
         fingerprint.u64(item.progress().to_bits());
         fingerprint.str(&item.name);
         fingerprint.optional_str(item.poster.as_ref().map(url::Url::as_str));
+        fingerprint.usize(
+            notification_counts
+                .get(&item.id)
+                .copied()
+                .unwrap_or_default(),
+        );
     }
     if !sync_fingerprint_changed(&LAST_SYNC_STATE, fingerprint.finish()) {
         return;
@@ -263,7 +446,7 @@ pub fn sync(
                     item.state.video_id.as_deref(),
                     item.state.time_offset,
                     item.behavior_hints.default_video_id.as_deref(),
-                    true,
+                    !continue_watching_mode,
                 )
                 .unwrap_or_default()
                 .into(),
@@ -279,6 +462,20 @@ pub fn sync(
                 show_checkmark: item.watched(),
                 show_progress: progress > 0.0,
                 progress_value: (progress / 100.0).clamp(0.0, 1.0) as f32,
+                new_videos: i32::try_from(
+                    notification_counts
+                        .get(&item.id)
+                        .copied()
+                        .unwrap_or_default()
+                        .min(99),
+                )
+                .unwrap_or(99),
+                can_play: item.state.video_id.as_ref().is_some_and(|video_id| {
+                    saved_stream_keys.contains(&StreamsItemKey {
+                        meta_id: item.id.clone(),
+                        video_id: video_id.clone(),
+                    })
+                }),
             });
         }
         visible_items

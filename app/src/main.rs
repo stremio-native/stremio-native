@@ -38,10 +38,12 @@ use core_env::DesktopEnv;
 mod config;
 pub mod db;
 mod deep_link;
+mod gpu_prewarm;
 pub mod image_cache;
 mod media_session;
 mod models;
 mod mpv_integration;
+mod paths;
 mod performance;
 mod playback;
 #[cfg(feature = "plugins")]
@@ -52,6 +54,7 @@ mod single_instance;
 mod taskbar_media;
 mod thumbnail_preview;
 mod tray;
+mod window_events;
 mod window_style;
 
 // Modular sub-files
@@ -65,7 +68,7 @@ mod theintrodb;
 mod updater;
 
 // Re-exports/Usage
-pub use app_model::{AppModel, AppModelField, get_icon_data};
+pub use app_model::{AppModel, AppModelField};
 pub use discord::DiscordRpc;
 pub use navigation::{DetailsPresentation, NavigationController, NavigationIntent, Tab};
 
@@ -76,17 +79,17 @@ async fn main() -> anyhow::Result<()> {
     // so register the process runtime before any model or playback work starts.
     core_env::install_runtime_handle(tokio::runtime::Handle::current());
 
-    // 1. Initialize durable logging before any fallible application setup.
     let profile = performance::ProfileConfig::from_args(std::env::args());
-
-    // Initialize logger and keep workers alive
-    let _guards = logger::init_logger(&profile)?;
-    tracing::info!("Starting Stremio-Rust GUI client...");
 
     let primary_instance = match single_instance::acquire(std::env::args_os()).await? {
         single_instance::InstanceStartup::Primary(instance) => instance,
         single_instance::InstanceStartup::Forwarded => return Ok(()),
     };
+
+    // A forwarded process exits before touching the primary process's log.
+    let app_paths = paths::initialize()?;
+    let _guards = logger::init_logger(&profile, app_paths)?;
+    tracing::info!(data_root = %app_paths.root().display(), "Starting Stremio-Rust GUI client...");
 
     let res = run_app(&profile, primary_instance, startup_started).await;
     if let Err(ref e) = res {
@@ -170,7 +173,6 @@ async fn run_app(
         // Ensure the native event loop can paint the loading shell before even
         // small synchronous setup such as icon lookup or tray creation begins.
         tokio::time::sleep(Duration::from_millis(1)).await;
-        initialize_ui_icons(&startup_ui);
         let tray = match tray::setup(&startup_ui, &startup_navigation) {
             Ok(tray) => Some(tray),
             Err(error) => {
@@ -266,43 +268,6 @@ impl AppSession {
     }
 }
 
-fn initialize_ui_icons(ui: &MainWindow) {
-    ui.set_board_icon(get_icon_data(iconflow::Pack::Lucide, "home"));
-    ui.set_discover_icon(get_icon_data(iconflow::Pack::Lucide, "compass"));
-    ui.set_library_icon(get_icon_data(iconflow::Pack::Lucide, "folder"));
-    ui.set_calendar_icon(get_icon_data(iconflow::Pack::Lucide, "calendar-days"));
-    ui.set_addons_icon(get_icon_data(iconflow::Pack::Lucide, "toy-brick"));
-    ui.set_settings_icon(get_icon_data(iconflow::Pack::Lucide, "settings"));
-    ui.set_logout_icon(get_icon_data(iconflow::Pack::Lucide, "log-out"));
-    ui.set_mail_icon(get_icon_data(iconflow::Pack::Lucide, "mail"));
-    ui.set_lock_icon(get_icon_data(iconflow::Pack::Lucide, "lock"));
-    ui.set_search_icon(get_icon_data(iconflow::Pack::Lucide, "search"));
-    ui.set_facebook_icon(get_icon_data(iconflow::Pack::Bootstrap, "facebook"));
-    ui.set_apple_icon(get_icon_data(iconflow::Pack::Bootstrap, "apple"));
-    ui.set_icon_play(get_icon_data(iconflow::Pack::Lucide, "play"));
-    ui.set_icon_pause(get_icon_data(iconflow::Pack::Lucide, "pause"));
-    ui.set_icon_next(get_icon_data(iconflow::Pack::Lucide, "skip-forward"));
-    ui.set_icon_volume_high(get_icon_data(iconflow::Pack::Lucide, "volume-2"));
-    ui.set_icon_volume_low(get_icon_data(iconflow::Pack::Lucide, "volume-1"));
-    ui.set_icon_volume_mute(get_icon_data(iconflow::Pack::Lucide, "volume-x"));
-    ui.set_icon_fullscreen(get_icon_data(iconflow::Pack::Lucide, "expand"));
-    ui.set_icon_subtitles(get_icon_data(iconflow::Pack::Lucide, "message-square"));
-    ui.set_icon_audio(get_icon_data(iconflow::Pack::Lucide, "music"));
-    ui.set_icon_speed(get_icon_data(iconflow::Pack::Lucide, "gauge"));
-    ui.set_icon_stats(get_icon_data(iconflow::Pack::Lucide, "activity"));
-    ui.set_icon_options(get_icon_data(iconflow::Pack::Lucide, "sliders"));
-    ui.set_icon_menu(get_icon_data(iconflow::Pack::Lucide, "menu"));
-    ui.set_icon_back(get_icon_data(iconflow::Pack::Lucide, "arrow-left"));
-    ui.set_refresh_icon(get_icon_data(iconflow::Pack::Lucide, "refresh-cw"));
-    ui.set_folder_icon(get_icon_data(iconflow::Pack::Lucide, "folder-open"));
-    ui.set_icon_link(get_icon_data(iconflow::Pack::Lucide, "link"));
-    ui.set_icon_magnet(get_icon_data(iconflow::Pack::Lucide, "magnet"));
-    ui.set_icon_download(get_icon_data(iconflow::Pack::Lucide, "download"));
-    ui.set_icon_eye(get_icon_data(iconflow::Pack::Lucide, "eye"));
-    ui.set_icon_eye_off(get_icon_data(iconflow::Pack::Lucide, "eye-off"));
-    ui.set_icon_clapperboard(get_icon_data(iconflow::Pack::Lucide, "clapperboard"));
-}
-
 fn apply_theme(ui: &MainWindow, config: &config::AppConfig) {
     let theme = ui.global::<Theme>();
     macro_rules! set_color {
@@ -352,7 +317,7 @@ async fn finish_startup(
 ) -> anyhow::Result<AppSession> {
     let ui_weak = ui.as_weak();
 
-    db::init_db(std::path::PathBuf::from("storage")).await?;
+    db::init_db(paths::get().database()).await?;
     config::init_config().await;
     let config = config::load_config();
     apply_theme(&ui, &config);
@@ -369,6 +334,8 @@ async fn finish_startup(
 
     let server_cfg = stream_server::ServerConfig {
         http_addr: std::net::SocketAddr::from(([127, 0, 0, 1], config.torrent_port)),
+        config_dir: Some(paths::get().streaming_server().to_path_buf()),
+        cache_dir: Some(paths::get().streaming_server_cache().to_path_buf()),
         print_startup: true,
         init_logging: false,
         ..stream_server::ServerConfig::embedded()
@@ -551,11 +518,12 @@ async fn finish_startup(
         &config,
         navigation.clone(),
     );
+    window_events::install(&ui, runtime.clone());
 
     // Plugin system (lazy: only starts if plugins directory has .lua files)
     #[cfg(feature = "plugins")]
     let _plugin_manager = {
-        let plugin_dir = crate::mpv_integration::resolve_app_data_dir().join("plugins");
+        let plugin_dir = crate::paths::get().plugins().to_path_buf();
         let pm = plugins::PluginManager::new(ui_weak.clone(), plugin_dir);
         if let Some(ref pm) = pm {
             let tx = pm.sender();
@@ -727,13 +695,22 @@ fn sync_tab_from_model(
         Tab::Discover => {
             crate::models::discover::clear_sync_state();
             if let Some(discover) = runtime.model().ok().map(|model| model.discover.clone()) {
-                models::discover::sync(ui, &discover, ui_weak, runtime);
+                models::discover::sync(ui, &discover, ui_weak, runtime, navigation);
             }
         }
         Tab::Library => {
             crate::models::library::clear_sync_state();
-            if let Some(library) = runtime.model().ok().map(|model| model.library.clone()) {
-                models::library::sync(ui, &library, ui_weak, runtime);
+            let continue_watching = ui.get_library_continue_watching_mode();
+            let snapshot = runtime
+                .model()
+                .ok()
+                .map(|model| (model.library.clone(), model.continue_watching.clone()));
+            if let Some((library, continue_watching_library)) = snapshot {
+                if continue_watching {
+                    models::library::sync(ui, &continue_watching_library, ui_weak, runtime, true);
+                } else {
+                    models::library::sync(ui, &library, ui_weak, runtime, false);
+                }
             }
         }
         Tab::Addons => {
@@ -753,12 +730,35 @@ fn sync_tab_from_model(
             }
         }
         Tab::Settings => {
-            if let Some(settings) = runtime
-                .model()
-                .ok()
-                .map(|model| model.ctx.profile.settings.clone())
-            {
-                models::settings::sync(ui, &settings);
+            let snapshot = runtime.model().ok().map(|model| {
+                (
+                    model.ctx.profile.settings.clone(),
+                    model
+                        .ctx
+                        .profile
+                        .auth
+                        .as_ref()
+                        .map(|auth| auth.user.id.0.clone())
+                        .unwrap_or_default(),
+                    model.ctx.profile.has_trakt::<DesktopEnv>(),
+                    model.ctx.streaming_server_urls.clone(),
+                    match &model.streaming_server.settings {
+                        stremio_core::models::common::Loadable::Ready(settings) => {
+                            Some(settings.clone())
+                        }
+                        _ => None,
+                    },
+                )
+            });
+            if let Some((settings, user_id, trakt, server_urls, streaming_settings)) = snapshot {
+                models::settings::sync(
+                    ui,
+                    &settings,
+                    &user_id,
+                    trakt,
+                    &server_urls,
+                    streaming_settings.as_ref(),
+                );
             }
         }
     }

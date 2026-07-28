@@ -2,20 +2,22 @@ use crate::config::AppConfig;
 use crate::mpv_integration::NativePlaybackBridge;
 use crate::{AppModel, AppModelField, MainWindow};
 use core_env::DesktopEnv;
-use server_connector::AppServerConnector;
-use settings_gui::ServerConnector;
+use server_connector::{AppServerConnector, ServerConnector};
 use slint::ComponentHandle;
 use std::sync::Arc;
 use stremio_core::{
     models::{common::Loadable, data_export::DataExport},
     runtime::{
         Runtime, RuntimeAction,
-        msg::{Action, ActionCtx, ActionLoad},
+        msg::{Action, ActionCtx, ActionLoad, ActionStreamingServer},
     },
-    types::profile::Settings as ProfileSettings,
+    types::{
+        profile::Settings as ProfileSettings, server_urls::ServerUrlsBucket,
+        streaming_server::Settings as StreamingServerSettings,
+    },
 };
 
-fn update_profile_settings(
+pub(crate) fn update_profile_settings(
     runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
     update: impl FnOnce(&mut ProfileSettings),
 ) {
@@ -440,6 +442,34 @@ fn format_cache_size(bytes: f64) -> String {
         let gb = bytes / 1024.0 / 1024.0 / 1024.0;
         format!("{:.1} GB", gb)
     }
+}
+
+fn color_to_hex(color: slint::Color) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}{:02X}",
+        color.red(),
+        color.green(),
+        color.blue(),
+        color.alpha()
+    )
+}
+
+fn update_streaming_server_settings(
+    runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    update: impl FnOnce(&mut StreamingServerSettings),
+) {
+    let Ok(model) = runtime.model() else {
+        return;
+    };
+    let Loadable::Ready(mut settings) = model.streaming_server.settings.clone() else {
+        return;
+    };
+    drop(model);
+    update(&mut settings);
+    runtime.dispatch(RuntimeAction {
+        field: Some(AppModelField::StreamingServer),
+        action: Action::StreamingServer(ActionStreamingServer::UpdateSettings(settings)),
+    });
 }
 
 pub fn setup(
@@ -889,6 +919,153 @@ pub fn setup(
             }
         }
     });
+    ui.on_settings_change_seek_short_duration({
+        let runtime = runtime.clone();
+        move |value| {
+            if let Ok(seconds) = value.trim().parse::<u32>() {
+                let milliseconds = seconds.clamp(1, 120).saturating_mul(1_000);
+                update_profile_settings(&runtime, |settings| {
+                    settings.seek_short_time_duration = milliseconds;
+                });
+            }
+        }
+    });
+    ui.on_settings_change_next_video_popup_duration({
+        let runtime = runtime.clone();
+        move |value| {
+            if let Ok(seconds) = value.trim().parse::<u32>() {
+                let milliseconds = seconds.min(300).saturating_mul(1_000);
+                update_profile_settings(&runtime, |settings| {
+                    settings.next_video_notification_duration = milliseconds;
+                });
+            }
+        }
+    });
+    ui.on_settings_change_external_player({
+        let runtime = runtime.clone();
+        move |value| {
+            let value = value.trim().to_owned();
+            update_profile_settings(&runtime, |settings| {
+                settings.player_type = (!value.is_empty()
+                    && !value.eq_ignore_ascii_case("built-in player"))
+                .then_some(value);
+            });
+        }
+    });
+    ui.on_settings_change_audio_language({
+        let runtime = runtime.clone();
+        move |value| {
+            let value = value.trim().to_owned();
+            update_profile_settings(&runtime, |settings| {
+                settings.audio_language = (!value.is_empty()).then(|| language_code(&value));
+            });
+        }
+    });
+    ui.on_settings_change_surround_sound({
+        let runtime = runtime.clone();
+        move |value| update_profile_settings(&runtime, |settings| settings.surround_sound = value)
+    });
+    ui.on_settings_change_ass_subtitles_styling({
+        let runtime = runtime.clone();
+        move |value| {
+            update_profile_settings(&runtime, |settings| settings.ass_subtitles_styling = value)
+        }
+    });
+    ui.on_settings_change_subtitles_text_color({
+        let runtime = runtime.clone();
+        move |value| {
+            update_profile_settings(&runtime, |settings| {
+                settings.subtitles_text_color = color_to_hex(value);
+            });
+        }
+    });
+    ui.on_settings_change_subtitles_background_color({
+        let runtime = runtime.clone();
+        move |value| {
+            update_profile_settings(&runtime, |settings| {
+                settings.subtitles_background_color = color_to_hex(value);
+            });
+        }
+    });
+    ui.on_settings_change_subtitles_outline_color({
+        let runtime = runtime.clone();
+        move |value| {
+            update_profile_settings(&runtime, |settings| {
+                settings.subtitles_outline_color = color_to_hex(value);
+            });
+        }
+    });
+    ui.on_settings_toggle_trakt({
+        let runtime = runtime.clone();
+        move || {
+            let trakt_state = runtime.model().ok().and_then(|model| {
+                let user_id = model.ctx.profile.auth.as_ref()?.user.id.0.clone();
+                Some((model.ctx.profile.has_trakt::<DesktopEnv>(), user_id))
+            });
+            let Some((has_trakt, user_id)) = trakt_state else {
+                return;
+            };
+            if has_trakt {
+                runtime.dispatch(RuntimeAction {
+                    field: Some(AppModelField::Ctx),
+                    action: Action::Ctx(ActionCtx::LogoutTrakt),
+                });
+            } else if let Err(error) =
+                open::that(format!("https://www.strem.io/trakt/auth/{user_id}"))
+            {
+                tracing::warn!(%error, "failed to open Trakt authentication");
+            }
+        }
+    });
+    ui.on_settings_add_streaming_server_url({
+        let runtime = runtime.clone();
+        move |value| {
+            if let Ok(url) = url::Url::parse(value.trim()) {
+                runtime.dispatch(RuntimeAction {
+                    field: Some(AppModelField::Ctx),
+                    action: Action::Ctx(ActionCtx::AddServerUrl(url)),
+                });
+            }
+        }
+    });
+    ui.on_settings_delete_streaming_server_url({
+        let runtime = runtime.clone();
+        move |value| {
+            if let Ok(url) = url::Url::parse(value.trim()) {
+                runtime.dispatch(RuntimeAction {
+                    field: Some(AppModelField::Ctx),
+                    action: Action::Ctx(ActionCtx::DeleteServerUrl(url)),
+                });
+            }
+        }
+    });
+    ui.on_settings_copy_remote_url(|value| {
+        if let Err(error) = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(value.to_string()))
+        {
+            tracing::warn!(%error, "failed to copy remote access URL");
+        }
+    });
+    ui.on_settings_change_streaming_https_endpoint({
+        let runtime = runtime.clone();
+        move |value| {
+            let value = value.trim().to_owned();
+            update_streaming_server_settings(&runtime, |settings| {
+                settings.remote_https =
+                    (!value.is_empty() && !value.eq_ignore_ascii_case("disabled")).then_some(value);
+            });
+        }
+    });
+    ui.on_settings_change_streaming_transcode_profile({
+        let runtime = runtime.clone();
+        move |value| {
+            let value = value.trim().to_owned();
+            update_streaming_server_settings(&runtime, |settings| {
+                settings.transcode_profile =
+                    (!value.is_empty() && !value.eq_ignore_ascii_case("disabled")).then_some(value);
+            });
+        }
+    });
     ui.on_settings_change_pause_on_minimize({
         let runtime = runtime.clone();
         move |value| {
@@ -1035,7 +1212,14 @@ pub fn setup(
 }
 
 #[tracing::instrument(skip_all)]
-pub fn sync(ui: &MainWindow, settings: &ProfileSettings) {
+pub fn sync(
+    ui: &MainWindow,
+    settings: &ProfileSettings,
+    user_id: &str,
+    trakt_authenticated: bool,
+    server_urls: &ServerUrlsBucket,
+    streaming_settings: Option<&StreamingServerSettings>,
+) {
     let _span = tracing::info_span!("apply_ui_settings").entered();
     let locale = map_interface_language_to_locale(&settings.interface_language);
     if let Err(error) = slint::select_bundled_translation(locale) {
@@ -1062,6 +1246,66 @@ pub fn sync(ui: &MainWindow, settings: &ProfileSettings) {
     ui.set_settings_subtitles_bold(settings.subtitles_bold);
     ui.set_settings_subtitles_offset(settings.subtitles_offset.to_string().into());
     ui.set_settings_seek_duration((settings.seek_time_duration / 1_000).to_string().into());
+    ui.set_settings_seek_short_duration(
+        (settings.seek_short_time_duration / 1_000)
+            .to_string()
+            .into(),
+    );
+    ui.set_settings_next_video_popup_duration(
+        (settings.next_video_notification_duration / 1_000)
+            .to_string()
+            .into(),
+    );
+    ui.set_settings_external_player(settings.player_type.as_deref().unwrap_or_default().into());
+    ui.set_settings_audio_language(
+        settings
+            .audio_language
+            .as_deref()
+            .map(language_display)
+            .unwrap_or_else(|| "English".to_owned())
+            .into(),
+    );
+    ui.set_settings_surround_sound(settings.surround_sound);
+    ui.set_settings_ass_subtitles_styling(settings.ass_subtitles_styling);
+    if let Some(color) = crate::config::parse_color(&settings.subtitles_text_color) {
+        ui.set_settings_subtitles_text_color(color);
+    }
+    if let Some(color) = crate::config::parse_color(&settings.subtitles_background_color) {
+        ui.set_settings_subtitles_background_color(color);
+    }
+    if let Some(color) = crate::config::parse_color(&settings.subtitles_outline_color) {
+        ui.set_settings_subtitles_outline_color(color);
+    }
+    ui.set_settings_user_id(user_id.into());
+    ui.set_settings_trakt_authenticated(trakt_authenticated);
+
+    let mut urls = server_urls
+        .items
+        .keys()
+        .map(url::Url::to_string)
+        .collect::<Vec<_>>();
+    urls.sort_unstable();
+    ui.set_settings_streaming_server_urls(slint::ModelRc::new(slint::VecModel::from(
+        urls.into_iter()
+            .map(slint::SharedString::from)
+            .collect::<Vec<_>>(),
+    )));
+    if let Some(streaming_settings) = streaming_settings {
+        ui.set_settings_streaming_https_endpoint(
+            streaming_settings
+                .remote_https
+                .as_deref()
+                .unwrap_or("Disabled")
+                .into(),
+        );
+        ui.set_settings_streaming_transcode_profile(
+            streaming_settings
+                .transcode_profile
+                .as_deref()
+                .unwrap_or("Disabled")
+                .into(),
+        );
+    }
     ui.set_settings_pause_on_minimize(settings.pause_on_minimize);
     ui.set_settings_quit_on_close(settings.quit_on_close);
 

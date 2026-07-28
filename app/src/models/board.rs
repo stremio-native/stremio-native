@@ -20,6 +20,7 @@ use stremio_core::{
         msg::{Action, ActionCtx, ActionLoad},
     },
     types::addon::Descriptor,
+    types::streams::StreamsItemKey,
 };
 use url::Url;
 
@@ -109,6 +110,111 @@ pub fn setup(
             }
         }
     });
+
+    ui.on_board_play_clicked({
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        let navigation = navigation.clone();
+        move |id| {
+            let id = id.to_string();
+            // Extract needed data while holding the model read lock, then drop
+            // the lock before dispatching (which acquires a write lock).
+            let play_info = runtime.model().ok().and_then(|model| {
+                model
+                    .continue_watching_preview
+                    .items
+                    .iter()
+                    .find(|i| i.library_item.id == id)
+                    .map(|item| {
+                        let video_id = library_details_video_id(
+                            item.library_item.state.video_id.as_deref(),
+                            item.library_item.state.time_offset,
+                            item.library_item.behavior_hints.default_video_id.as_deref(),
+                            false,
+                        );
+                        let saved_stream = item
+                            .library_item
+                            .state
+                            .video_id
+                            .as_ref()
+                            .and_then(|video_id| {
+                                model.ctx.streams.items.get(&StreamsItemKey {
+                                    meta_id: item.library_item.id.clone(),
+                                    video_id: video_id.clone(),
+                                })
+                            })
+                            .cloned();
+                        (
+                            item.library_item.r#type.clone(),
+                            video_id.map(String::from),
+                            saved_stream,
+                        )
+                    })
+            });
+            // Read lock is now dropped — safe to dispatch and navigate.
+            if let Some((_media_type, _video_id, Some(saved_stream))) = play_info.as_ref() {
+                if let Some(ui) = ui_weak.upgrade() {
+                    crate::deep_link::open_saved_stream(
+                        &ui,
+                        &runtime,
+                        &navigation,
+                        saved_stream.clone(),
+                    );
+                }
+                return;
+            }
+            if let Some((media_type, video_id, _saved_stream)) = play_info {
+                load_meta_details_for_video(&runtime, id.clone(), Some(media_type), video_id);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                open_details_route(&ui, &runtime, &navigation, &id);
+            }
+        }
+    });
+
+    ui.on_board_dismiss_server_warning({
+        let ui_weak = ui_weak.clone();
+        move || {
+            if let Err(error) = open::that("https://www.stremio.com/download-service") {
+                tracing::warn!(%error, "could not open the streaming-service download page");
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_board_show_server_warning(false);
+            }
+        }
+    });
+
+    ui.on_board_reload_server({
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        move || {
+            let dismissed_until = chrono::Utc::now()
+                .checked_add_months(chrono::Months::new(1))
+                .unwrap_or_else(chrono::Utc::now);
+            crate::models::settings::update_profile_settings(&runtime, |settings| {
+                settings.streaming_server_warning_dismissed = Some(dismissed_until);
+            });
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_board_show_server_warning(false);
+            }
+        }
+    });
+
+    ui.on_board_open_server_settings({
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        move || {
+            let dismissed_until = chrono::Utc::now()
+                .checked_add_months(chrono::Months::new(600))
+                .unwrap_or_else(chrono::Utc::now);
+            crate::models::settings::update_profile_settings(&runtime, |settings| {
+                settings.streaming_server_warning_dismissed = Some(dismissed_until);
+            });
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_board_show_server_warning(false);
+            }
+        }
+    });
 }
 
 #[tracing::instrument(skip_all)]
@@ -118,8 +224,22 @@ pub fn sync(
     board: &CatalogsWithExtra,
     addons: &[Descriptor],
     _ui_weak: &slint::Weak<MainWindow>,
-    _runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
+    runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
 ) {
+    if let Ok(model) = runtime.model() {
+        let show_warning = model
+            .ctx
+            .profile
+            .settings
+            .streaming_server_warning_dismissed
+            .is_none_or(|dismissed_until| dismissed_until < chrono::Utc::now())
+            && matches!(
+                &model.streaming_server.settings,
+                stremio_core::models::common::Loadable::Err(_)
+            );
+        ui.set_board_show_server_warning(show_warning);
+    }
+
     let mut fingerprint = Fingerprint::new();
     for item in &continue_watching.items {
         let library_item = &item.library_item;
@@ -130,6 +250,7 @@ pub fn sync(
         fingerprint.str(&library_item.name);
         fingerprint.optional_str(library_item.poster.as_ref().map(Url::as_str));
         fingerprint.u64(library_item.progress().to_bits());
+        fingerprint.usize(item.notifications);
     }
     for addon in addons {
         fingerprint.str(addon.transport_url.as_str());
@@ -147,6 +268,19 @@ pub fn sync(
     // 1. Sync Continue Watching
     let continue_watching_items: Vec<MediaCardItem> = {
         let _span = tracing::info_span!("sync_continue_watching").entered();
+        let saved_stream_keys = runtime
+            .model()
+            .ok()
+            .map(|model| {
+                model
+                    .ctx
+                    .streams
+                    .items
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
         let mut items = Vec::with_capacity(continue_watching.items.len());
         for item in &continue_watching.items {
             let library_item = &item.library_item;
@@ -174,6 +308,17 @@ pub fn sync(
                 show_checkmark: false,
                 show_progress: prog > 0.0,
                 progress_value: (prog / 100.0).clamp(0.0, 1.0) as f32,
+                new_videos: i32::try_from(item.notifications.min(99)).unwrap_or(99),
+                can_play: library_item
+                    .state
+                    .video_id
+                    .as_ref()
+                    .is_some_and(|video_id| {
+                        saved_stream_keys.contains(&StreamsItemKey {
+                            meta_id: library_item.id.clone(),
+                            video_id: video_id.clone(),
+                        })
+                    }),
             });
         }
         items
@@ -200,6 +345,7 @@ pub fn sync(
                 error_message: "".into(),
                 items: continue_watching_model,
                 is_continue_watching: true,
+                poster_shape: "poster".into(),
             });
         }
         for (catalog_index, catalog) in board.catalogs.iter().enumerate() {
@@ -259,6 +405,7 @@ fn section_data_fingerprint(section: &BoardSection) -> SyncFingerprint {
     fp.bool(section.loading);
     fp.str(section.error_message.as_str());
     fp.bool(section.is_continue_watching);
+    fp.str(section.poster_shape.as_str());
     let items = &section.items;
     fp.usize(items.row_count());
     for i in 0..items.row_count() {
@@ -268,6 +415,7 @@ fn section_data_fingerprint(section: &BoardSection) -> SyncFingerprint {
             fp.str(item.title.as_str());
             fp.str(item.poster_url.as_str());
             fp.bool(item.show_progress);
+            fp.usize(item.new_videos.max(0) as usize);
         }
     }
     fp.finish()

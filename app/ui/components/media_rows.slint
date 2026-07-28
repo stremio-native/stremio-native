@@ -7,6 +7,9 @@ export component StreamRow inherits Rectangle {
     in property <length> unit: 16px;
     in property <string> name;
     in property <string> description;
+    in property <image> thumbnail;
+    in property <bool> has-thumbnail: root.thumbnail.width > 0;
+    in property <float> progress: 0;
     in property <bool> selected: false;
     callback play;
 
@@ -29,15 +32,56 @@ export component StreamRow inherits Rectangle {
         spacing: root.unit;
         alignment: center;
 
-        Text {
+        stream-info := Rectangle {
             width: 7.5 * root.unit;
-            text: root.name;
-            color: Theme.text-primary;
-            opacity: 0.88;
-            font-size: 1.05 * root.unit;
-            font-weight: 500;
-            overflow: elide;
-            vertical-alignment: center;
+            height: 4.2 * root.unit;
+            border-radius: 0.35 * root.unit;
+            background: Theme.overlay-color;
+            clip: true;
+
+            if (root.has-thumbnail) : FallbackImage {
+                width: parent.width;
+                height: parent.height;
+                source: root.thumbnail;
+                contain: false;
+
+                Image {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 1.5 * root.unit;
+                    height: 1.5 * root.unit;
+                    source: @image-url("../assets/images/icons/link.svg");
+                    colorize: Theme.text-secondary;
+                    image-fit: contain;
+                }
+            }
+
+            if (!root.has-thumbnail) : Text {
+                x: 0.65 * root.unit;
+                width: parent.width - 1.3 * root.unit;
+                height: parent.height;
+                text: root.name;
+                color: Theme.text-primary;
+                opacity: 0.88;
+                font-size: 0.9 * root.unit;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+
+            if (root.progress > 0) : Rectangle {
+                y: parent.height - 0.3 * root.unit;
+                width: parent.width;
+                height: 0.3 * root.unit;
+                background: Theme.background.with-alpha(0.7);
+
+                Rectangle {
+                    width: parent.width * root.progress.clamp(0, 1);
+                    height: parent.height;
+                    background: Theme.accent;
+                }
+            }
         }
 
         Text {
@@ -92,7 +136,9 @@ export component EpisodeRow inherits Rectangle {
     in property <bool> show-progress: root.progress > 0;
     in property <bool> blur-spoiler: false;
     in property <bool> selected-row: false;
+    in property <bool> can-play: false;
     callback selected;
+    callback play;
     callback toggle-watched;
     callback toggle-season-watched;
     callback context-requested;
@@ -192,7 +238,7 @@ export component EpisodeRow inherits Rectangle {
         info := Rectangle {
             x: root.has-thumbnail ? 10 * root.unit : root.unit;
             y: 0.5 * root.unit;
-            width: parent.width - self.x - 0.5 * root.unit;
+            width: parent.width - self.x - (root.can-play ? 4 * root.unit : 0.5 * root.unit);
             height: 5 * root.unit;
             background: transparent;
 
@@ -239,13 +285,13 @@ export component EpisodeRow inherits Rectangle {
                     width: 6.5 * root.unit;
                     height: parent.height;
                     border-radius: 0.3 * root.unit;
-                    background: Theme.secondary-accent;
+                    background: #143d2b;
 
                     Text {
                         width: parent.width;
                         height: parent.height;
                         text: @tr("UPCOMING" => "Upcoming");
-                        color: Theme.secondary-foreground;
+                        color: Theme.secondary-accent;
                         font-size: 0.8 * root.unit;
                         font-weight: 800;
                         horizontal-alignment: center;
@@ -287,6 +333,62 @@ export component EpisodeRow inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+
+        if (root.can-play) : saved-stream-play-button := ButtonSurface {
+            x: parent.width - self.width - 0.5 * root.unit;
+            y: 1.5 * root.unit;
+            width: 3 * root.unit;
+            height: 3 * root.unit;
+            border-radius: self.width / 2;
+            background: self.has-hover || self.has-focus
+                ? Theme.secondary-accent
+                : Theme.overlay-color;
+            accessible-name: @tr("CTX_WATCH" => "Watch");
+            clicked => { root.play(); }
+
+            Image {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 1.5 * root.unit;
+                height: 1.5 * root.unit;
+                source: @image-url("../assets/images/icons/play.svg");
+                colorize: Theme.primary-foreground;
+                image-fit: contain;
+            }
+        }
+    }
+
+    // The web Video component exposes these actions from every episode row.
+    // Use the platform-native menu so right-click behavior, dismissal, and
+    // keyboard navigation remain consistent with the host OS.
+    ContextMenuArea {
+        width: parent.width;
+        height: 6 * root.unit;
+
+        Menu {
+            MenuItem {
+                title: @tr("CTX_WATCH" => "Watch");
+                activated => {
+                    if (root.can-play) {
+                        root.play();
+                    } else {
+                        root.selected();
+                    }
+                }
+            }
+            MenuItem {
+                title: root.watched
+                    ? @tr("CTX_MARK_NON_WATCHED" => "Mark as unwatched")
+                    : @tr("CTX_MARK_WATCHED" => "Mark as watched");
+                activated => { root.toggle-watched(); }
+            }
+            MenuItem {
+                title: root.season-watched
+                    ? @tr("CTX_UNMARK_REST" => "Mark rest as unwatched")
+                    : @tr("CTX_MARK_REST" => "Mark rest as watched");
+                activated => { root.toggle-season-watched(); }
             }
         }
     }

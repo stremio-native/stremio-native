@@ -7,7 +7,6 @@ license = "GPL-3.0-only"
 [dependencies]
 stremio-core.workspace = true
 stream-server.workspace = true
-settings-gui.workspace = true
 core-env = { path = "../core-env" }
 playback-mpv = { path = "../playback-mpv" }
 server-connector = { path = "../server-connector" }
@@ -30,7 +29,6 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 tracing-chrome.workspace = true
-iconflow = { workspace = true, features = ["pack-lucide", "pack-bootstrap"] }
 url.workspace = true
 http.workspace = true
 reqwest = { workspace = true, features = ["rustls", "charset", "http2"] }
@@ -48,6 +46,7 @@ zip.workspace = true
 sys-locale.workspace = true
 uuid = { version = "1.24.0", features = ["v4"] }
 discord-rich-presence = { workspace = true }
+dirs.workspace = true
 souvlaki = { workspace = true }
 keepawake = { workspace = true }
 rodio.workspace = true
@@ -55,19 +54,22 @@ mlua = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell"] }
-# Ergonomic COM for the taskbar thumbnail toolbar (ITaskbarList3) play/pause button.
+# Ergonomic COM for the taskbar thumbnail toolbar (ITaskbarList3), plus D3D11 for
+# the background GPU-driver pre-warm.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
 ] }
 
 
 [build-dependencies]
 slint-build.workspace = true
-iconflow = { workspace = true, features = ["pack-lucide", "pack-bootstrap"] }
 serde_json.workspace = true
 winres = "0.1.12"
 
@@ -80,6 +82,7 @@ plugins = ["dep:mlua"]
 maintainer = "stremio-native maintainers <stremio-native@example.com>"
 copyright = "2026 stremio-native maintainers"
 extended-description = "High-performance native Stremio client built with Rust and Slint"
+depends = "$auto, libmpv2 | libmpv1, libssl3 | libssl1.1, libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcursor1, libgtk-3-0, libayatana-appindicator3-1"
 section = "video"
 priority = "optional"
 assets = [

@@ -1,3 +1,4 @@
+use crate::models::pagination::{PaginationIdentity, PaginationScope, gate as pagination_gate};
 use crate::models::{Fingerprint, SyncFingerprint, sync_fingerprint_changed};
 use crate::{
     AddonItem, AppModel, AppModelField, MainWindow, NavigationController, NavigationIntent,
@@ -16,7 +17,7 @@ use stremio_core::{
     },
     runtime::{
         Env, Runtime, RuntimeAction,
-        msg::{Action, ActionCtx, ActionLoad},
+        msg::{Action, ActionCatalogWithFilters, ActionCtx, ActionLoad},
     },
     types::addon::Descriptor,
 };
@@ -35,12 +36,15 @@ fn hash_addon(fingerprint: &mut Fingerprint, descriptor: &Descriptor, installed:
     fingerprint.str(descriptor.manifest.version.build.as_str());
     fingerprint.optional_str(descriptor.manifest.description.as_deref());
     fingerprint.optional_str(descriptor.manifest.logo.as_ref().map(Url::as_str));
+    fingerprint.optional_str(descriptor.manifest.background.as_ref().map(Url::as_str));
     fingerprint.str(descriptor.transport_url.as_str());
     for addon_type in &descriptor.manifest.types {
         fingerprint.str(addon_type);
     }
     fingerprint.bool(descriptor.manifest.behavior_hints.configurable);
     fingerprint.bool(descriptor.manifest.behavior_hints.configuration_required);
+    fingerprint.bool(descriptor.manifest.behavior_hints.adult);
+    fingerprint.bool(descriptor.manifest.behavior_hints.p2p);
 }
 
 fn addon_types_label(descriptor: &Descriptor) -> String {
@@ -117,6 +121,19 @@ fn project_addon(
         supports_series: supports("series"),
         supports_anime: supports("anime"),
         supports_tv: supports("channel") || supports("tv"),
+        background_url: descriptor
+            .manifest
+            .background
+            .as_ref()
+            .map(Url::as_str)
+            .unwrap_or_default()
+            .into(),
+        background_image: crate::image_cache::get_poster_image(
+            &descriptor.manifest.background,
+            ui_weak,
+        ),
+        adult: descriptor.manifest.behavior_hints.adult,
+        p2p: descriptor.manifest.behavior_hints.p2p,
     }
 }
 
@@ -126,6 +143,36 @@ pub fn setup(
     navigation: &NavigationController,
 ) {
     let ui_weak = ui.as_weak();
+
+    ui.on_addons_load_next_page({
+        let runtime = runtime.clone();
+        move || {
+            let identity = runtime.model().ok().and_then(|model| {
+                model
+                    .remote_addons
+                    .selectable
+                    .next_page
+                    .as_ref()
+                    .and_then(|next_page| {
+                        PaginationIdentity::new(
+                            PaginationScope::Addons,
+                            model
+                                .remote_addons
+                                .selected
+                                .as_ref()
+                                .map(|selected| &selected.request),
+                            &next_page.request,
+                        )
+                    })
+            });
+            if pagination_gate().try_begin(identity) {
+                runtime.dispatch(RuntimeAction {
+                    field: Some(AppModelField::RemoteAddons),
+                    action: Action::CatalogWithFilters(ActionCatalogWithFilters::LoadNextPage),
+                });
+            }
+        }
+    });
 
     // Install addon callback
     ui.on_install_addon({
@@ -276,6 +323,24 @@ pub fn setup(
         }
     });
 
+    ui.on_addon_share_social(|platform, transport_url| {
+        let base = match platform.as_str() {
+            "facebook" => "https://www.facebook.com/sharer/sharer.php",
+            "x" => "https://twitter.com/intent/tweet",
+            "reddit" => "https://www.reddit.com/submit",
+            _ => return,
+        };
+        let Ok(mut share_url) = Url::parse(base) else {
+            return;
+        };
+        share_url
+            .query_pairs_mut()
+            .append_pair("url", transport_url.as_str());
+        if let Err(error) = open::that(share_url.as_str()) {
+            tracing::warn!(%error, %platform, "failed to open addon share URL");
+        }
+    });
+
     ui.on_addons_search_changed({
         let runtime = runtime.clone();
         let ui_weak = ui_weak.clone();
@@ -341,6 +406,23 @@ pub fn sync(
     ui_weak: &slint::Weak<MainWindow>,
     _runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
 ) {
+    let pagination_identity = remote_addons
+        .selectable
+        .next_page
+        .as_ref()
+        .and_then(|next_page| {
+            PaginationIdentity::new(
+                PaginationScope::Addons,
+                remote_addons
+                    .selected
+                    .as_ref()
+                    .map(|selected| &selected.request),
+                &next_page.request,
+            )
+        });
+    pagination_gate().observe(PaginationScope::Addons, pagination_identity);
+    ui.set_addons_has_next_page(pagination_identity.is_some());
+
     let query = ui.get_addons_search_query().trim().to_lowercase();
     let mut fingerprint = Fingerprint::new();
     fingerprint.str(&query);

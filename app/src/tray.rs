@@ -19,8 +19,9 @@ pub fn setup(
         let navigation = navigation.clone();
         move || queue_open_settings(ui.clone(), navigation.clone())
     });
-    tray.on_open_logs(|| {
-        let path = std::path::Path::new("storage").join("logs");
+    let log_directory = crate::paths::get().logs().to_path_buf();
+    tray.on_open_logs(move || {
+        let path = log_directory.clone();
         if let Err(error) = open::that(&path) {
             tracing::error!(%error, path = %path.display(), "failed to open the log folder");
         }

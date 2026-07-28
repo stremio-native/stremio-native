@@ -126,6 +126,16 @@ fn submit_search(
         return;
     }
 
+    if query.starts_with("magnet:") || query.starts_with("stremio:") {
+        crate::deep_link::handle(
+            crate::single_instance::AppCommand::Open(query),
+            ui,
+            runtime,
+            navigation,
+        );
+        return;
+    }
+
     ui.set_search_query(query.as_str().into());
     ui.set_search_suggestions(ModelRc::new(VecModel::from(Vec::new())));
     ui.set_search_sections(ModelRc::new(VecModel::from(Vec::new())));

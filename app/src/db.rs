@@ -2,7 +2,7 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicUsize, Ordering},
 };
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::Path};
 use turso::{Builder, Connection, Database};
 
 static DB: OnceLock<Database> = OnceLock::new();
@@ -12,20 +12,14 @@ static LOG_INSERTS_SINCE_CLEANUP: AtomicUsize = AtomicUsize::new(0);
 const MAX_LOG_ROWS: i64 = 10_000;
 const LOG_CLEANUP_INTERVAL: usize = 64;
 
-#[tracing::instrument(skip(app_data_dir))]
-pub async fn init_db(app_data_dir: PathBuf) -> anyhow::Result<()> {
+#[tracing::instrument(skip(database_path))]
+pub async fn init_db(database_path: &Path) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
-    // Ensure parent directories exist
-    if !app_data_dir.exists() {
-        std::fs::create_dir_all(&app_data_dir)?;
-    }
-
-    let db_path = app_data_dir.join("stremio.db");
-    let db_path = db_path.to_string_lossy().into_owned();
+    let db_path = database_path.to_string_lossy().into_owned();
     tracing::info!(path = %db_path, "Initializing Turso local database...");
     let db = Builder::new_local(&db_path).build().await?;
 
-    let mut conn = db.connect()?;
+    let conn = db.connect()?;
 
     // `journal_mode` returns the selected mode, so it must use the query path;
     // Turso's no-row executor rejects it with "unexpected row during execution".
@@ -66,14 +60,25 @@ pub async fn init_db(app_data_dir: PathBuf) -> anyhow::Result<()> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS http_cache (
+            cache_key TEXT PRIMARY KEY,
+            resource_kind TEXT NOT NULL,
+            status INTEGER NOT NULL,
+            body BLOB NOT NULL,
+            etag TEXT,
+            last_modified TEXT,
+            stored_at INTEGER NOT NULL,
+            validated_at INTEGER NOT NULL,
+            accessed_at INTEGER NOT NULL,
+            size_bytes INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS http_cache_accessed_idx
+            ON http_cache(accessed_at);
+        CREATE INDEX IF NOT EXISTS http_cache_validated_idx
+            ON http_cache(validated_at);
         ",
     )
     .await?;
-
-    // Migrate legacy JSON storage files to the SQLite database
-    if let Err(e) = migrate_json_to_db(&mut conn, &app_data_dir).await {
-        tracing::error!("Failed to run JSON database migration: {:?}", e);
-    }
 
     let core_database = db.clone();
     DB.set(db)
@@ -101,92 +106,14 @@ pub async fn init_db(app_data_dir: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn migrate_json_to_db(
-    conn: &mut Connection,
-    app_data_dir: &std::path::Path,
-) -> anyhow::Result<()> {
-    // Check if profile.json exists to see if we need migration
-    let profile_json_path = app_data_dir.join("profile.json");
-    if !tokio::fs::try_exists(&profile_json_path).await? {
-        return Ok(());
-    }
-
-    tracing::info!("Starting JSON files to Turso SQLite database migration...");
-
-    let buckets = [
-        ("profile", stremio_core::constants::PROFILE_STORAGE_KEY),
-        ("library", stremio_core::constants::LIBRARY_STORAGE_KEY),
-        (
-            "library_recent",
-            stremio_core::constants::LIBRARY_RECENT_STORAGE_KEY,
-        ),
-        ("streams", stremio_core::constants::STREAMS_STORAGE_KEY),
-        (
-            "search_history",
-            stremio_core::constants::SEARCH_HISTORY_STORAGE_KEY,
-        ),
-        (
-            "server_urls",
-            stremio_core::constants::STREAMING_SERVER_URLS_STORAGE_KEY,
-        ),
-        (
-            "notifications",
-            stremio_core::constants::NOTIFICATIONS_STORAGE_KEY,
-        ),
-        (
-            "dismissed_events",
-            stremio_core::constants::DISMISSED_EVENTS_STORAGE_KEY,
-        ),
-    ];
-
-    let mut pending = Vec::with_capacity(buckets.len());
-    for &(file_stem, storage_key) in &buckets {
-        let json_path = app_data_dir.join(format!("{file_stem}.json"));
-        match tokio::fs::read_to_string(&json_path).await {
-            Ok(data) => pending.push((file_stem, storage_key, json_path, data)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::error!(
-                    "Migration: failed to read legacy file {}: {:?}",
-                    json_path.display(),
-                    error
-                );
-            }
-        }
-    }
-
-    let transaction = conn.transaction().await?;
-    for (_, storage_key, _, data) in &pending {
-        transaction
-            .execute(
-                "INSERT OR REPLACE INTO core_storage (key, value) VALUES (?, ?)",
-                ((*storage_key).to_owned(), data.clone()),
-            )
-            .await?;
-    }
-    transaction.commit().await?;
-
-    // Rename files only after every migrated value has committed.
-    for (file_stem, _, json_path, _) in pending {
-        let backup_path = app_data_dir.join(format!("{file_stem}.json.bak"));
-        if let Err(error) = tokio::fs::rename(&json_path, &backup_path).await {
-            tracing::warn!(
-                "Migration: failed to rename legacy file {}: {:?}",
-                json_path.display(),
-                error
-            );
-        }
-    }
-
-    tracing::info!("JSON to SQLite migration completed successfully.");
-    Ok(())
-}
-
 async fn run_startup_maintenance() -> anyhow::Result<()> {
     let conn = get_conn()?;
     // The active image pipeline uses the bounded memory and filesystem caches.
     conn.execute("DROP TABLE IF EXISTS image_cache", ()).await?;
     prune_logs(&conn).await?;
+    core_env::maintain_http_cache()
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     insert_log("INFO", "Embedded Turso database initialized successfully.").await
 }
 

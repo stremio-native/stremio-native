@@ -25,13 +25,13 @@ use stremio_core::{
     },
     runtime::{
         Runtime, RuntimeAction,
-        msg::{Action, ActionLoad, ActionPlayer, ActionStreamingServer},
+        msg::{Action, ActionLoad, ActionPlayer, ActionStreamingServer, PlayOnDeviceArgs},
     },
     types::{
         addon::ResourcePath,
         resource::StreamSource,
         streaming_server::StatisticsRequest,
-        streams::{AudioTrack, StreamItemState, SubtitleTrack},
+        streams::{AudioTrack, StreamItemState, StreamsBucket, StreamsItemKey, SubtitleTrack},
     },
 };
 use tokio_util::sync::CancellationToken;
@@ -221,10 +221,9 @@ struct SessionState {
     last_discord_activity: Option<DiscordActivity>,
     last_discord_projection_at: Option<Instant>,
     last_discord_paused: Option<bool>,
-    // OS media-session throttle: metadata is keyed on (generation, duration) so
-    // it refreshes on an episode switch or once the duration resolves, while the
-    // playback status/position is pushed on a play/pause change or ~1s cadence.
-    last_media_meta_key: Option<(u64, i64)>,
+    // OS media-session throttle: metadata is keyed on (generation, duration, title, image) so
+    // it refreshes on an episode switch, duration update, or when metadata/poster arrives.
+    last_media_meta_key: Option<(u64, i64, String, Option<String>)>,
     last_media_playing: Option<bool>,
     last_media_push_at: Option<Instant>,
     tidb_segments: Vec<crate::theintrodb::TidbSegment>,
@@ -252,6 +251,7 @@ struct PlayerEpisodeProjection {
     is_watched: bool,
     is_scheduled: bool,
     progress: f32,
+    can_play: bool,
 }
 
 struct PlayerEpisodeSelectorProjection {
@@ -262,6 +262,14 @@ struct PlayerEpisodeSelectorProjection {
     active_episode_idx: i32,
     active_video_id: String,
     has_next_episode: bool,
+    next_episode_title: String,
+    next_episode_thumbnail_url: String,
+    series_name: String,
+    series_runtime: String,
+    series_release_year: String,
+    series_description: String,
+    series_logo_url: String,
+    active_season_watched: bool,
     episodes: Vec<PlayerEpisodeProjection>,
 }
 
@@ -276,6 +284,7 @@ fn selected_player_video_id(player: &Player) -> String {
 
 fn player_episode_selector_projection(
     player: &Player,
+    streams: &StreamsBucket,
     requested_season: Option<i32>,
 ) -> Option<PlayerEpisodeSelectorProjection> {
     let meta_item = player
@@ -318,6 +327,38 @@ fn player_episode_selector_projection(
     fingerprint.u64(active_season as u64);
     fingerprint.str(&active_video_id);
     fingerprint.bool(player.next_video.is_some());
+    let next_episode_title = player
+        .next_video
+        .as_ref()
+        .map(|video| video.title.clone())
+        .unwrap_or_default();
+    let next_episode_thumbnail_url = player
+        .next_video
+        .as_ref()
+        .and_then(|video| video.thumbnail.clone())
+        .or_else(|| meta_item.preview.poster.as_ref().map(ToString::to_string))
+        .unwrap_or_default();
+    let series_name = meta_item.preview.name.clone();
+    let series_runtime = meta_item.preview.runtime.clone().unwrap_or_default();
+    let series_release_year = meta_item
+        .preview
+        .released
+        .map(|released| released.format("%Y").to_string())
+        .unwrap_or_default();
+    let series_description = meta_item.preview.description.clone().unwrap_or_default();
+    let series_logo_url = meta_item
+        .preview
+        .logo
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    fingerprint.str(&next_episode_title);
+    fingerprint.str(&next_episode_thumbnail_url);
+    fingerprint.str(&series_name);
+    fingerprint.str(&series_runtime);
+    fingerprint.str(&series_release_year);
+    fingerprint.str(&series_description);
+    fingerprint.str(&series_logo_url);
 
     let episodes = videos
         .into_iter()
@@ -352,6 +393,10 @@ fn player_episode_selector_projection(
                 .filter(|item| item.state.video_id.as_deref() == Some(video.id.as_str()))
                 .map(|item| item.progress() as f32)
                 .unwrap_or_default();
+            let can_play = streams.items.contains_key(&StreamsItemKey {
+                meta_id: meta_item.preview.id.clone(),
+                video_id: video.id.clone(),
+            });
 
             fingerprint.str(&video.id);
             fingerprint.str(&video.title);
@@ -361,6 +406,7 @@ fn player_episode_selector_projection(
             fingerprint.bool(is_upcoming);
             fingerprint.bool(is_watched);
             fingerprint.bool(is_scheduled);
+            fingerprint.bool(can_play);
 
             PlayerEpisodeProjection {
                 id: video.id.clone(),
@@ -373,6 +419,7 @@ fn player_episode_selector_projection(
                 is_watched,
                 is_scheduled,
                 progress,
+                can_play,
             }
         })
         .collect::<Vec<_>>();
@@ -380,6 +427,8 @@ fn player_episode_selector_projection(
         .iter()
         .position(|episode| episode.id == active_video_id)
         .unwrap_or_default() as i32;
+    let active_season_watched =
+        !episodes.is_empty() && episodes.iter().all(|episode| episode.is_watched);
 
     Some(PlayerEpisodeSelectorProjection {
         fingerprint: fingerprint.finish(),
@@ -389,6 +438,14 @@ fn player_episode_selector_projection(
         active_episode_idx,
         active_video_id,
         has_next_episode: player.next_video.is_some(),
+        next_episode_title,
+        next_episode_thumbnail_url,
+        series_name,
+        series_runtime,
+        series_release_year,
+        series_description,
+        series_logo_url,
+        active_season_watched,
         episodes,
     })
 }
@@ -398,6 +455,11 @@ fn apply_player_episode_selector(
     ui_weak: &slint::Weak<MainWindow>,
     projection: PlayerEpisodeSelectorProjection,
 ) {
+    let next_episode_thumbnail_url = url::Url::parse(&projection.next_episode_thumbnail_url).ok();
+    let next_episode_poster =
+        crate::image_cache::get_poster_image(&next_episode_thumbnail_url, ui_weak);
+    let series_logo_url = url::Url::parse(&projection.series_logo_url).ok();
+    let series_logo = crate::image_cache::get_poster_image(&series_logo_url, ui_weak);
     let episodes = projection
         .episodes
         .into_iter()
@@ -419,6 +481,7 @@ fn apply_player_episode_selector(
                 is_watched: episode.is_watched,
                 is_scheduled: episode.is_scheduled,
                 progress: episode.progress,
+                can_play: episode.can_play,
             }
         })
         .collect::<Vec<_>>();
@@ -430,6 +493,15 @@ fn apply_player_episode_selector(
     ui.set_player_active_episode_idx(projection.active_episode_idx);
     ui.set_player_active_video_id(projection.active_video_id.into());
     ui.set_player_has_next_episode(projection.has_next_episode);
+    ui.set_player_next_episode_title(projection.next_episode_title.into());
+    ui.set_player_next_episode_poster(next_episode_poster);
+    ui.set_player_series_name(projection.series_name.as_str().into());
+    ui.set_player_next_series_name(projection.series_name.into());
+    ui.set_player_series_runtime(projection.series_runtime.into());
+    ui.set_player_series_release_year(projection.series_release_year.into());
+    ui.set_player_series_description(projection.series_description.into());
+    ui.set_player_series_logo(series_logo);
+    ui.set_player_active_season_watched(projection.active_season_watched);
 }
 
 fn clear_player_episode_selector(ui: &MainWindow) {
@@ -439,6 +511,15 @@ fn clear_player_episode_selector(ui: &MainWindow) {
     ui.set_player_active_video_id("".into());
     ui.set_player_active_episode_idx(0);
     ui.set_player_has_next_episode(false);
+    ui.set_player_next_episode_title("".into());
+    ui.set_player_next_episode_poster(slint::Image::default());
+    ui.set_player_series_name("".into());
+    ui.set_player_next_series_name("".into());
+    ui.set_player_series_runtime("".into());
+    ui.set_player_series_release_year("".into());
+    ui.set_player_series_description("".into());
+    ui.set_player_series_logo(slint::Image::default());
+    ui.set_player_active_season_watched(false);
     ui.set_player_show_playlist_drawer(false);
 }
 
@@ -740,7 +821,12 @@ impl NativePlayback {
 }
 
 impl NativePlaybackBridge {
-    fn sync_episode_selector(&self, player: &Player, ui: &slint::Weak<MainWindow>) {
+    fn sync_episode_selector(
+        &self,
+        player: &Player,
+        streams: &StreamsBucket,
+        ui: &slint::Weak<MainWindow>,
+    ) {
         let meta_id = player
             .meta_item
             .as_ref()
@@ -764,7 +850,9 @@ impl NativePlaybackBridge {
             }
             session.episode_selector_season
         };
-        let Some(projection) = player_episode_selector_projection(player, requested_season) else {
+        let Some(projection) =
+            player_episode_selector_projection(player, streams, requested_season)
+        else {
             let mut fingerprint = Fingerprint::new();
             fingerprint.str(&meta_id);
             fingerprint.bool(false);
@@ -823,8 +911,15 @@ impl NativePlaybackBridge {
         });
     }
 
-    fn select_episode_season(&self, player: &Player, season: i32, ui: &slint::Weak<MainWindow>) {
-        let Some(projection) = player_episode_selector_projection(player, Some(season)) else {
+    fn select_episode_season(
+        &self,
+        player: &Player,
+        streams: &StreamsBucket,
+        season: i32,
+        ui: &slint::Weak<MainWindow>,
+    ) {
+        let Some(projection) = player_episode_selector_projection(player, streams, Some(season))
+        else {
             return;
         };
         {
@@ -834,12 +929,20 @@ impl NativePlaybackBridge {
             session.episode_selector_season = Some(projection.active_season);
             session.episode_selector_fingerprint = None;
         }
-        self.sync_episode_selector(player, ui);
+        self.sync_episode_selector(player, streams, ui);
     }
 
-    fn step_episode_season(&self, player: &Player, direction: i32, ui: &slint::Weak<MainWindow>) {
+    fn step_episode_season(
+        &self,
+        player: &Player,
+        streams: &StreamsBucket,
+        direction: i32,
+        ui: &slint::Weak<MainWindow>,
+    ) {
         let requested_season = lock_session(&self.session).episode_selector_season;
-        let Some(projection) = player_episode_selector_projection(player, requested_season) else {
+        let Some(projection) =
+            player_episode_selector_projection(player, streams, requested_season)
+        else {
             return;
         };
         let season = crate::models::details::adjacent_series_season(
@@ -847,13 +950,14 @@ impl NativePlaybackBridge {
             projection.active_season,
             direction,
         );
-        self.select_episode_season(player, season, ui);
+        self.select_episode_season(player, streams, season, ui);
     }
 
     #[tracing::instrument(skip_all)]
     pub fn sync_player(
         &self,
         player: &Player,
+        streams: &StreamsBucket,
         ui: &slint::Weak<MainWindow>,
         navigation: &NavigationController,
     ) {
@@ -864,7 +968,7 @@ impl NativePlaybackBridge {
         let route_revision = navigation.snapshot().revision;
         self.sync_statistics_poll(player);
         let Some(Loadable::Ready((stream_urls, _))) = player.stream.as_ref() else {
-            self.sync_episode_selector(player, ui);
+            self.sync_episode_selector(player, streams, ui);
             if let Some(Loadable::Err(error)) = player.stream.as_ref() {
                 show_player_error(ui, format!("Could not resolve this stream: {error}"));
             }
@@ -933,7 +1037,7 @@ impl NativePlaybackBridge {
                 }
             });
         }
-        self.sync_episode_selector(player, ui);
+        self.sync_episode_selector(player, streams, ui);
 
         for resource in &player.subtitles {
             if !navigation.is_player_visible() {
@@ -1123,6 +1227,18 @@ impl NativePlaybackBridge {
             }
         });
 
+        ui.on_player_change_audio_delay({
+            let controller = self.controller.clone();
+            let core = core.clone();
+            move |seconds| {
+                let milliseconds = (f64::from(seconds) * 1_000.0).round() as i64;
+                log_command(controller.send(PlaybackCommand::SetAudioDelay(milliseconds)));
+                update_stream_state(&core, |stream_state| {
+                    stream_state.audio_delay = Some(milliseconds);
+                });
+            }
+        });
+
         ui.on_player_change_speed({
             let controller = self.controller.clone();
             let core = core.clone();
@@ -1193,6 +1309,101 @@ impl NativePlaybackBridge {
             }
         });
 
+        ui.on_player_copy_magnet_link({
+            let core = core.clone();
+            move || {
+                let link = core.model().ok().and_then(|model| {
+                    let selected = model.player.selected.as_ref()?;
+                    let deep_links = stremio_core::deep_links::StreamDeepLinks::from((
+                        &selected.stream,
+                        model.streaming_server.base_url.as_ref(),
+                        &model.ctx.profile.settings,
+                    ));
+                    deep_links.external_player.magnet.clone().or_else(|| {
+                        if let StreamSource::Torrent { info_hash, .. } = &selected.stream.source {
+                            Some(format!("magnet:?xt=urn:btih:{}", hex::encode(info_hash)))
+                        } else {
+                            None
+                        }
+                    })
+                });
+                let Some(link) = link else {
+                    tracing::warn!("no magnet link is available for the current stream");
+                    return;
+                };
+                match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(link)) {
+                    Ok(()) => tracing::info!("magnet link copied to clipboard"),
+                    Err(error) => tracing::error!(%error, "failed to copy magnet link"),
+                }
+            }
+        });
+
+        ui.on_player_download_subs({
+            let session = self.session.clone();
+            move || {
+                let subtitle_url = lock_session(&session)
+                    .loaded_subtitles
+                    .iter()
+                    .next()
+                    .cloned();
+                let Some(subtitle_url) = subtitle_url else {
+                    tracing::warn!("no downloadable external subtitle is loaded");
+                    return;
+                };
+                if let Err(error) = open::that(&subtitle_url) {
+                    tracing::error!(%error, %subtitle_url, "failed to open subtitle URL");
+                }
+            }
+        });
+
+        ui.on_player_open_external_player({
+            let session = self.session.clone();
+            move || {
+                let url = lock_session(&session).url.clone();
+                let Some(url) = url else {
+                    tracing::warn!("cannot open an external player before a stream is loaded");
+                    return;
+                };
+                if let Err(error) = open::that(&url) {
+                    tracing::error!(%error, %url, "failed to open stream in an external player");
+                }
+            }
+        });
+
+        ui.on_player_refresh_cast_devices({
+            let core = core.clone();
+            move || {
+                core.dispatch(RuntimeAction {
+                    field: Some(AppModelField::StreamingServer),
+                    action: Action::StreamingServer(ActionStreamingServer::RefreshPlaybackDevices),
+                });
+            }
+        });
+
+        ui.on_player_cast_device({
+            let core = core.clone();
+            let session = self.session.clone();
+            move |device| {
+                let session = lock_session(&session);
+                let Some(source) = session.url.clone() else {
+                    tracing::warn!("cannot cast before a stream is loaded");
+                    return;
+                };
+                let time = Some(session.last_time);
+                drop(session);
+                core.dispatch(RuntimeAction {
+                    field: Some(AppModelField::StreamingServer),
+                    action: Action::StreamingServer(ActionStreamingServer::PlayOnDevice(
+                        PlayOnDeviceArgs {
+                            device: device.to_string(),
+                            source,
+                            time,
+                        },
+                    )),
+                });
+            }
+        });
+
         ui.on_player_download_video({
             let session = self.session.clone();
             move || {
@@ -1212,9 +1423,12 @@ impl NativePlaybackBridge {
             let core = core.clone();
             let weak = ui.as_weak();
             move |season| {
-                let player = core.model().ok().map(|model| model.player.clone());
-                if let Some(player) = player {
-                    bridge.select_episode_season(&player, season, &weak);
+                let snapshot = core
+                    .model()
+                    .ok()
+                    .map(|model| (model.player.clone(), model.ctx.streams.clone()));
+                if let Some((player, streams)) = snapshot {
+                    bridge.select_episode_season(&player, &streams, season, &weak);
                 }
             }
         });
@@ -1224,9 +1438,12 @@ impl NativePlaybackBridge {
             let core = core.clone();
             let weak = ui.as_weak();
             move |direction| {
-                let player = core.model().ok().map(|model| model.player.clone());
-                if let Some(player) = player {
-                    bridge.step_episode_season(&player, direction, &weak);
+                let snapshot = core
+                    .model()
+                    .ok()
+                    .map(|model| (model.player.clone(), model.ctx.streams.clone()));
+                if let Some((player, streams)) = snapshot {
+                    bridge.step_episode_season(&player, &streams, direction, &weak);
                 }
             }
         });
@@ -1260,10 +1477,110 @@ impl NativePlaybackBridge {
             }
         });
 
+        ui.on_player_mark_season_watched({
+            let core = core.clone();
+            move |season| {
+                if season <= 0 {
+                    return;
+                }
+                let season_u32 = season as u32;
+                let selection = core.model().ok().and_then(|model| {
+                    let player = &model.player;
+                    let meta_item = player
+                        .meta_item
+                        .as_ref()?
+                        .content
+                        .as_ref()
+                        .and_then(Loadable::ready)?;
+                    let season_videos: Vec<_> = meta_item
+                        .videos
+                        .iter()
+                        .filter(|v| {
+                            v.series_info
+                                .as_ref()
+                                .map(|info| info.season == season_u32)
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect();
+                    if season_videos.is_empty() {
+                        return None;
+                    }
+                    let all_watched = season_videos.iter().all(|v| {
+                        player
+                            .watched
+                            .as_ref()
+                            .map(|w| w.get_video(&v.id))
+                            .unwrap_or_default()
+                    });
+                    Some((season_videos, !all_watched))
+                });
+                if let Some((videos, target_watched)) = selection {
+                    for video in videos {
+                        dispatch_player(
+                            &core,
+                            ActionPlayer::MarkVideoAsWatched(video, target_watched),
+                        );
+                    }
+                }
+            }
+        });
+
         ui.on_player_next_episode({
             let core = core.clone();
             move || {
                 play_next(&core);
+            }
+        });
+
+        ui.on_player_play_saved_episode({
+            let core = core.clone();
+            let weak = ui.as_weak();
+            let navigation = navigation.clone();
+            move |video_id| {
+                let video_id = video_id.to_string();
+                let selection = core.model().ok().and_then(|model| {
+                    let player = &model.player;
+                    if selected_player_video_id(player) == video_id {
+                        return Some((true, false, None));
+                    }
+                    let is_next = player
+                        .next_video
+                        .as_ref()
+                        .is_some_and(|video| video.id == video_id);
+                    let meta_id = player
+                        .meta_item
+                        .as_ref()?
+                        .content
+                        .as_ref()
+                        .and_then(Loadable::ready)?
+                        .preview
+                        .id
+                        .clone();
+                    let saved_stream = model
+                        .ctx
+                        .streams
+                        .items
+                        .get(&StreamsItemKey {
+                            meta_id,
+                            video_id: video_id.clone(),
+                        })
+                        .cloned();
+                    Some((false, is_next, saved_stream))
+                });
+                let Some((is_current, is_next, saved_stream)) = selection else {
+                    return;
+                };
+                if is_current {
+                    return;
+                }
+                if is_next {
+                    play_next(&core);
+                    return;
+                }
+                if let (Some(ui), Some(saved_stream)) = (weak.upgrade(), saved_stream) {
+                    crate::deep_link::open_saved_stream(&ui, &core, &navigation, saved_stream);
+                }
             }
         });
 
@@ -1685,6 +2002,10 @@ struct TidbRequest {
 struct DiscordMedia {
     title: String,
     image: Option<String>,
+    /// Next-best cover candidate (e.g. the background) used only by the OS media
+    /// session, so a broken poster URL still yields a thumbnail. Discord fetches
+    /// `image` remotely itself and does not use this.
+    image_fallback: Option<String>,
 }
 
 struct CorePlaybackProjection {
@@ -1784,15 +2105,41 @@ fn project_core_playback_state(
                     .or_else(|| selected.stream.name.to_owned())
             })
             .unwrap_or_else(|| "Unknown".to_owned());
-        let image = meta_item.and_then(|meta_item| {
+        // Ordered cover candidates: poster first, then background, then the
+        // library poster. `image` is the primary; the OS media session falls
+        // through to the next when an earlier URL cannot be fetched or decoded.
+        let library_poster = model
+            .player
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.stream_request.as_ref())
+            .and_then(|req| model.ctx.library.items.get(&req.path.id))
+            .and_then(|lib_item| lib_item.poster.as_ref().map(ToString::to_string));
+        let mut candidates: Vec<String> = Vec::new();
+        for candidate in [
             meta_item
-                .preview
-                .poster
-                .as_ref()
-                .or(meta_item.preview.background.as_ref())
-                .map(ToString::to_string)
-        });
-        DiscordMedia { title, image }
+                .and_then(|meta_item| meta_item.preview.poster.as_ref().map(ToString::to_string)),
+            meta_item.and_then(|meta_item| {
+                meta_item
+                    .preview
+                    .background
+                    .as_ref()
+                    .map(ToString::to_string)
+            }),
+            library_poster,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !candidate.is_empty() && !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+        DiscordMedia {
+            title,
+            image: candidates.first().cloned(),
+            image_fallback: candidates.get(1).cloned(),
+        }
     });
 
     let resolved_video_hash = needs_video_hash
@@ -1835,9 +2182,7 @@ fn dispatch_state_to_core(
                     .last_discord_projection_at
                     .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(5))
                     || current.last_discord_paused != Some(state.paused)),
-            state.loaded
-                && current.last_media_meta_key
-                    != Some((current.playback_generation, duration_secs)),
+            state.loaded,
             !current.video_hash_resolved,
         )
     };
@@ -2002,14 +2347,33 @@ fn dispatch_state_to_core(
     // OS media session (system controls + wake lock). Independent of Discord:
     // reflects playback whether or not Discord presence is enabled.
     if state.loaded {
-        if needs_media_meta
-            && let Some(media) = core_projection
-                .as_ref()
-                .and_then(|projection| projection.media.as_ref())
+        if let Some(media) = core_projection
+            .as_ref()
+            .and_then(|projection| projection.media.as_ref())
         {
-            media_session.set_metadata(&media.title, media.image.as_deref(), duration_secs);
-            let mut current = lock_session(session);
-            current.last_media_meta_key = Some((current.playback_generation, duration_secs));
+            let should_update = {
+                let mut current = lock_session(session);
+                let key = (
+                    current.playback_generation,
+                    duration_secs,
+                    media.title.clone(),
+                    media.image.clone(),
+                );
+                if current.last_media_meta_key.as_ref() != Some(&key) {
+                    current.last_media_meta_key = Some(key);
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_update {
+                media_session.set_metadata(
+                    &media.title,
+                    media.image.as_deref(),
+                    media.image_fallback.as_deref(),
+                    duration_secs,
+                );
+            }
         }
 
         let playing = !state.paused;
@@ -2149,6 +2513,33 @@ fn dispatch_state_to_core(
     }
 }
 
+fn expand_language_code(code: &str) -> String {
+    let code_lower = code.to_lowercase();
+    match code_lower.as_str() {
+        "eng" | "en" | "english" => "eng,en,english".to_string(),
+        "fre" | "fra" | "fr" | "french" => "fre,fra,fr,french".to_string(),
+        "ger" | "deu" | "de" | "german" => "ger,deu,de,german".to_string(),
+        "spa" | "es" | "spanish" => "spa,es,spanish".to_string(),
+        "ita" | "it" | "italian" => "ita,it,italian".to_string(),
+        "por" | "pt" | "portuguese" => "por,pt,portuguese".to_string(),
+        "rus" | "ru" | "russian" => "rus,ru,russian".to_string(),
+        "zho" | "chi" | "zh" | "chinese" => "zho,chi,zh,chinese".to_string(),
+        "hin" | "hi" | "hindi" => "hin,hi,hindi".to_string(),
+        "mal" | "ml" | "malayalam" => "mal,ml,malayalam".to_string(),
+        "tam" | "ta" | "tamil" => "tam,ta,tamil".to_string(),
+        "tel" | "te" | "telugu" => "tel,te,telugu".to_string(),
+        "jpn" | "ja" | "japanese" => "jpn,ja,japanese".to_string(),
+        "kor" | "ko" | "korean" => "kor,ko,korean".to_string(),
+        other => {
+            if other.len() == 3 {
+                format!("{other},{}", &other[..2])
+            } else {
+                other.to_string()
+            }
+        }
+    }
+}
+
 fn restore_stream_state(
     core: &Arc<Runtime<DesktopEnv, AppModel>>,
     controller: &Arc<OnceLock<PlaybackController>>,
@@ -2157,43 +2548,96 @@ fn restore_stream_state(
     let Some(controller) = controller.get() else {
         return;
     };
-    let stream_state = core
-        .model()
-        .ok()
-        .and_then(|model| model.player.stream_state.clone());
-    let Some(stream_state) = stream_state else {
-        return;
-    };
-    if let Some(speed) = stream_state.playback_speed {
-        log_command(controller.send(PlaybackCommand::SetSpeed(f64::from(speed))));
+    let model = core.model().ok();
+    let settings = model.as_ref().map(|m| m.ctx.profile.settings.clone());
+    let stream_state = model.and_then(|m| m.player.stream_state.clone());
+
+    if let Some(ref settings) = settings {
+        if let Some(ref audio_lang) = settings.audio_language {
+            let alang_expanded = expand_language_code(audio_lang);
+            log_command(controller.send(PlaybackCommand::SetAudioLanguage(alang_expanded)));
+        }
+        if let Some(ref sub_lang) = settings.subtitles_language
+            && sub_lang != "none"
+            && !sub_lang.is_empty()
+        {
+            let slang_expanded = expand_language_code(sub_lang);
+            log_command(controller.send(PlaybackCommand::SetSubtitleLanguage(slang_expanded)));
+        }
     }
-    if let Some(audio) = stream_state.audio_track {
-        log_command(controller.send(PlaybackCommand::SetAudioTrack(Some(audio.id))));
-    }
-    if let Some(subtitle) = stream_state.subtitle_track {
-        log_command(controller.send(PlaybackCommand::SetSubtitleTrack(Some(subtitle.id))));
-    }
-    if let Some(delay) = stream_state.subtitle_delay {
-        log_command(controller.send(PlaybackCommand::SetSubtitleDelay(delay)));
-    }
-    if let Some(scale) = stream_state.subtitle_size {
-        log_command(controller.send(PlaybackCommand::SetSubtitleScale(f64::from(scale) / 100.0)));
-    }
-    if let Some(offset) = stream_state.subtitle_offset {
-        log_command(
-            controller.send(PlaybackCommand::SetSubtitlePosition(f64::from(
-                100.0 - offset.clamp(0.0, 100.0),
-            ))),
-        );
-    }
-    if let Some(delay) = stream_state.audio_delay {
-        log_command(controller.send(PlaybackCommand::SetAudioDelay(delay)));
+
+    if let Some(ref stream_state) = stream_state {
+        if let Some(speed) = stream_state.playback_speed {
+            log_command(controller.send(PlaybackCommand::SetSpeed(f64::from(speed))));
+        }
+        if let Some(ref audio) = stream_state.audio_track {
+            log_command(controller.send(PlaybackCommand::SetAudioTrack(Some(audio.id.clone()))));
+        } else {
+            log_command(controller.send(PlaybackCommand::SetAudioTrack(Some("auto".to_string()))));
+        }
+        if let Some(ref subtitle) = stream_state.subtitle_track {
+            log_command(
+                controller.send(PlaybackCommand::SetSubtitleTrack(Some(subtitle.id.clone()))),
+            );
+        } else if let Some(ref settings) = settings {
+            if !settings.subtitles_auto_select
+                || settings.subtitles_language.as_deref() == Some("none")
+            {
+                log_command(controller.send(PlaybackCommand::SetSubtitleTrack(None)));
+            } else {
+                log_command(
+                    controller.send(PlaybackCommand::SetSubtitleTrack(Some("auto".to_string()))),
+                );
+            }
+        }
+        if let Some(delay) = stream_state.subtitle_delay {
+            log_command(controller.send(PlaybackCommand::SetSubtitleDelay(delay)));
+        }
+        if let Some(scale) = stream_state.subtitle_size {
+            log_command(
+                controller.send(PlaybackCommand::SetSubtitleScale(f64::from(scale) / 100.0)),
+            );
+        }
+        if let Some(offset) = stream_state.subtitle_offset {
+            log_command(
+                controller.send(PlaybackCommand::SetSubtitlePosition(f64::from(
+                    100.0 - offset.clamp(0.0, 100.0),
+                ))),
+            );
+        }
+        if let Some(delay) = stream_state.audio_delay {
+            log_command(controller.send(PlaybackCommand::SetAudioDelay(delay)));
+        }
+    } else {
+        // No previous stream state exists: apply core default language preferences directly
+        log_command(controller.send(PlaybackCommand::SetAudioTrack(Some("auto".to_string()))));
+        if let Some(ref settings) = settings {
+            if !settings.subtitles_auto_select
+                || settings.subtitles_language.as_deref() == Some("none")
+            {
+                log_command(controller.send(PlaybackCommand::SetSubtitleTrack(None)));
+            } else {
+                log_command(
+                    controller.send(PlaybackCommand::SetSubtitleTrack(Some("auto".to_string()))),
+                );
+            }
+        }
     }
 
     let weak = ui.clone();
-    let subtitle_delay = stream_state.subtitle_delay.unwrap_or_default() as f32 / 1_000.0;
-    let subtitle_size = stream_state.subtitle_size.unwrap_or(100.0);
-    let subtitle_offset = stream_state.subtitle_offset.unwrap_or(100.0);
+    let subtitle_delay = stream_state
+        .as_ref()
+        .and_then(|s| s.subtitle_delay)
+        .unwrap_or_default() as f32
+        / 1_000.0;
+    let subtitle_size = stream_state
+        .as_ref()
+        .and_then(|s| s.subtitle_size)
+        .unwrap_or(100.0);
+    let subtitle_offset = stream_state
+        .as_ref()
+        .and_then(|s| s.subtitle_offset)
+        .unwrap_or(100.0);
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_player_subtitle_delay_seconds(subtitle_delay);
@@ -2492,6 +2936,7 @@ fn install_renderer(
     );
     let window_weak = ui.as_weak();
     let mut context: Option<RenderContext> = None;
+    let mut prewarm_spawned = false;
     let mut render_target_ready = false;
     let mut initial_surface_logged = false;
     let mut last_reported_load = None;
@@ -2511,6 +2956,23 @@ fn install_renderer(
                 context_initialization_attempted = false;
             }
 
+            // Slint's GL context is live once the notifier runs, so this is the
+            // safe point to warm the driver on a background thread without
+            // blocking the UI thread's own context creation. Creating the MPV
+            // context below waits on `gpu_prewarm::is_ready()`.
+            if !prewarm_spawned {
+                prewarm_spawned = true;
+                let redraw_weak = window_weak.clone();
+                crate::gpu_prewarm::spawn(move || {
+                    let redraw_weak = redraw_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = redraw_weak.upgrade() {
+                            ui.window().request_redraw();
+                        }
+                    });
+                });
+            }
+
             // Fast startup deliberately installs MPV after the first window is
             // visible. In that case Slint's one-shot RenderingSetup notification
             // has already occurred, but its OpenGL context is equally current in
@@ -2520,6 +2982,7 @@ fn install_renderer(
             if context.is_none()
                 && !context_initialization_attempted
                 && (is_rendering_setup || is_after_rendering)
+                && crate::gpu_prewarm::is_ready()
             {
                 context_initialization_attempted = true;
                 if !is_rendering_setup {
@@ -2885,33 +3348,8 @@ fn dispatch_player(core: &Arc<Runtime<DesktopEnv, AppModel>>, action: ActionPlay
     });
 }
 
-pub(crate) fn resolve_app_data_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("StremioRust")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("StremioRust")
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("StremioRust")
-    }
-}
-
 fn resolve_config_dir() -> PathBuf {
-    resolve_app_data_dir().join("mpv")
+    crate::paths::get().mpv().to_path_buf()
 }
 
 fn format_time(seconds: f64) -> String {

@@ -5,6 +5,8 @@ import { EmptyState, SkeletonBlock } from "../components/feedback.slint";
 import { AddonCardPlaceholder } from "../components/loading_placeholders.slint";
 import { SelectField } from "../components/select.slint";
 import { NativeTextField, SearchBar } from "../components/text_input.slint";
+import { ModalDialog } from "../components/overlays.slint";
+import { SharePrompt } from "../components/share_prompt.slint";
 
 export struct AddonItem {
     id: string,
@@ -22,6 +24,10 @@ export struct AddonItem {
     supports-series: bool,
     supports-anime: bool,
     supports-tv: bool,
+    background-url: string,
+    background-image: image,
+    adult: bool,
+    p2p: bool,
 }
 
 component AddonCard inherits Rectangle {
@@ -205,13 +211,16 @@ export component AddonsPage inherits Rectangle {
     height: 720px;
     in property <[AddonItem]> addons: [];
     in property <bool> loading: false;
+    in property <bool> has-next-page: false;
     callback install-addon(string);
     callback uninstall-addon(string);
     callback open-addon-details(string);
     callback close-addon-details;
     callback configure-addon(string);
     callback share-addon(string);
+    callback share-social(string, string);
     callback search-changed(string);
+    callback load-next-page;
 
     in-out property <bool> details-open: false;
     in property <AddonItem> details-addon;
@@ -228,6 +237,33 @@ export component AddonsPage inherits Rectangle {
     in-out property <bool> add-modal-open: false;
     property <string> manifest-url: "";
     in-out property <string> search-query: "";
+    in-out property <length> scroll-y: 0px;
+    private property <bool> share-modal-open: false;
+    private property <string> share-url: "";
+    private property <string> share-title: "";
+    private property <bool> pagination-latched: false;
+    private property <int> pagination-content-length: root.addons.length;
+    changed pagination-content-length => { root.pagination-latched = false; }
+    changed has-next-page => {
+        if (root.has-next-page) {
+            root.pagination-latched = false;
+        }
+    }
+    function request-next-page() {
+        if (root.active-filter == "Community"
+                && root.has-next-page
+                && !root.pagination-latched) {
+            root.pagination-latched = true;
+            root.load-next-page();
+        }
+    }
+    function check-pagination(remaining: length) {
+        if (remaining <= 25 * root.unit) {
+            root.request-next-page();
+        } else {
+            root.pagination-latched = false;
+        }
+    }
 
     background: transparent;
 
@@ -333,12 +369,19 @@ export component AddonsPage inherits Rectangle {
             message: @tr("Try another filter or install an addon by manifest URL.");
         }
 
-        if (!root.loading && root.addons.length > 0) : ListView {
+        if (!root.loading && root.addons.length > 0) : addons-scroll := ListView {
             vertical-stretch: 1;
+            viewport-y <=> root.scroll-y;
             mouse-drag-pan-enabled: true;
             horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            changed viewport-y => {
+                root.check-pagination(self.viewport-height + self.viewport-y - self.height);
+            }
+            changed viewport-height => {
+                root.check-pagination(self.viewport-height + self.viewport-y - self.height);
+            }
 
-            for item in root.addons : Rectangle {
+            for item[item-index] in root.addons : Rectangle {
                 private property <bool> matches-filter:
                     ((root.active-filter == "Installed") == item.is-installed)
                         && (root.active-type == "All"
@@ -351,6 +394,12 @@ export component AddonsPage inherits Rectangle {
                 clip: true;
                 background: transparent;
 
+                init => {
+                    if (item-index == root.addons.length - 1) {
+                        root.request-next-page();
+                    }
+                }
+
                 AddonCard {
                     visible: parent.matches-filter;
                     x: 1.5 * root.unit;
@@ -362,7 +411,11 @@ export component AddonsPage inherits Rectangle {
                     uninstall => { root.uninstall-addon(item.transport-url); }
                     details => { root.open-addon-details(item.transport-url); }
                     configure => { root.configure-addon(item.transport-url); }
-                    share => { root.share-addon(item.transport-url); }
+                    share => {
+                        root.share-url = item.transport-url;
+                        root.share-title = item.name;
+                        root.share-modal-open = true;
+                    }
                 }
             }
         }
@@ -454,6 +507,14 @@ export component AddonsPage inherits Rectangle {
 
             TouchArea { clicked => { } }
 
+            if (root.details-addon.background-image.width > 0) : Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.details-addon.background-image;
+                image-fit: cover;
+                opacity: 0.08;
+            }
+
             VerticalLayout {
                 padding: 2 * root.unit;
                 spacing: 1.25 * root.unit;
@@ -540,6 +601,42 @@ export component AddonsPage inherits Rectangle {
                                 font-size: 0.85 * root.unit;
                                 overflow: elide;
                             }
+                            HorizontalLayout {
+                                height: 2 * root.unit;
+                                spacing: 0.5 * root.unit;
+                                if (root.details-addon.adult) : Rectangle {
+                                    width: 4.5 * root.unit;
+                                    border-radius: self.height / 2;
+                                    background: Theme.danger.with-alpha(0.3);
+                                    Text { text: "18+"; color: Theme.danger; font-size: 0.85 * root.unit; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                if (root.details-addon.p2p) : Rectangle {
+                                    width: 4.5 * root.unit;
+                                    border-radius: self.height / 2;
+                                    background: Theme.warning.with-alpha(0.25);
+                                    Text { text: "P2P"; color: Theme.warning; font-size: 0.85 * root.unit; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 4 * root.unit;
+                        border-radius: Theme.border-radius;
+                        background: Theme.warning.with-alpha(0.12);
+                        border-width: 1px;
+                        border-color: Theme.warning.with-alpha(0.45);
+                        Text {
+                            x: root.unit;
+                            y: 0.5 * root.unit;
+                            width: parent.width - 2 * root.unit;
+                            height: parent.height - root.unit;
+                            text: @tr("Community addons are created and maintained by third-party developers. Use them at your own discretion.");
+                            color: Theme.primary-foreground;
+                            opacity: 0.75;
+                            font-size: 0.9 * root.unit;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
                         }
                     }
 
@@ -584,6 +681,20 @@ export component AddonsPage inherits Rectangle {
                         clicked => { root.configure-addon(root.details-addon.transport-url); }
                     }
 
+                    PillButton {
+                        width: 10 * root.unit;
+                        unit: root.unit;
+                        label: @tr("Share addon");
+                        show-icon: true;
+                        use-svg-icon: true;
+                        icon-source: @image-url("../assets/images/icons/share.svg");
+                        clicked => {
+                            root.share-url = root.details-addon.transport-url;
+                            root.share-title = root.details-addon.name;
+                            root.share-modal-open = true;
+                        }
+                    }
+
                     if (!root.details-loading && root.details-error == "" &&
                         (root.details-addon.is-installed || !root.details-configuration-required)) : PillButton {
                         width: 12 * root.unit;
@@ -609,6 +720,23 @@ export component AddonsPage inherits Rectangle {
                     }
                 }
             }
+        }
+    }
+
+    ModalDialog {
+        open: root.share-modal-open;
+        unit: root.unit;
+        title: @tr("Share addon") + (root.share-title != "" ? " · " + root.share-title : "");
+        dialog-width: 36 * root.unit;
+        dialog-height: 17 * root.unit;
+        close-requested => { root.share-modal-open = false; }
+
+        SharePrompt {
+            width: parent.width;
+            unit: root.unit;
+            url: root.share-url;
+            share-requested(platform, url) => { root.share-social(platform, url); }
+            copy-requested(url) => { root.share-addon(url); }
         }
     }
 }

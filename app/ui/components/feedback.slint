@@ -3,10 +3,21 @@ import { Theme } from "../theme.slint";
 export component SkeletonBlock inherits Rectangle {
     in property <length> radius: Theme.border-radius;
     in property <color> base-color: Theme.skeleton-base;
+    property <bool> shimmer: false;
+
+    init => { root.shimmer = true; }
 
     border-radius: root.radius;
     background: root.base-color;
+    opacity: root.shimmer ? 0.4 : 0.85;
     clip: true;
+
+    animate opacity {
+        duration: 900ms;
+        easing: ease-in-out;
+        iteration-count: -1;
+        direction: alternate;
+    }
 }
 
 export component SearchHint inherits Rectangle {

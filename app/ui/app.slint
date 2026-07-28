@@ -11,6 +11,7 @@ import { StremioTextInput, NativeTextField, SearchBar, SearchField } from "compo
 import { Slider } from "components/slider.slint";
 import { PopupMenuSurface, ModalDialog, BottomSheet, ContextMenuSurface } from "components/overlays.slint";
 import { OnboardingModal } from "components/onboarding.slint";
+import { EventModal } from "components/event_modal.slint";
 import { ActionsGroup } from "components/action_group.slint";
 import { HorizontalScroll } from "components/horizontal_scroll.slint";
 import { FallbackImage } from "components/fallback_image.slint";
@@ -23,12 +24,12 @@ import { SeeAllButton, MetaRow, MetaRowPlaceholder } from "components/meta_row.s
 import { MetaActionButton, MetaLinkChip, MetaLinks, MetaPreview, MetaPreviewPlaceholder } from "components/meta_preview.slint";
 import { AuthPage } from "pages/auth.slint";
 import { BoardPage, BoardSection } from "pages/board.slint";
-import { DiscoverPage, DiscoverRow } from "pages/discover.slint";
+import { DiscoverPage, DiscoverRow, DiscoverFilterOption } from "pages/discover.slint";
 import { LibraryPage, LibraryRow } from "pages/library.slint";
 import { AddonsPage, AddonItem } from "pages/addons.slint";
 import { DetailsPage, StreamLink, EpisodeItem } from "pages/details.slint";
 import { SettingsPage } from "pages/settings.slint";
-import { PlayerPage } from "pages/player.slint";
+import { PlayerPage, CastDevice } from "pages/player.slint";
 import { CalendarPage, CalendarRow, CalendarCell, CalendarMediaItem } from "pages/calendar.slint";
 import { SearchPage } from "pages/search.slint";
 import { AppDebugMenu, DebugPageOption, DebugStateOption } from "components/app_debug_menu.slint";
@@ -42,7 +43,46 @@ export struct PluginAction {
     icon: string,
 }
 
-export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, BoardSection, DiscoverRow, LibraryRow, AddonItem, CalendarRow, CalendarCell, CalendarMediaItem, SearchSuggestion }
+component GuideRow inherits Rectangle {
+    in property <length> unit: Theme.root-font-size;
+    in property <string> label;
+    in property <string> keys;
+
+    height: 3.35 * root.unit;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: root.unit;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: root.unit;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            KeyCap {
+                unit: root.unit;
+                label: root.keys;
+            }
+        }
+    }
+}
+
+component GuideSectionTitle inherits Text {
+    in property <length> unit: Theme.root-font-size;
+    height: 3 * root.unit;
+    color: Theme.text-secondary;
+    font-size: root.unit;
+    font-weight: 700;
+    vertical-alignment: center;
+}
+
+export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, CastDevice, BoardSection, DiscoverRow, LibraryRow, AddonItem, CalendarRow, CalendarCell, CalendarMediaItem, SearchSuggestion }
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/images/app_icon.png");
@@ -133,6 +173,19 @@ export component MainWindow inherits Window {
     property <length> ui-unit: root.width >= 2800px ? 18px :
         (root.width >= 2200px ? 16px : (root.width >= 1600px ? 15px : 14px));
     in-out property <bool> profile-menu-open: false;
+    in-out property <bool> shortcuts-modal-open: false;
+    in-out property <bool> gamepad-modal-open: false;
+    in-out property <bool> updater-banner-dismissed: false;
+    in-out property <bool> event-modal-open: false;
+    in-out property <string> event-modal-id: "";
+    in-out property <string> event-modal-title: "";
+    in-out property <string> event-modal-message: "";
+    in-out property <image> event-modal-artwork;
+    in-out property <string> event-modal-addon-name: "";
+    in-out property <string> event-modal-addon-manifest-url: "";
+    in-out property <string> event-modal-external-url: "";
+    callback event-dismiss(string);
+    callback event-action(string, string);
 
     // Disabled by default. `slint-viewer --load-data` can enable this harness
     // without replacing MainWindow, so every state uses the production shell,
@@ -141,6 +194,9 @@ export component MainWindow inherits Window {
     in-out property <bool> debug-menu-open: false;
     in-out property <int> debug-preview-page: 0;
     in-out property <string> debug-preview-state: "loaded";
+    in-out property <string> ui-style: "cinematic";
+    in-out property <string> debug-missing-artwork-path: "";
+    in-out property <bool> debug-show-missing-artwork: false;
 
     private property <[DebugPageOption]> debug-pages: [
         { label: @tr("Auth"), page: -1 },
@@ -295,6 +351,7 @@ export component MainWindow inherits Window {
     // Data lists
     in-out property <[MediaCardItem]> board-continue-watching: [];
     in-out property <[BoardSection]> board-sections: [];
+    in-out property <bool> board-show-server-warning: false;
     in-out property <[BoardSection]> search-sections: [];
     in-out property <[SearchSuggestion]> search-suggestions: [];
     in-out property <string> search-query: "";
@@ -303,12 +360,18 @@ export component MainWindow inherits Window {
     
     in-out property <[DiscoverRow]> discover-rows: [];
     in-out property <int> discover-column-count: 6;
+    in-out property <bool> discover-has-next-page: false;
     in-out property <[LibraryRow]> library-rows: [];
     in-out property <int> library-column-count: 6;
+    in-out property <bool> library-has-next-page: false;
     in-out property <string> library-active-type: "All";
     in-out property <string> library-active-sort: "Last Watched";
+    in-out property <bool> library-authenticated: false;
+    in-out property <bool> library-continue-watching-mode: false;
     in-out property <[AddonItem]> addons-list: [];
     in-out property <string> addons-search-query: "";
+    in-out property <bool> addons-has-next-page: false;
+    in-out property <length> addons-scroll-y: 0px;
     in property <bool> addon-details-open: false;
     in-out property <AddonItem> addon-details-addon;
     in-out property <bool> addon-details-loading: false;
@@ -332,6 +395,9 @@ export component MainWindow inherits Window {
     in-out property <string> discover-active-catalog: "";
     in property <[string]> discover-genres: [];
     in-out property <string> discover-active-genre: "";
+    in-out property <[DiscoverFilterOption]> discover-extra-options: [];
+    in-out property <bool> discover-selected-addon-installed: true;
+    in-out property <string> discover-selected-addon-name: "";
     in-out property <length> discover-scroll-y: 0px;
 
     // Discover preview drawer parameters
@@ -380,6 +446,7 @@ export component MainWindow inherits Window {
     in-out property <[EpisodeItem]> detail-episodes: [];
     in-out property <bool> detail-in-stream-view: false;
     in-out property <string> detail-episode-search-query: "";
+    in-out property <string> detail-share-url: "";
 
     callback details-episode-search-changed(string);
     callback details-toggle-episode-watched(string);
@@ -387,6 +454,9 @@ export component MainWindow inherits Window {
     callback details-copy-magnet-link(string);
     callback details-copy-download-link(string);
     callback details-toggle-season-watched(int);
+    callback details-manual-episode-selected(int, int);
+    callback details-share-copy(string);
+    callback details-share-social(string, string);
 
     // Player Page parameters
     in property <bool> show-player: false;
@@ -420,6 +490,7 @@ export component MainWindow inherits Window {
     in-out property <float> player-subtitle-delay-seconds: 0.0;
     in-out property <float> player-subtitle-size-percent: 100.0;
     in-out property <float> player-subtitle-offset-percent: 100.0;
+    in-out property <float> player-audio-delay-seconds: 0.0;
     in-out property <bool> player-is-series: false;
     in-out property <[int]> player-seasons: [];
     in-out property <int> player-active-season: 1;
@@ -427,6 +498,15 @@ export component MainWindow inherits Window {
     in-out property <string> player-active-video-id: "";
     in-out property <int> player-active-episode-idx: 0;
     in-out property <bool> player-has-next-episode: false;
+    in-out property <string> player-next-episode-title: "";
+    in-out property <string> player-series-name: "";
+    in-out property <string> player-next-series-name: "";
+    in-out property <string> player-series-runtime: "";
+    in-out property <string> player-series-release-year: "";
+    in-out property <string> player-series-description: "";
+    in-out property <image> player-series-logo;
+    in-out property <bool> player-active-season-watched: false;
+    in-out property <image> player-next-episode-poster;
     in-out property <float> player-playback-speed: 1.0;
     in-out property <int> player-video-scale-mode: 0;
     in-out property <int> player-active-shader-preset: 0;
@@ -460,6 +540,9 @@ export component MainWindow inherits Window {
     in-out property <bool> player-show-stats-menu: false;
     in-out property <bool> player-show-upscaler-menu: false;
     in-out property <bool> player-show-options-menu: false;
+    in-out property <bool> player-show-cast-menu: false;
+    in-out property <[CastDevice]> player-cast-devices: [];
+    in-out property <bool> player-cast-devices-loading: false;
     in-out property <bool> player-show-playlist-drawer: false;
     in-out property <bool> player-show-context-menu: false;
     private property <int> player-last-subtitle-idx: 0;
@@ -469,6 +552,7 @@ export component MainWindow inherits Window {
         || player-show-stats-menu
         || player-show-upscaler-menu
         || player-show-options-menu
+        || player-show-cast-menu
         || player-show-playlist-drawer
         || player-show-context-menu;
     private property <int> settings-active-category: 0;
@@ -514,6 +598,20 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-subtitles-bold: false;
     in-out property <string> settings-subtitles-offset: "5";
     in-out property <string> settings-seek-duration: "10";
+    in-out property <string> settings-seek-short-duration: "3";
+    in-out property <string> settings-next-video-popup-duration: "35";
+    in-out property <string> settings-external-player: "";
+    in-out property <string> settings-audio-language: "English";
+    in-out property <bool> settings-surround-sound: false;
+    in-out property <bool> settings-ass-subtitles-styling: false;
+    in-out property <color> settings-subtitles-text-color: #ffffffff;
+    in-out property <color> settings-subtitles-background-color: #00000000;
+    in-out property <color> settings-subtitles-outline-color: #000000ff;
+    in-out property <string> settings-user-id: "";
+    in-out property <bool> settings-trakt-authenticated: false;
+    in-out property <[string]> settings-streaming-server-urls: [];
+    in-out property <string> settings-streaming-https-endpoint: "Disabled";
+    in-out property <string> settings-streaming-transcode-profile: "Disabled";
     in-out property <bool> settings-pause-on-minimize: false;
     in-out property <bool> settings-quit-on-close: true;
     in-out property <bool> settings-export-loading: false;
@@ -570,6 +668,21 @@ export component MainWindow inherits Window {
     callback settings-change-subtitles-bold(bool);
     callback settings-change-subtitles-offset(string);
     callback settings-change-seek-duration(string);
+    callback settings-change-seek-short-duration(string);
+    callback settings-change-next-video-popup-duration(string);
+    callback settings-change-external-player(string);
+    callback settings-change-audio-language(string);
+    callback settings-change-surround-sound(bool);
+    callback settings-change-ass-subtitles-styling(bool);
+    callback settings-change-subtitles-text-color(color);
+    callback settings-change-subtitles-background-color(color);
+    callback settings-change-subtitles-outline-color(color);
+    callback settings-toggle-trakt();
+    callback settings-add-streaming-server-url(string);
+    callback settings-delete-streaming-server-url(string);
+    callback settings-copy-remote-url(string);
+    callback settings-change-streaming-https-endpoint(string);
+    callback settings-change-streaming-transcode-profile(string);
     callback settings-change-pause-on-minimize(bool);
     callback settings-change-quit-on-close(bool);
     in-out property <length> library-scroll-y: 0px;
@@ -609,10 +722,14 @@ export component MainWindow inherits Window {
     
     // Board page callback
     callback board-item-selected(string, string, string);
+    callback board-play-clicked(string);
     callback remove-continue-watching(string);
     callback board-see-all-continue-watching();
     callback board-see-all-clicked(int);
     callback board-catalog-visible(int);
+    callback board-dismiss-server-warning();
+    callback board-reload-server();
+    callback board-open-server-settings();
 
     // Global search callbacks
     callback global-search-edited(string);
@@ -630,6 +747,9 @@ export component MainWindow inherits Window {
     callback discover-item-selected(string, string, string);
     callback discover-item-activated(string, string, string);
     callback discover-load-next-page();
+    callback discover-extra-changed(string, string);
+    callback discover-install-selected-addon();
+    callback discover-metadata-filter-selected(string);
     callback play-preview();
     callback toggle-library-preview();
     
@@ -639,6 +759,10 @@ export component MainWindow inherits Window {
     callback library-search-changed(string);
     callback library-item-selected(string, string, string);
     callback library-load-next-page();
+    callback library-remove-item(string);
+    callback library-watched-changed(string, bool);
+    callback library-play-item(string);
+    callback library-dismiss-item(string);
 
     // Addons page callbacks
     callback install-addon(string);
@@ -647,7 +771,9 @@ export component MainWindow inherits Window {
     callback close-addon-details();
     callback configure-addon(string);
     callback share-addon(string);
+    callback addon-share-social(string, string);
     callback addons-search-changed(string);
+    callback addons-load-next-page();
 
     // Details callbacks
     callback details-toggle-library();
@@ -674,6 +800,7 @@ export component MainWindow inherits Window {
     callback calendar-next();
     callback calendar-item-selected(string, string, string);
     callback onboarding-completed();
+    callback play-url-magnet-from-clipboard();
 
     // Player Callbacks
     callback player-toggle-pause();
@@ -687,18 +814,26 @@ export component MainWindow inherits Window {
     callback player-change-subtitle-delay(float);
     callback player-change-subtitle-size(float);
     callback player-change-subtitle-offset(float);
+    callback player-change-audio-delay(float);
     callback player-change-speed(float);
     callback player-change-video-scale(int);
     callback player-change-shader-preset(int);
     callback player-seek-hover(float);
     callback player-seek-leave();
     callback player-copy-stream-link();
+    callback player-copy-magnet-link();
+    callback player-download-subs();
     callback player-download-video();
+    callback player-open-external-player();
+    callback player-refresh-cast-devices();
+    callback player-cast-device(string);
     callback player-play-episode(int, string);
     callback player-next-episode();
     callback player-season-changed(int);
     callback player-season-step(int);
+    callback player-mark-season-watched(int);
     callback player-toggle-episode-watched(string);
+    callback player-play-saved-episode(string);
     callback player-toggle-fullscreen();
     callback player-close();
     callback player-activity();
@@ -710,6 +845,7 @@ export component MainWindow inherits Window {
         root.player-show-stats-menu = false;
         root.player-show-upscaler-menu = false;
         root.player-show-options-menu = false;
+        root.player-show-cast-menu = false;
         root.player-show-playlist-drawer = false;
         root.player-show-context-menu = false;
     }
@@ -816,7 +952,14 @@ export component MainWindow inherits Window {
 
         KeyBinding { keys: @keys("1"); enabled: !root.effective-show-player; activated => { root.tab-changed(0); } }
         KeyBinding { keys: @keys("2"); enabled: !root.effective-show-player; activated => { root.tab-changed(1); } }
-        KeyBinding { keys: @keys("3"); enabled: !root.effective-show-player; activated => { root.tab-changed(2); } }
+        KeyBinding {
+            keys: @keys("3");
+            enabled: !root.effective-show-player;
+            activated => {
+                root.library-continue-watching-mode = false;
+                root.tab-changed(2);
+            }
+        }
         KeyBinding { keys: @keys("4"); enabled: !root.effective-show-player; activated => { root.tab-changed(5); } }
         KeyBinding { keys: @keys("5"); enabled: !root.effective-show-player; activated => { root.tab-changed(3); } }
         KeyBinding { keys: @keys("6"); enabled: !root.effective-show-player; activated => { root.tab-changed(4); } }
@@ -827,9 +970,13 @@ export component MainWindow inherits Window {
             keys: @keys(Control + "/");
             enabled: !root.effective-show-player;
             activated => {
-                root.settings-active-category = 4;
-                root.tab-changed(4);
+                root.shortcuts-modal-open = !root.shortcuts-modal-open;
             }
+        }
+        KeyBinding {
+            keys: @keys(Control + G);
+            enabled: !root.effective-show-player;
+            activated => { root.gamepad-modal-open = !root.gamepad-modal-open; }
         }
         KeyBinding { keys: @keys(F); activated => { root.toggle-fullscreen(); } }
 
@@ -862,7 +1009,7 @@ export component MainWindow inherits Window {
             keys: @keys(UpArrow);
             enabled: root.effective-show-player && !root.player-menu-open;
             activated => {
-                root.player-volume = min(1.0, root.player-volume + 0.05);
+                root.player-volume = min(2.0, root.player-volume + 0.05);
                 root.player-change-volume(root.player-volume);
                 root.player-activity();
             }
@@ -940,9 +1087,15 @@ export component MainWindow inherits Window {
         }
         KeyBinding {
             keys: @keys(Escape);
-            enabled: root.effective-show-player;
+            enabled: root.effective-show-player
+                || root.shortcuts-modal-open
+                || root.gamepad-modal-open;
             activated => {
-                if (root.player-menu-open) {
+                if (root.shortcuts-modal-open || root.gamepad-modal-open) {
+                    root.shortcuts-modal-open = false;
+                    root.gamepad-modal-open = false;
+                    app-shortcuts.focus();
+                } else if (root.player-menu-open) {
                     root.close-player-menus();
                     root.player-activity();
                 } else {
@@ -1275,7 +1428,7 @@ export component MainWindow inherits Window {
                             icon-source: @image-url("assets/images/icons/magnet-link.svg");
                             clicked => {
                                 root.profile-menu-open = false;
-                                search-input.focus-input();
+                                root.play-url-magnet-from-clipboard();
                             }
                         }
                         MenuButton {
@@ -1322,6 +1475,45 @@ export component MainWindow inherits Window {
                 }
             }
 
+            if (root.settings-update-state == 2 && !root.updater-banner-dismissed) : Rectangle {
+                height: 4 * root.ui-unit;
+                background: Theme.accent;
+                z: 90;
+
+                HorizontalLayout {
+                    padding-left: root.ui-unit;
+                    padding-right: root.ui-unit;
+                    spacing: root.ui-unit;
+                    alignment: center;
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Text {
+                        text: @tr("UPDATER_TITLE" => "A new version of Stremio is available");
+                        color: Theme.background;
+                        font-size: root.ui-unit;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    PillButton {
+                        height: 2.5 * root.ui-unit;
+                        unit: root.ui-unit;
+                        label: @tr("UPDATER_INSTALL_BUTTON" => "Install");
+                        surface-color: Theme.text-primary;
+                        accent-color: Theme.background;
+                        clicked => { root.update-install(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    IconAction {
+                        width: 3 * root.ui-unit;
+                        height: 3 * root.ui-unit;
+                        unit: root.ui-unit;
+                        icon-source: @image-url("assets/images/icons/close.svg");
+                        accessible-name: @tr("BUTTON_CLOSE" => "Close");
+                        clicked => { root.updater-banner-dismissed = true; }
+                    }
+                }
+            }
+
             // Lower Content Area (Sidebar on left, main content page on right)
             HorizontalLayout {
                 spacing: 0;
@@ -1347,6 +1539,8 @@ export component MainWindow inherits Window {
                     change-tab(tab) => {
                         if (tab == 4) {
                             root.settings-active-category = 0;
+                        } else if (tab == 2) {
+                            root.library-continue-watching-mode = false;
                         }
                         root.tab-changed(tab);
                     }
@@ -1378,13 +1572,23 @@ export component MainWindow inherits Window {
                         loading: root.debug-preview-enabled && root.debug-preview-page == 0
                             ? root.debug-preview-state == "loading"
                             : loading;
+                        show-server-warning: root.board-show-server-warning;
                         item-selected(id, media-type, video-id) => {
                             board-item-selected(id, media-type, video-id);
                         }
+                        play-clicked(id) => {
+                            board-play-clicked(id);
+                        }
                         remove-continue-watching(id) => { remove-continue-watching(id); }
-                        see-all-continue-watching() => { board-see-all-continue-watching(); }
+                        see-all-continue-watching() => {
+                            root.library-continue-watching-mode = true;
+                            board-see-all-continue-watching();
+                        }
                         see-all-clicked(index) => { board-see-all-clicked(index); }
                         catalog-visible(index) => { board-catalog-visible(index); }
+                        dismiss-server-warning => { board-dismiss-server-warning(); }
+                        reload-server => { board-reload-server(); }
+                        open-server-settings => { board-open-server-settings(); }
                         poster-requested(url) => { request-poster(url); }
                     }
 
@@ -1396,6 +1600,7 @@ export component MainWindow inherits Window {
                             && (root.debug-preview-state == "empty" || root.debug-preview-state == "loading")
                             ? [] : discover-rows;
                         column-count: discover-column-count;
+                        has-next-page: discover-has-next-page;
                         loading: root.debug-preview-enabled && root.debug-preview-page == 1
                             ? root.debug-preview-state == "loading"
                             : loading;
@@ -1406,6 +1611,9 @@ export component MainWindow inherits Window {
                         active-catalog: discover-active-catalog;
                         available-genres: discover-genres;
                         active-genre: discover-active-genre;
+                        available-extra-options: discover-extra-options;
+                        selected-addon-installed: discover-selected-addon-installed;
+                        selected-addon-name: discover-selected-addon-name;
 
                         has-preview: root.debug-preview-enabled && root.debug-preview-page == 1
                             ? (root.debug-preview-state == "movie-selected"
@@ -1455,12 +1663,15 @@ export component MainWindow inherits Window {
                             discover-item-activated(id, media-type, video-id);
                         }
                         load-next-page => { discover-load-next-page(); }
+                        extra-changed(name, value) => { discover-extra-changed(name, value); }
+                        install-selected-addon => { discover-install-selected-addon(); }
+                        metadata-filter-selected(value) => { discover-metadata-filter-selected(value); }
                         poster-requested(url) => { request-poster(url); }
                         play-preview => { play-preview(); }
                         toggle-library-preview => { toggle-library-preview(); }
                         toggle-watched-preview => { details-toggle-watched(); }
                         play-trailer-preview(selection-id) => { play-stream(selection-id); }
-                        scroll-y: discover-scroll-y;
+                        scroll-y <=> discover-scroll-y;
                     }
 
                     if (root.effective-active-tab == 2) : LibraryPage {
@@ -1471,11 +1682,14 @@ export component MainWindow inherits Window {
                             && (root.debug-preview-state == "empty" || root.debug-preview-state == "loading")
                             ? [] : library-rows;
                         column-count: library-column-count;
+                        has-next-page: library-has-next-page;
                         loading: root.debug-preview-enabled && root.debug-preview-page == 2
                             ? root.debug-preview-state == "loading"
                             : loading;
                         active-type: library-active-type;
                         active-sort: library-active-sort;
+                        authenticated: library-authenticated;
+                        continue-watching-mode: root.library-continue-watching-mode;
                         type-open: root.debug-preview-enabled && root.debug-preview-page == 2
                             && root.debug-preview-state == "type-dropdown";
                         sort-open: root.debug-preview-enabled && root.debug-preview-page == 2
@@ -1487,8 +1701,13 @@ export component MainWindow inherits Window {
                             library-item-selected(id, media-type, video-id);
                         }
                         load-next-page => { library-load-next-page(); }
+                        request-login => { root.username = ""; }
+                        remove-item(id) => { library-remove-item(id); }
+                        watched-changed(id, watched) => { library-watched-changed(id, watched); }
+                        play-item(id) => { library-play-item(id); }
+                        dismiss-item(id) => { library-dismiss-item(id); }
                         poster-requested(url) => { request-poster(url); }
-                        scroll-y: library-scroll-y;
+                        scroll-y <=> library-scroll-y;
                     }
 
                     if (root.effective-active-tab == 3) : AddonsPage {
@@ -1498,6 +1717,8 @@ export component MainWindow inherits Window {
                         addons: root.debug-preview-enabled && root.debug-preview-page == 3
                             && (root.debug-preview-state == "empty" || root.debug-preview-state == "loading")
                             ? [] : addons-list;
+                        has-next-page: addons-has-next-page;
+                        scroll-y <=> addons-scroll-y;
                         search-query: addons-search-query;
                         loading: root.debug-preview-enabled && root.debug-preview-page == 3
                             ? root.debug-preview-state == "loading"
@@ -1528,7 +1749,9 @@ export component MainWindow inherits Window {
                         close-addon-details => { close-addon-details(); }
                         configure-addon(url) => { configure-addon(url); }
                         share-addon(url) => { share-addon(url); }
+                        share-social(platform, url) => { addon-share-social(platform, url); }
                         search-changed(query) => { addons-search-changed(query); }
+                        load-next-page => { addons-load-next-page(); }
                     }
 
                     if (root.effective-active-tab == 4) : SettingsPage {
@@ -1572,6 +1795,23 @@ export component MainWindow inherits Window {
                         subtitles-bold: settings-subtitles-bold;
                         subtitles-offset: settings-subtitles-offset;
                         seek-duration: settings-seek-duration;
+                        seek-short-duration: settings-seek-short-duration;
+                        next-video-popup-duration: settings-next-video-popup-duration;
+                        external-player: settings-external-player;
+                        audio-language: settings-audio-language;
+                        surround-sound: settings-surround-sound;
+                        ass-subtitles-styling: settings-ass-subtitles-styling;
+                        subtitles-text-color: settings-subtitles-text-color;
+                        subtitles-background-color: settings-subtitles-background-color;
+                        subtitles-outline-color: settings-subtitles-outline-color;
+                        user-email: root.username;
+                        user-id: settings-user-id;
+                        user-avatar: root.avatar-image;
+                        anonymous-avatar: root.anonymous-icon;
+                        default-avatar: root.default-avatar-icon;
+                        has-avatar: root.has-avatar-image;
+                        authenticated: root.username != "" && root.username != "Guest";
+                        trakt-authenticated: settings-trakt-authenticated;
                         pause-on-minimize: settings-pause-on-minimize;
                         quit-on-close: settings-quit-on-close;
                         export-loading: root.debug-preview-enabled && root.debug-preview-page == 4
@@ -1597,6 +1837,9 @@ export component MainWindow inherits Window {
                         streaming-lsd: settings-streaming-lsd;
                         streaming-remote-url: settings-streaming-remote-url;
                         streaming-logs-text: settings-streaming-logs-text;
+                        streaming-server-urls: settings-streaming-server-urls;
+                        streaming-https-endpoint: settings-streaming-https-endpoint;
+                        streaming-transcode-profile: settings-streaming-transcode-profile;
                         refresh-icon: refresh-icon;
                         folder-icon: folder-icon;
 
@@ -1633,6 +1876,22 @@ export component MainWindow inherits Window {
                         change-subtitles-bold(val) => { settings-change-subtitles-bold(val); }
                         change-subtitles-offset(val) => { settings-change-subtitles-offset(val); }
                         change-seek-duration(val) => { settings-change-seek-duration(val); }
+                        change-seek-short-duration(val) => { settings-change-seek-short-duration(val); }
+                        change-next-video-popup-duration(val) => { settings-change-next-video-popup-duration(val); }
+                        change-external-player(val) => { settings-change-external-player(val); }
+                        change-audio-language(val) => { settings-change-audio-language(val); }
+                        change-surround-sound(val) => { settings-change-surround-sound(val); }
+                        change-ass-subtitles-styling(val) => { settings-change-ass-subtitles-styling(val); }
+                        change-subtitles-text-color(val) => { settings-change-subtitles-text-color(val); }
+                        change-subtitles-background-color(val) => { settings-change-subtitles-background-color(val); }
+                        change-subtitles-outline-color(val) => { settings-change-subtitles-outline-color(val); }
+                        toggle-trakt => { settings-toggle-trakt(); }
+                        logout => { root.logout(); }
+                        add-streaming-server-url(url) => { settings-add-streaming-server-url(url); }
+                        delete-streaming-server-url(url) => { settings-delete-streaming-server-url(url); }
+                        copy-remote-url(url) => { settings-copy-remote-url(url); }
+                        change-streaming-https-endpoint(val) => { settings-change-streaming-https-endpoint(val); }
+                        change-streaming-transcode-profile(val) => { settings-change-streaming-transcode-profile(val); }
                         change-pause-on-minimize(val) => { settings-change-pause-on-minimize(val); }
                         change-quit-on-close(val) => { settings-change-quit-on-close(val); }
                         open-external-url(url) => { root.open-external-url(url); }
@@ -1793,6 +2052,7 @@ export component MainWindow inherits Window {
                     || root.debug-preview-state == "series-no-streams")
                 : detail-in-stream-view;
             episode-search-query: detail-episode-search-query;
+            share-url: detail-share-url;
 
             icon-play: root.icon-play;
             icon-link: root.icon-link;
@@ -1821,6 +2081,12 @@ export component MainWindow inherits Window {
             copy-magnet-link(id) => { details-copy-magnet-link(id); }
             copy-download-link(id) => { details-copy-download-link(id); }
             toggle-season-watched(s) => { details-toggle-season-watched(s); }
+            manual-episode-selected(season, episode) => {
+                details-manual-episode-selected(season, episode);
+            }
+            open-addons => { root.tab-changed(3); }
+            share-copy(url) => { details-share-copy(url); }
+            share-social(platform, url) => { details-share-social(platform, url); }
             play-stream(selection-id) => { play-stream(selection-id); }
             toggle-fullscreen => { root.player-toggle-fullscreen(); }
             close => {
@@ -1864,6 +2130,7 @@ export component MainWindow inherits Window {
             volume: player-volume;
             muted: player-muted;
             progress: player-progress;
+            duration-seconds: player-duration-seconds;
             elapsed-time-str: player-elapsed-time-str;
             total-time-str: player-total-time-str;
             subtitles-tracks: player-subtitles-tracks;
@@ -1879,6 +2146,7 @@ export component MainWindow inherits Window {
             subtitle-delay-seconds: player-subtitle-delay-seconds;
             subtitle-size-percent: player-subtitle-size-percent;
             subtitle-offset-percent: player-subtitle-offset-percent;
+            audio-delay-seconds: player-audio-delay-seconds;
             is-series: root.debug-preview-enabled && root.debug-preview-page == 8
                 ? true : player-is-series;
             available-seasons: player-seasons;
@@ -1887,6 +2155,16 @@ export component MainWindow inherits Window {
             active-video-id <=> root.player-active-video-id;
             active-episode-idx <=> root.player-active-episode-idx;
             has-next-episode: player-has-next-episode;
+            next-episode-title: root.player-next-episode-title;
+            series-name: root.player-series-name;
+            next-series-name: root.player-next-series-name;
+            series-runtime: root.player-series-runtime;
+            series-release-year: root.player-series-release-year;
+            series-description: root.player-series-description;
+            series-logo: root.player-series-logo;
+            active-season-watched: root.player-active-season-watched;
+            next-episode-poster: root.player-next-episode-poster;
+            next-popup-duration-seconds: root.settings-next-video-popup-duration.to-float();
             playback-speed: player-playback-speed;
             video-scale-mode: player-video-scale-mode;
             error-message: root.debug-preview-enabled && root.debug-preview-page == 8
@@ -1915,6 +2193,9 @@ export component MainWindow inherits Window {
             show-stats-menu <=> root.player-show-stats-menu;
             show-upscaler-menu <=> root.player-show-upscaler-menu;
             show-options-menu <=> root.player-show-options-menu;
+            show-cast-menu <=> root.player-show-cast-menu;
+            cast-devices: root.player-cast-devices;
+            cast-devices-loading: root.player-cast-devices-loading;
             show-context-menu <=> root.player-show-context-menu;
             show-playlist-drawer <=> root.player-show-playlist-drawer;
             active-shader-preset <=> root.player-active-shader-preset;
@@ -1955,17 +2236,25 @@ export component MainWindow inherits Window {
             change-subtitle-delay(value) => { player-change-subtitle-delay(value); }
             change-subtitle-size(value) => { player-change-subtitle-size(value); }
             change-subtitle-offset(value) => { player-change-subtitle-offset(value); }
+            change-audio-delay(value) => { player-change-audio-delay(value); }
             change-speed(val) => { player-change-speed(val); }
             change-video-scale(mode) => { player-change-video-scale(mode); }
             change-shader-preset(idx) => { player-change-shader-preset(idx); }
             skip-segment => { player-skip-segment(); }
             copy-stream-link => { player-copy-stream-link(); }
+            copy-magnet-link => { player-copy-magnet-link(); }
+            download-subs => { player-download-subs(); }
             download-video => { player-download-video(); }
+            open-external-player => { player-open-external-player(); }
+            refresh-cast-devices => { player-refresh-cast-devices(); }
+            cast-device-selected(id) => { player-cast-device(id); }
             play-episode(idx, video-id) => { player-play-episode(idx, video-id); }
             play-next-episode => { player-next-episode(); }
             season-changed(season) => { player-season-changed(season); }
             season-step(direction) => { player-season-step(direction); }
+            mark-season-watched(season) => { player-mark-season-watched(season); }
             toggle-episode-watched(video-id) => { player-toggle-episode-watched(video-id); }
+            play-saved-episode(video-id) => { player-play-saved-episode(video-id); }
             toggle-fullscreen => { player-toggle-fullscreen(); }
             close => { player-close(); }
             activity => {
@@ -1978,6 +2267,169 @@ export component MainWindow inherits Window {
                 if (root.effective-show-player && !root.player-menu-open
                     && !app-shortcuts.has-focus) {
                     app-shortcuts.focus();
+                }
+            }
+        }
+
+        event-dialog := EventModal {
+            width: 100%;
+            height: 100%;
+            z: 2050;
+            unit: root.ui-unit;
+            open: root.event-modal-open;
+            event-id: root.event-modal-id;
+            title: root.event-modal-title;
+            message: root.event-modal-message;
+            artwork: root.event-modal-artwork;
+            addon-name: root.event-modal-addon-name;
+            addon-manifest-url: root.event-modal-addon-manifest-url;
+            external-url: root.event-modal-external-url;
+            close-requested(id) => { root.event-dismiss(id); }
+            action-requested(id, url) => { root.event-action(id, url); }
+        }
+
+        shortcuts-dialog := ModalDialog {
+            width: 100%;
+            height: 100%;
+            z: 2100;
+            unit: root.ui-unit;
+            open: root.shortcuts-modal-open;
+            title: @tr("SETTINGS_NAV_SHORTCUTS" => "Shortcuts");
+            dialog-width: 78 * root.ui-unit;
+            dialog-height: 48 * root.ui-unit;
+            close-requested => {
+                root.shortcuts-modal-open = false;
+                app-shortcuts.focus();
+            }
+
+            ScrollView {
+                viewport-width: self.width;
+                horizontal-scrollbar-policy: always-off;
+                mouse-drag-pan-enabled: true;
+
+                HorizontalLayout {
+                    width: parent.width;
+                    spacing: 4 * root.ui-unit;
+                    alignment: start;
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 0px;
+                        GuideSectionTitle { unit: root.ui-unit; text: @tr("SETTINGS_NAV_GENERAL" => "General"); }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_NAVIGATE_MENUS" => "Navigate menus"); keys: "1 – 6"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_GO_TO_SEARCH" => "Go to Search"); keys: "0"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_NAVIGATE_HISTORY" => "Navigate history"); keys: "Backspace / Ctrl + Backspace"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_FULLSCREEN" => "Fullscreen"); keys: "F"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_SHORTCUTS" => "Show shortcuts"); keys: "Ctrl + /"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_GUIDE" => "Gamepad guide"); keys: "Ctrl + G"; }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 0px;
+                        GuideSectionTitle { unit: root.ui-unit; text: @tr("SETTINGS_NAV_PLAYER" => "Player"); }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_PLAY_PAUSE" => "Play / Pause"); keys: "Space"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_SEEK_FORWARD" => "Seek forward"); keys: "→ / Shift + →"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_SEEK_BACKWARD" => "Seek backward"); keys: "← / Shift + ←"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_VOLUME" => "Volume"); keys: "↑ / ↓"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_MUTE" => "Mute"); keys: "M"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_SUBTITLES_SIZE" => "Subtitle size"); keys: "- / ="; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_SUBTITLES_DELAY" => "Subtitle delay"); keys: "G / H"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_PLAYBACK_SPEED" => "Playback speed"); keys: "[ / ]"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_TOGGLE_SUBTITLES" => "Toggle subtitles"); keys: "C"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_MENU_SUBTITLES" => "Subtitles menu"); keys: "S"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_MENU_AUDIO" => "Audio menu"); keys: "A"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_MENU_INFO" => "Info menu"); keys: "I"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_MENU_PLAYBACK_SPEED" => "Playback speed menu"); keys: "R"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_MENU_STATISTICS" => "Statistics menu"); keys: "D"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_PLAY_NEXT" => "Play next"); keys: "Shift + N"; }
+                        GuideRow { unit: root.ui-unit; label: @tr("SETTINGS_SHORTCUT_EXIT_BACK" => "Exit / Back"); keys: "Esc"; }
+                    }
+                }
+            }
+        }
+
+        gamepad-dialog := ModalDialog {
+            width: 100%;
+            height: 100%;
+            z: 2100;
+            unit: root.ui-unit;
+            open: root.gamepad-modal-open;
+            title: @tr("GAMEPAD_CONTROLS_TITLE" => "Gamepad controls");
+            dialog-width: 72 * root.ui-unit;
+            dialog-height: 45 * root.ui-unit;
+            close-requested => {
+                root.gamepad-modal-open = false;
+                app-shortcuts.focus();
+            }
+
+            VerticalLayout {
+                spacing: 2 * root.ui-unit;
+
+                Rectangle {
+                    height: 15 * root.ui-unit;
+                    background: transparent;
+
+                    controller := Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: root.ui-unit;
+                        width: 26 * root.ui-unit;
+                        height: 12 * root.ui-unit;
+                        border-radius: 5 * root.ui-unit;
+                        background: Theme.overlay;
+                        border-width: 1px;
+                        border-color: Theme.text-primary.with-alpha(0.15);
+
+                        Rectangle { x: 4 * root.ui-unit; y: 5.2 * root.ui-unit; width: 5 * root.ui-unit; height: 1.2 * root.ui-unit; border-radius: 0.25 * root.ui-unit; background: Theme.text-secondary; }
+                        Rectangle { x: 5.9 * root.ui-unit; y: 3.3 * root.ui-unit; width: 1.2 * root.ui-unit; height: 5 * root.ui-unit; border-radius: 0.25 * root.ui-unit; background: Theme.text-secondary; }
+                        for point[index] in [0, 1, 2, 3] : Rectangle {
+                            x: (index == 0 || index == 3) ? 20 * root.ui-unit : (index == 1 ? 18.2 * root.ui-unit : 21.8 * root.ui-unit);
+                            y: index == 0 ? 3.2 * root.ui-unit : (index == 3 ? 6.8 * root.ui-unit : 5 * root.ui-unit);
+                            width: 1.6 * root.ui-unit;
+                            height: 1.6 * root.ui-unit;
+                            border-radius: self.width / 2;
+                            background: index == 0 ? Theme.accent : Theme.text-secondary;
+                        }
+                        Rectangle { x: 9.5 * root.ui-unit; y: 7.5 * root.ui-unit; width: 3 * root.ui-unit; height: 3 * root.ui-unit; border-radius: self.width / 2; background: Theme.surface-light; }
+                        Rectangle { x: 14 * root.ui-unit; y: 7.5 * root.ui-unit; width: 3 * root.ui-unit; height: 3 * root.ui-unit; border-radius: self.width / 2; background: Theme.surface-light; }
+                    }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    horizontal-scrollbar-policy: always-off;
+                    mouse-drag-pan-enabled: true;
+
+                    HorizontalLayout {
+                        width: parent.width;
+                        spacing: 4 * root.ui-unit;
+                        alignment: start;
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 0px;
+                            GuideSectionTitle { unit: root.ui-unit; text: @tr("GAMEPAD_SECTION_NAVIGATION" => "Navigation"); }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_NAVIGATE" => "Navigate"); keys: "L stick"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_SELECT" => "Select"); keys: "A / ✕"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_BACK" => "Back"); keys: "B / ○"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_FULLSCREEN" => "Fullscreen"); keys: "Y / △"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_GUIDE" => "Guide"); keys: "X / □"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_PREV_TAB" => "Previous tab"); keys: "LB / L1"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_NEXT_TAB" => "Next tab"); keys: "RB / R1"; }
+                        }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 0px;
+                            GuideSectionTitle { unit: root.ui-unit; text: @tr("GAMEPAD_SECTION_PLAYER" => "Player"); }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_PLAY_PAUSE" => "Play / Pause"); keys: "X / □"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_SEEK_BACK" => "Seek backward"); keys: "R stick ←"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_SEEK_FWD" => "Seek forward"); keys: "R stick →"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_VOL_UP" => "Volume up"); keys: "R stick ↑"; }
+                            GuideRow { unit: root.ui-unit; label: @tr("GAMEPAD_ACTION_VOL_DOWN" => "Volume down"); keys: "R stick ↓"; }
+                        }
+                    }
                 }
             }
         }

@@ -339,6 +339,39 @@ pub fn setup(
         }
     });
 
+    ui.on_details_manual_episode_selected({
+        let runtime = runtime.clone();
+        move |season, episode| {
+            if episode < 1 || season < 0 {
+                return;
+            }
+            let video_id = runtime.model().ok().and_then(|model| {
+                let selected = model.meta_details.selected.as_ref()?;
+                let ready_meta = model.meta_details.meta_items.iter().find_map(|resource| {
+                    match &resource.content {
+                        Some(Loadable::Ready(meta)) if meta.preview.id == selected.meta_path.id => {
+                            Some(meta)
+                        }
+                        _ => None,
+                    }
+                });
+                ready_meta
+                    .and_then(|meta| {
+                        meta.videos.iter().find_map(|video| {
+                            video.series_info.as_ref().and_then(|info| {
+                                (info.season as i32 == season && info.episode as i32 == episode)
+                                    .then(|| video.id.clone())
+                            })
+                        })
+                    })
+                    .or_else(|| Some(format!("{}:{season}:{episode}", selected.meta_path.id)))
+            });
+            if let Some(video_id) = video_id {
+                reload_stream_for_video(&runtime, video_id);
+            }
+        }
+    });
+
     // Search query changed callback
     ui.on_details_episode_search_changed({
         let runtime = runtime.clone();
@@ -467,6 +500,30 @@ pub fn setup(
                     });
                 }
             });
+        }
+    });
+
+    ui.on_details_share_copy(|share_url| {
+        if let Err(error) = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(share_url.to_string()))
+        {
+            tracing::warn!(%error, "failed to copy details share link");
+        }
+    });
+
+    ui.on_details_share_social(|platform, share_url| {
+        let base = match platform.as_str() {
+            "facebook" => "https://www.facebook.com/sharer/sharer.php",
+            "x" => "https://twitter.com/intent/tweet",
+            "reddit" => "https://www.reddit.com/submit",
+            _ => return,
+        };
+        let Ok(mut url) = url::Url::parse(base) else {
+            return;
+        };
+        url.query_pairs_mut().append_pair("url", share_url.as_str());
+        if let Err(error) = open::that(url.as_str()) {
+            tracing::warn!(%error, %platform, "failed to open details share URL");
         }
     });
 }
@@ -748,6 +805,15 @@ pub fn sync(
     else {
         return;
     };
+    if let Some(selected) = meta_details.selected.as_ref() {
+        let encoded_type: String =
+            url::form_urlencoded::byte_serialize(selected.meta_path.r#type.as_bytes()).collect();
+        let encoded_id: String =
+            url::form_urlencoded::byte_serialize(selected.meta_path.id.as_bytes()).collect();
+        ui.set_detail_share_url(
+            format!("https://web.stremio.com/#/detail/{encoded_type}/{encoded_id}").into(),
+        );
+    }
     let Some(presentation) = navigation.details_presentation(selected_id) else {
         tracing::debug!(%selected_id, "discarding metadata for an inactive route");
         return;
@@ -1063,6 +1129,7 @@ pub fn sync(
                     is_watched,
                     is_scheduled,
                     progress,
+                    can_play: false,
                 });
             }
         }

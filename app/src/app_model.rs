@@ -19,7 +19,6 @@ use stremio_core::{
     types::{addon::Descriptor, api::LinkAuthKey, resource::MetaItemPreview},
 };
 
-use crate::IconData;
 use core_env::DesktopEnv;
 
 #[derive(Model, Clone)]
@@ -42,29 +41,6 @@ pub struct AppModel {
     pub installed_addons: InstalledAddonsWithFilters,
     pub addon_details: AddonDetails,
     pub streaming_server: StreamingServer,
-}
-
-pub fn get_icon_data(pack: iconflow::Pack, name: &str) -> IconData {
-    if let Ok(icon) = iconflow::try_icon(
-        pack,
-        name,
-        iconflow::Style::Regular,
-        iconflow::Size::Regular,
-    ) {
-        let mut glyph_str = String::new();
-        if let Some(c) = char::from_u32(icon.codepoint) {
-            glyph_str.push(c);
-        }
-        IconData {
-            glyph: glyph_str.into(),
-            font_family: icon.family.into(),
-        }
-    } else {
-        IconData {
-            glyph: "".into(),
-            font_family: "".into(),
-        }
-    }
 }
 
 pub fn format_rate(bytes_per_second: f64) -> String {

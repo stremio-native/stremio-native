@@ -4,8 +4,13 @@ import { ButtonSurface, ChevronTextButton, IconAction, MenuButton, PillButton } 
 import { Video } from "../components/media_rows.slint";
 import { SeasonSelectField } from "../components/select.slint";
 import { Slider } from "../components/slider.slint";
-import { PopupMenuSurface, ContextMenuSurface, ContextMenuOption } from "../components/overlays.slint";
+import { PopupMenuSurface } from "../components/overlays.slint";
 import { EpisodeItem } from "details.slint";
+
+export struct CastDevice {
+    id: string,
+    name: string,
+}
 
 component PlayerIconButton inherits IconAction {
     // Kept for the legacy control tree below. The active player chrome uses
@@ -18,13 +23,13 @@ component PlayerIconButton inherits IconAction {
     height: 64px;
     unit: 16px;
     icon-size: 35px;
-    border-radius: 12px;
+    border-radius: Theme.border-radius;
     enabled: !root.disabled;
     label: root.tooltip;
     surface-color: transparent;
-    hover-color: #ffffff1f;
-    active-color: #ffffff1f;
-    foreground-color: #ffffffdf;
+    hover-color: Theme.overlay-hover;
+    active-color: Theme.overlay-pressed;
+    foreground-color: Theme.text-primary;
     active-foreground-color: Theme.accent;
 }
 
@@ -33,30 +38,30 @@ component TrackItem inherits ButtonSurface {
     in property <string> secondary-label: "";
     in property <bool> active;
     in property <bool> available: true;
-    in property <length> row-height: secondary-label == "" ? 56px : 64px;
+    in property <length> row-height: secondary-label == "" ? 52px : 64px;
     height: row-height;
-    border-radius: 10px;
+    border-radius: Theme.border-radius;
     background: root.has-hover
-        ? (active ? #7b5bf54d : #ffffff12)
-        : (active ? #7b5bf538 : transparent);
+        ? (active ? Theme.overlay-hover : Theme.overlay)
+        : (active ? Theme.overlay-hover : transparent);
     accessible-name: root.label;
     enabled: root.available;
     opacity: root.available ? 1.0 : 0.45;
 
-    animate background { duration: 150ms; }
+    animate background { duration: Theme.motion-control; }
 
     VerticalLayout {
-        x: 24px;
-        y: secondary-label == "" ? 0px : 10px;
-        width: parent.width - 64px;
-        height: secondary-label == "" ? parent.height : parent.height - 20px;
-        spacing: 4px;
+        x: 20px;
+        y: secondary-label == "" ? 0px : 8px;
+        width: parent.width - 52px;
+        height: secondary-label == "" ? parent.height : parent.height - 16px;
+        spacing: 2px;
         alignment: center;
 
         Text {
             text: label;
-            color: #ffffff;
-            font-size: 17px;
+            color: Theme.text-primary;
+            font-size: 16px;
             font-weight: active ? 600 : 400;
             vertical-alignment: center;
             overflow: elide;
@@ -64,32 +69,32 @@ component TrackItem inherits ButtonSurface {
 
         if (secondary-label != "") : Text {
             text: secondary-label;
-            color: #ffffff80;
-            font-size: 14px;
+            color: Theme.text-muted;
+            font-size: 13px;
             vertical-alignment: center;
             overflow: elide;
         }
     }
 
     if (active) : Rectangle {
-        x: parent.width - 24px;
+        x: parent.width - 28px;
         y: (parent.height - 8px) / 2;
         width: 8px;
         height: 8px;
-        border-radius: self.height / 2;
-        background: Theme.accent;
+        border-radius: 4px;
+        background: Theme.secondary-accent;
     }
 }
 
 component PlayerMenuOption inherits MenuButton {
     unit: 14px;
     height: 56px;
-    border-radius: 10px;
+    border-radius: Theme.border-radius;
     show-icon: true;
     icon-size: 22px;
     label-font-size: 16px;
     horizontal-padding: 16px;
-    hover-color: #ffffff1f;
+    hover-color: Theme.overlay-hover;
     opacity: 1;
 }
 
@@ -103,66 +108,72 @@ component SubtitleStepper inherits Rectangle {
     in property <bool> disabled: false;
     callback changed(float);
 
-    height: 88px;
+    height: 84px;
     background: transparent;
     opacity: disabled ? 0.42 : 1.0;
 
     VerticalLayout {
-        padding-left: 24px;
-        padding-right: 24px;
-        padding-bottom: 16px;
-        spacing: 8px;
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-bottom: 12px;
+        spacing: 6px;
 
         Text {
-            height: 22px;
+            height: 20px;
             text: label;
-            color: #ffffff80;
+            color: Theme.text-muted;
             font-size: 14px;
-            font-weight: 600;
+            font-weight: 500;
             vertical-alignment: center;
             overflow: elide;
         }
 
-        HorizontalLayout {
-            height: 42px;
-            spacing: 8px;
-            alignment: center;
+        Rectangle {
+            height: 48px;
+            border-radius: 24px;
+            background: Theme.overlay;
+            clip: true;
 
-            ButtonSurface {
-                width: 42px;
-                height: 42px;
-                border-radius: 8px;
-                enabled: !root.disabled;
-                accessible-name: @tr("Decrease") + " " + root.label;
-                background: self.has-hover ? #ffffff1f : #ffffff0d;
-                Text { text: "−"; color: #ffffff; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; }
-                clicked => {
-                    root.value = max(root.minimum, root.value - root.step);
-                    root.changed(root.value);
+            HorizontalLayout {
+                padding-left: 0px;
+                padding-right: 0px;
+
+                ButtonSurface {
+                    width: 48px;
+                    height: 48px;
+                    border-radius: 24px;
+                    enabled: !root.disabled;
+                    accessible-name: @tr("Decrease") + " " + root.label;
+                    background: self.has-hover ? Theme.overlay-pressed : Theme.overlay-hover;
+                    Text { text: "−"; color: Theme.text-primary; font-size: 20px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    clicked => {
+                        root.value = max(root.minimum, root.value - root.step);
+                        root.changed(root.value);
+                    }
                 }
-            }
 
-            Text {
-                horizontal-stretch: 1;
-                text: round(value * 100.0) / 100.0 + unit;
-                color: #ffffff;
-                font-size: 16px;
-                font-weight: 600;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+                Text {
+                    horizontal-stretch: 1;
+                    text: value == 0.0 && unit == "s" ? "--" : round(value * 100.0) / 100.0 + unit;
+                    color: Theme.text-primary;
+                    font-size: 15px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
 
-            ButtonSurface {
-                width: 42px;
-                height: 42px;
-                border-radius: 8px;
-                enabled: !root.disabled;
-                accessible-name: @tr("Increase") + " " + root.label;
-                background: self.has-hover ? #ffffff1f : #ffffff0d;
-                Text { text: "+"; color: #ffffff; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
-                clicked => {
-                    root.value = min(root.maximum, root.value + root.step);
-                    root.changed(root.value);
+                ButtonSurface {
+                    width: 48px;
+                    height: 48px;
+                    border-radius: 24px;
+                    enabled: !root.disabled;
+                    accessible-name: @tr("Increase") + " " + root.label;
+                    background: self.has-hover ? Theme.overlay-pressed : Theme.overlay-hover;
+                    Text { text: "+"; color: Theme.text-primary; font-size: 20px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    clicked => {
+                        root.value = min(root.maximum, root.value + root.step);
+                        root.changed(root.value);
+                    }
                 }
             }
         }
@@ -199,6 +210,7 @@ export component PlayerPage inherits Rectangle {
     in-out property <float> progress: 0.0; // 0.0 to 1.0 representation
     in property <string> elapsed-time-str: "00:00";
     in property <string> total-time-str: "00:00";
+    in property <float> duration-seconds: 0;
     in property <float> seek-step-seconds: 10.0;
 
     // Track data lists
@@ -215,6 +227,7 @@ export component PlayerPage inherits Rectangle {
     in-out property <float> subtitle-delay-seconds: 0.0;
     in-out property <float> subtitle-size-percent: 100.0;
     in-out property <float> subtitle-offset-percent: 100.0;
+    in-out property <float> audio-delay-seconds: 0.0;
     
     // Episode playlist
     in property <bool> is-series: false;
@@ -224,6 +237,24 @@ export component PlayerPage inherits Rectangle {
     in-out property <string> active-video-id: "";
     in-out property <int> active-episode-idx: 0;
     in property <bool> has-next-episode: false;
+    in-out property <bool> show-next-video-popup: false;
+    in property <string> next-episode-title: "";
+    in property <string> series-name: "";
+    in property <string> next-series-name: "";
+    in property <string> series-runtime: "";
+    in property <string> series-release-year: "";
+    in property <string> series-description: "";
+    in property <image> series-logo;
+    in property <bool> active-season-watched: false;
+    in property <image> next-episode-poster;
+    in-out property <int> next-video-countdown: 10;
+    in property <float> next-popup-duration-seconds: 35;
+    private property <bool> next-popup-dismissed: false;
+    callback dismiss-next-video-popup();
+    in property <[CastDevice]> cast-devices: [];
+    in property <bool> cast-devices-loading: false;
+    callback refresh-cast-devices();
+    callback cast-device-selected(string);
 
     // Speed options
     in-out property <float> playback-speed: 1.0;
@@ -276,15 +307,21 @@ export component PlayerPage inherits Rectangle {
     callback change-subtitle-delay(float);
     callback change-subtitle-size(float);
     callback change-subtitle-offset(float);
+    callback change-audio-delay(float);
     callback change-speed(float);
     callback change-video-scale(int);
     callback change-shader-preset(int);
     callback copy-stream-link();
+    callback copy-magnet-link();
+    callback download-subs();
     callback download-video();
+    callback open-external-player();
     callback play-episode(int, string);
+    callback play-saved-episode(string);
     callback play-next-episode();
     callback season-changed(int);
     callback season-step(int);
+    callback mark-season-watched(int);
     callback toggle-episode-watched(string);
     callback toggle-fullscreen();
     callback close();
@@ -297,6 +334,7 @@ export component PlayerPage inherits Rectangle {
     in-out property <bool> show-stats-menu: false;
     in-out property <bool> show-upscaler-menu: false;
     in-out property <bool> show-options-menu: false;
+    in-out property <bool> show-cast-menu: false;
     in-out property <bool> show-playlist-drawer: false;
     in-out property <bool> season-menu-open: false;
     in-out property <bool> show-context-menu: false;
@@ -308,6 +346,7 @@ export component PlayerPage inherits Rectangle {
     property <float> buffer-visual-progress: stream-progress > 0.0
         ? stream-progress
         : buffering-percent;
+    private property <bool> volume-osd-visible: false;
     property <string> selected-subtitle-language: active-subtitle-idx >= 0 && active-subtitle-idx < subtitle-track-languages.length
         ? subtitle-track-languages[active-subtitle-idx]
         : "";
@@ -331,10 +370,40 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
+    changed active-video-id => {
+        root.next-popup-dismissed = false;
+        root.show-next-video-popup = false;
+    }
+
+    changed progress => {
+        let actual-remaining = max(0, root.duration-seconds * (1 - root.progress));
+        if (root.has-next-episode && root.next-popup-duration-seconds > 0
+            && actual-remaining > 0
+            && actual-remaining <= root.next-popup-duration-seconds
+            && !root.next-popup-dismissed) {
+            root.show-next-video-popup = true;
+            root.next-video-countdown = max(0, ceil(actual-remaining));
+        }
+    }
+
     buffering-pulse-timer := Timer {
         interval: 1s;
         running: loading && !has-video-frame;
         triggered => { buffer-pulse = !buffer-pulse; }
+    }
+
+    changed volume => {
+        root.volume-osd-visible = true;
+        volume-osd-timer.restart();
+    }
+
+    volume-osd-timer := Timer {
+        interval: 900ms;
+        running: false;
+        triggered => {
+            self.stop();
+            root.volume-osd-visible = false;
+        }
     }
 
     background: #000000;
@@ -372,7 +441,7 @@ export component PlayerPage inherits Rectangle {
     if (error-message != "") : Rectangle {
         width: 100%;
         height: 100%;
-        background: #09070ed9;
+        background: Theme.modal-background.with-alpha(0.95);
         z: 250;
 
         VerticalLayout {
@@ -383,25 +452,45 @@ export component PlayerPage inherits Rectangle {
 
             Text {
                 text: @tr("Playback unavailable");
-                color: #ffffff;
+                color: Theme.text-primary;
                 font-size: 22px;
                 font-weight: 700;
                 horizontal-alignment: center;
             }
             Text {
                 text: error-message;
-                color: #ffffffb8;
+                color: Theme.text-secondary;
                 font-size: 14px;
                 horizontal-alignment: center;
                 wrap: word-wrap;
             }
-            PillButton {
-                width: 192px;
-                unit: 16px;
-                label: @tr("Back to streams");
-                outlined: true;
-                surface-color: transparent;
-                clicked => { close(); }
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: center;
+
+                PillButton {
+                    width: 170px;
+                    unit: 16px;
+                    label: @tr("Back to streams");
+                    outlined: true;
+                    surface-color: transparent;
+                    clicked => { close(); }
+                }
+                PillButton {
+                    width: 190px;
+                    unit: 16px;
+                    label: @tr("PLAYER_PLAY_IN" => "Play in external player");
+                    outlined: false;
+                    clicked => { open-external-player(); }
+                }
+                PillButton {
+                    width: 170px;
+                    unit: 16px;
+                    label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
+                    outlined: true;
+                    surface-color: transparent;
+                    clicked => { copy-stream-link(); }
+                }
             }
         }
     }
@@ -427,6 +516,7 @@ export component PlayerPage inherits Rectangle {
             show-speed-menu = false;
             show-stats-menu = false;
             show-options-menu = false;
+            show-cast-menu = false;
             show-playlist-drawer = false;
             season-menu-open = false;
             
@@ -434,45 +524,40 @@ export component PlayerPage inherits Rectangle {
             root.activity();
         }
         pointer-event(event) => {
-            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                context-menu-x = self.mouse-x;
-                context-menu-y = self.mouse-y;
-                show-context-menu = true;
-                controls-visible = true;
-                root.activity();
-            } else if (event.kind == PointerEventKind.move) {
+            if (event.kind == PointerEventKind.move) {
                 controls-visible = true;
                 root.activity();
             }
         }
+
+        ContextMenuArea {
+            width: 100%;
+            height: 100%;
+            Menu {
+                MenuItem {
+                    title: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
+                    activated => { root.copy-stream-link(); }
+                }
+                MenuItem {
+                    title: @tr("Copy magnet link");
+                    activated => { root.copy-magnet-link(); }
+                }
+                MenuItem {
+                    title: @tr("CTX_DOWNLOAD_VIDEO" => "Download this video");
+                    activated => { root.download-video(); }
+                }
+                MenuItem {
+                    title: @tr("Playback information");
+                    activated => {
+                        root.controls-visible = true;
+                        root.show-stats-menu = true;
+                    }
+                }
+            }
+        }
     }
 
-    // Big play indicator in center if paused
-    if (paused && !loading) : Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 96px;
-        height: 96px;
-        border-radius: self.height / 2;
-        background: #0f0d20aa;
-        border-width: 1px;
-        border-color: #ffffff22;
-        z: 40;
-        
-        Image {
-            x: (parent.width - 42px) / 2 + 3px;
-            y: (parent.height - 42px) / 2;
-            width: 42px;
-            height: 42px;
-            source: @image-url("../assets/images/icons/play.svg");
-            image-fit: contain;
-            colorize: #ffffff;
-        }
 
-        TouchArea {
-            clicked => { toggle-pause(); }
-        }
-    }
 
     // Match the web player: buffering is a transparent, pulsing Stremio mark.
     // The foreground fill follows torrent/cache progress while the faded mark
@@ -550,7 +635,7 @@ export component PlayerPage inherits Rectangle {
 
             Text {
                 text: item-title;
-                color: #ffffffe6;
+                color: Theme.text-primary;
                 font-size: 19px;
                 font-weight: 500;
                 vertical-alignment: center;
@@ -559,8 +644,8 @@ export component PlayerPage inherits Rectangle {
 
             if (active-shader-preset > 0) : Rectangle {
                 height: 22px;
-                background: #7b5bf5e6;
-                border-radius: 4px;
+                background: Theme.accent.with-alpha(0.9);
+                border-radius: Theme.compact-radius;
                 y: (parent.height - self.height) / 2;
 
                 HorizontalLayout {
@@ -570,7 +655,7 @@ export component PlayerPage inherits Rectangle {
 
                     Text {
                         text: active-shader-preset == 7 ? "FSR" : "4K HDR";
-                        color: #ffffff;
+                        color: Theme.surface-light;
                         font-size: 12px;
                         font-weight: 700;
                         vertical-alignment: center;
@@ -593,18 +678,40 @@ export component PlayerPage inherits Rectangle {
 
     // Match the web player's side drawer: season navigation stays fixed while
     // the selected season's rich episode rows scroll independently.
-    if (controls-visible && show-playlist-drawer && is-series) : playlist-drawer := Rectangle {
-        x: parent.width - playlist-drawer.width;
+    if (controls-visible && show-playlist-drawer && is-series) : Rectangle {
+        width: max(0px, parent.width - min(560px, parent.width * 0.42));
+        height: parent.height;
+        background: transparent;
+        z: 174;
+
+        TouchArea {
+            clicked => {
+                root.show-playlist-drawer = false;
+                root.season-menu-open = false;
+            }
+        }
+    }
+
+    // Keep the drawer instantiated while player chrome is visible so changing
+    // its x position produces the same 300 ms slide as the web SideDrawer.
+    playlist-drawer := Rectangle {
+        visible: controls-visible && is-series;
+        x: root.show-playlist-drawer ? parent.width - playlist-drawer.width : parent.width;
         y: 0px;
         width: min(560px, parent.width * 0.42);
         height: parent.height;
         background: Theme.modal-background;
-        border-radius: 16px;
+        border-top-left-radius: Theme.border-radius;
+        border-bottom-left-radius: Theme.border-radius;
+        border-top-right-radius: 0px;
+        border-bottom-right-radius: 0px;
         border-width: 1px;
         border-color: Theme.card-border;
         z: 175;
         private property <int> reveal-index: root.active-episode-idx;
         private property <int> reveal-season: root.active-season;
+
+        animate x { duration: 300ms; easing: ease-in-out; }
 
         init => { episode-reveal-timer.restart(); }
         changed reveal-index => { episode-reveal-timer.restart(); }
@@ -628,75 +735,119 @@ export component PlayerPage inherits Rectangle {
 
         VerticalLayout {
             padding: 24px;
-            spacing: 8px;
+            spacing: 16px;
 
-            HorizontalLayout {
-                height: 64px;
-                spacing: 12px;
-                alignment: center;
+            // SideDrawer uses MetaPreview(compact=true) on the web client: a
+            // centered logo (or name fallback), runtime/release information,
+            // and a four-line synopsis. Desktop closes via the backdrop,
+            // Episodes button, or Escape; the explicit chevron is phone-only.
+            Rectangle {
+                height: 218px;
+                background: transparent;
 
-                PlayerIconButton {
-                    icon-source: @image-url("../assets/images/icons/chevron-forward.svg");
-                    tooltip: @tr("Close episode list");
-                    clicked => {
-                        show-playlist-drawer = false;
-                        season-menu-open = false;
+                if (root.series-logo.width > 0) : Image {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: 96px;
+                    source: root.series-logo;
+                    image-fit: contain;
+                }
+
+                if (root.series-logo.width == 0) : Text {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: 96px;
+                    text: root.series-name != "" ? root.series-name : root.item-title;
+                    color: Theme.surface-light;
+                    font-size: 27px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    x: 0px;
+                    y: 104px;
+                    width: parent.width;
+                    height: 28px;
+                    spacing: 12px;
+                    alignment: center;
+
+                    Text {
+                        text: root.series-runtime;
+                        color: Theme.surface-light;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.series-release-year;
+                        color: Theme.surface-light;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
                     }
                 }
 
                 Text {
-                    horizontal-stretch: 1;
-                    text: item-title;
-                    color: #ffffff;
-                    font-size: 20px;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                    x: 0px;
+                    y: 142px;
+                    width: parent.width;
+                    height: 72px;
+                    text: root.series-description;
+                    color: Theme.primary-foreground;
+                    font-size: 14px;
+                    font-weight: 400;
+                    wrap: word-wrap;
                     overflow: elide;
+                    opacity: 0.9;
                 }
             }
 
-            if (stream-name != "") : Text {
-                height: 24px;
-                text: stream-name;
-                color: #ffffff80;
-                font-size: 14px;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-
+            // Season navigation bar
             if (available-seasons.length > 0) : season-bar := Rectangle {
-                height: 64px;
+                height: 48px;
                 background: transparent;
                 z: 10000;
 
                 ChevronTextButton {
                     x: 0px;
-                    y: 8px;
+                    y: 4px;
                     label: @tr("BUTTON_PREV" => "Prev");
                     icon-source: @image-url("../assets/images/icons/chevron-back.svg");
                     enabled: root.active-season != root.available-seasons[0];
                     clicked => { root.season-step(-1); }
                 }
 
-                SeasonSelectField {
+                HorizontalLayout {
                     x: (parent.width - self.width) / 2;
-                    y: 8px;
-                    field-width: min(176px, parent.width - 232px);
-                    value: root.active-season;
-                    options: root.available-seasons;
-                    open: root.season-menu-open;
-                    surface-color: transparent;
-                    toggle => { root.season-menu-open = !root.season-menu-open; }
-                    selected(season) => {
-                        root.active-season = season;
-                        root.season-menu-open = false;
-                        root.season-changed(season);
+                    y: 4px;
+                    spacing: 8px;
+                    alignment: center;
+
+                    SeasonSelectField {
+                        field-width: min(140px, parent.width - 240px);
+                        value: root.active-season;
+                        options: root.available-seasons;
+                        open: root.season-menu-open;
+                        surface-color: transparent;
+                        toggle => { root.season-menu-open = !root.season-menu-open; }
+                        selected(season) => {
+                            root.active-season = season;
+                            root.season-menu-open = false;
+                            root.season-changed(season);
+                        }
                     }
+
                 }
 
                 ChevronTextButton {
                     x: parent.width - self.width;
-                    y: 8px;
+                    y: 4px;
                     label: @tr("BUTTON_NEXT" => "Next");
                     trailing-icon: true;
                     icon-source: @image-url("../assets/images/icons/chevron-forward.svg");
@@ -707,7 +858,7 @@ export component PlayerPage inherits Rectangle {
 
             Rectangle {
                 height: 1px;
-                background: #ffffff1f;
+                background: Theme.divider;
             }
 
             episode-list := ListView {
@@ -729,12 +880,16 @@ export component PlayerPage inherits Rectangle {
                         ? root.progress * 100.0
                         : episode.progress;
                     selected-row: episode.id == root.active-video-id;
+                    season-watched: root.active-season-watched;
+                    can-play: episode.can-play;
                     selected => {
                         root.active-episode-idx = idx;
                         root.active-video-id = episode.id;
                         root.play-episode(idx, episode.id);
                     }
                     toggle-watched => { root.toggle-episode-watched(episode.id); }
+                    toggle-season-watched => { root.mark-season-watched(root.active-season); }
+                    play => { root.play-saved-episode(episode.id); }
                 }
             }
         }
@@ -745,14 +900,14 @@ export component PlayerPage inherits Rectangle {
         y: parent.height - self.height - (controls-visible ? 230px : 120px);
         width: 170px;
         height: 48px;
-        background: touch-area.has-hover ? #1b192be0 : #0f0d20cc;
+        background: touch-area.has-hover ? Theme.card-background.with-alpha(0.95) : Theme.modal-background.with-alpha(0.85);
         border-radius: self.height / 2;
         border-width: 1px;
-        border-color: #ffffff14;
+        border-color: Theme.divider;
         z: 160;
 
-        animate y { duration: 250ms; easing: ease-out; }
-        animate background { duration: 150ms; }
+        animate y { duration: Theme.motion-panel; easing: ease-out; }
+        animate background { duration: Theme.motion-fast; }
 
         touch-area := TouchArea {
             clicked => { root.skip-segment(); }
@@ -766,12 +921,12 @@ export component PlayerPage inherits Rectangle {
                 source: @image-url("../assets/images/icons/chevron-forward.svg");
                 width: 18px;
                 height: 18px;
-                colorize: #ffffff;
+                colorize: Theme.text-primary;
             }
 
             Text {
                 text: root.skip-button-label;
-                color: #ffffff;
+                color: Theme.text-primary;
                 font-size: 14px;
                 font-weight: 600;
                 vertical-alignment: center;
@@ -938,7 +1093,7 @@ export component PlayerPage inherits Rectangle {
                 height: 64px;
                 unit: 16px;
                 minimum: 0;
-                maximum: 1;
+                maximum: 2;
                 step: 0.01;
                 value: muted ? 0.0 : volume;
                 track-inset: 8px;
@@ -955,12 +1110,31 @@ export component PlayerPage inherits Rectangle {
 
         // Menus and display controls are independently anchored to the right.
         HorizontalLayout {
-            width: is-series ? 540px : 472px;
+            width: is-series ? 608px : 540px;
             x: parent.width - self.width - 32px;
             y: 88px;
             height: 64px;
             spacing: 4px;
             alignment: end;
+
+            PlayerIconButton {
+                icon-source: @image-url("../assets/images/icons/cast.svg");
+                tooltip: @tr("Cast to device");
+                active: show-cast-menu;
+                clicked => {
+                    show-cast-menu = !show-cast-menu;
+                    show-stats-menu = false;
+                    show-speed-menu = false;
+                    show-subtitles-menu = false;
+                    show-audio-menu = false;
+                    show-upscaler-menu = false;
+                    show-playlist-drawer = false;
+                    show-options-menu = false;
+                    if (show-cast-menu) {
+                        root.refresh-cast-devices();
+                    }
+                }
+            }
 
             PlayerIconButton {
                 icon-source: @image-url("../assets/images/icons/network.svg");
@@ -1082,11 +1256,94 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
+    if (root.volume-osd-visible) : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 160px;
+        height: 112px;
+        border-radius: Theme.border-radius;
+        background: Theme.scrim.with-alpha(0.86);
+        z: 300;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            Image {
+                width: 40px;
+                height: 40px;
+                source: muted || volume == 0
+                    ? @image-url("../assets/images/icons/volume-mute.svg")
+                    : @image-url("../assets/images/icons/volume-high.svg");
+                colorize: Theme.text-primary;
+                image-fit: contain;
+            }
+            Text {
+                text: muted ? @tr("Muted") : round(root.volume * 100) + "%";
+                color: Theme.text-primary;
+                font-size: 18px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    if (controls-visible && show-cast-menu) : cast-menu := PopupMenuSurface {
+        x: parent.width - cast-menu.width - 64px;
+        y: parent.height - cast-menu.height - 120px;
+        width: 280px;
+        height: min(300px, 72px + max(1, cast-devices.length) * 52px);
+        background: Theme.card-background;
+        border-radius: Theme.border-radius;
+        border-width: 1px;
+        border-color: Theme.divider;
+        z: 181;
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 4px;
+
+            Text {
+                height: 40px;
+                text: @tr("Choose a device");
+                color: Theme.text-primary;
+                font-size: 16px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+
+            if (root.cast-devices-loading) : Text {
+                height: 44px;
+                text: @tr("Searching for devices…");
+                color: Theme.text-secondary;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+
+            if (!root.cast-devices-loading && root.cast-devices.length == 0) : Text {
+                height: 44px;
+                text: @tr("No devices found");
+                color: Theme.text-secondary;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+
+            for device in root.cast-devices : TrackItem {
+                height: 48px;
+                label: device.name;
+                secondary-label: @tr("Playback device");
+                clicked => {
+                    root.cast-device-selected(device.id);
+                    root.show-cast-menu = false;
+                }
+            }
+        }
+    }
+
     if (controls-visible && show-options-menu) : options-menu := PopupMenuSurface {
         x: parent.width - options-menu.width - 64px;
         y: parent.height - options-menu.height - 120px;
         width: 256px;
-        height: 152px;
+        height: 336px;
         background: Theme.card-background;
         border-radius: Theme.border-radius;
         border-width: 1px;
@@ -1095,7 +1352,7 @@ export component PlayerPage inherits Rectangle {
 
         VerticalLayout {
             padding: 16px;
-            spacing: 8px;
+            spacing: 4px;
             PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/link.svg");
                 label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
@@ -1105,10 +1362,34 @@ export component PlayerPage inherits Rectangle {
                 }
             }
             PlayerMenuOption {
+                icon-source: @image-url("../assets/images/icons/link.svg");
+                label: @tr("CTX_COPY_MAGNET_LINK" => "Copy magnet link");
+                clicked => {
+                    copy-magnet-link();
+                    show-options-menu = false;
+                }
+            }
+            PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/download.svg");
-                label: @tr("CTX_DOWNLOAD_VIDEO" => "Download this video");
+                label: @tr("CTX_DOWNLOAD_SUBS" => "Download subtitles");
+                clicked => {
+                    download-subs();
+                    show-options-menu = false;
+                }
+            }
+            PlayerMenuOption {
+                icon-source: @image-url("../assets/images/icons/download.svg");
+                label: @tr("CTX_DOWNLOAD_VIDEO" => "Download video");
                 clicked => {
                     download-video();
+                    show-options-menu = false;
+                }
+            }
+            PlayerMenuOption {
+                icon-source: @image-url("../assets/images/icons/play-circle.svg");
+                label: @tr("PLAYER_PLAY_IN" => "Play in external player");
+                clicked => {
+                    open-external-player();
                     show-options-menu = false;
                 }
             }
@@ -1135,8 +1416,8 @@ export component PlayerPage inherits Rectangle {
                 spacing: 0px;
 
                 HorizontalLayout {
-                    height: 72px;
-                    padding-left: 32px;
+                    height: 56px;
+                    padding-left: 24px;
                     Text {
                         text: @tr("PLAYER_SUBTITLES_LANGUAGES" => "Subtitles Languages");
                         color: Theme.surface-light;
@@ -1155,7 +1436,7 @@ export component PlayerPage inherits Rectangle {
                     VerticalLayout {
                         padding-left: 16px;
                         padding-right: 16px;
-                        spacing: 8px;
+                        spacing: 4px;
 
                         TrackItem {
                             label: @tr("NAVIGATION_OFF" => "Off");
@@ -1186,8 +1467,8 @@ export component PlayerPage inherits Rectangle {
                 spacing: 0px;
 
                 HorizontalLayout {
-                    height: 72px;
-                    padding-left: 32px;
+                    height: 56px;
+                    padding-left: 24px;
                     Text {
                         text: @tr("PLAYER_SUBTITLES_VARIANTS" => "Subtitles Variants");
                         color: Theme.surface-light;
@@ -1198,9 +1479,9 @@ export component PlayerPage inherits Rectangle {
                 }
 
                 if (active-subtitle-idx < 0) : HorizontalLayout {
-                    height: 72px;
-                    padding-left: 16px;
-                    padding-right: 16px;
+                    height: 56px;
+                    padding-left: 24px;
+                    padding-right: 24px;
                     Text {
                         text: @tr("PLAYER_SUBTITLES_DISABLED" => "Subtitles are disabled");
                         color: Theme.surface-light-90;
@@ -1219,7 +1500,7 @@ export component PlayerPage inherits Rectangle {
                     VerticalLayout {
                         padding-left: 16px;
                         padding-right: 16px;
-                        spacing: 8px;
+                        spacing: 4px;
 
                         for sub-name[idx] in subtitles-tracks : Rectangle {
                             height: subtitle-track-languages[idx] == selected-subtitle-language ? 64px : 0px;
@@ -1249,10 +1530,10 @@ export component PlayerPage inherits Rectangle {
                 spacing: 0px;
 
                 HorizontalLayout {
-                    height: 72px;
-                    padding-left: 32px;
+                    height: 56px;
+                    padding-left: 24px;
                     Text {
-                        text: @tr("SETTINGS" => "Settings");
+                        text: @tr("PLAYER_SUBTITLES_SETTINGS" => "Subtitles Settings");
                         color: Theme.surface-light;
                         font-size: 16px;
                         font-weight: 700;
@@ -1315,23 +1596,91 @@ export component PlayerPage inherits Rectangle {
     if (controls-visible && show-audio-menu) : audio-menu := PopupMenuSurface {
         x: parent.width - audio-menu.width - 64px;
         y: parent.height - audio-menu.height - 120px;
-        width: 256px;
-        height: min(400px, parent.height - 208px);
-        background: #15121ff5;
-        border-radius: 12px;
+        width: 320px;
+        height: min(440px, parent.height - 200px);
+        background: Theme.card-background;
+        border-radius: Theme.border-radius;
         border-width: 1px;
-        border-color: #ffffff1f;
+        border-color: Theme.divider;
         z: 180;
 
         VerticalLayout {
             spacing: 0px;
 
             HorizontalLayout {
-                height: 72px;
-                padding-left: 32px;
+                height: 56px;
+                padding-left: 24px;
                 Text {
                     text: @tr("AUDIO_TRACKS" => "Audio Tracks");
-                    color: #ffffff;
+                    color: Theme.surface-light;
+                    font-size: 16px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+
+            SubtitleStepper {
+                label: @tr("DELAY" => "Delay");
+                unit: "s";
+                value: audio-delay-seconds;
+                step: 0.25;
+                minimum: -10.0;
+                maximum: 10.0;
+                disabled: active-audio-idx < 0;
+                changed(value) => {
+                    audio-delay-seconds = value;
+                    change-audio-delay(value);
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.overlay-color; }
+
+            ScrollView {
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                horizontal-scrollbar-policy: always-off;
+                mouse-drag-pan-enabled: true;
+
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 16px;
+                    padding-top: 8px;
+                    spacing: 8px;
+                    for aud-name[idx] in audio-tracks : TrackItem {
+                        label: audio-track-languages[idx];
+                        secondary-label: audio-track-labels[idx];
+                        active: active-audio-idx == idx;
+                        clicked => {
+                            active-audio-idx = idx;
+                            change-audio(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (controls-visible && show-speed-menu) : speed-menu := PopupMenuSurface {
+        x: parent.width - speed-menu.width - 32px;
+        y: parent.height - speed-menu.height - 112px;
+        width: 240px;
+        height: min(440px, parent.height - 200px);
+        background: Theme.card-background;
+        border-radius: Theme.border-radius;
+        border-width: 1px;
+        border-color: Theme.divider;
+        z: 180;
+
+        VerticalLayout {
+            spacing: 0px;
+
+            HorizontalLayout {
+                height: 56px;
+                padding-left: 24px;
+                Text {
+                    text: @tr("PLAYER_PLAYBACK_SPEED" => "Playback Speed");
+                    color: Theme.surface-light;
                     font-size: 16px;
                     font-weight: 700;
                     vertical-alignment: center;
@@ -1348,65 +1697,16 @@ export component PlayerPage inherits Rectangle {
                     padding-left: 16px;
                     padding-right: 16px;
                     padding-bottom: 16px;
-                    spacing: 8px;
-                    for aud-name[idx] in audio-tracks : TrackItem {
-                        label: audio-track-languages[idx];
-                        secondary-label: audio-track-labels[idx];
-                        active: active-audio-idx == idx;
-                        clicked => {
-                            active-audio-idx = idx;
-                            change-audio(idx);
-                            show-audio-menu = false;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (controls-visible && show-speed-menu) : speed-menu := PopupMenuSurface {
-        x: parent.width - speed-menu.width - 32px;
-        y: parent.height - speed-menu.height - 112px;
-        width: 240px;
-        height: min(540px, parent.height - 200px);
-        background: #15121ff5;
-        border-radius: 12px;
-        border-width: 1px;
-        border-color: #ffffff1f;
-        z: 180;
-
-        VerticalLayout {
-            padding: 12px;
-            spacing: 4px;
-
-            Text {
-                height: 52px;
-                text: @tr("PLAYER_PLAYBACK_SPEED" => "Playback Speed");
-                color: #ffffff;
-                font-size: 20px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-
-            ScrollView {
-                vertical-stretch: 1;
-                viewport-width: self.width;
-                horizontal-scrollbar-policy: always-off;
-                mouse-drag-pan-enabled: true;
-
-                VerticalLayout {
-                    width: parent.width;
                     spacing: 4px;
 
-                    TrackItem { label: "0.25x"; active: playback-speed == 0.25; clicked => { playback-speed = 0.25; change-speed(0.25); show-speed-menu = false; } }
-                    TrackItem { label: "0.5x"; active: playback-speed == 0.5; clicked => { playback-speed = 0.5; change-speed(0.5); show-speed-menu = false; } }
-                    TrackItem { label: "0.75x"; active: playback-speed == 0.75; clicked => { playback-speed = 0.75; change-speed(0.75); show-speed-menu = false; } }
-                    TrackItem { label: "1.0x (" + @tr("Normal") + ")"; active: playback-speed == 1.0; clicked => { playback-speed = 1.0; change-speed(1.0); show-speed-menu = false; } }
-                    TrackItem { label: "1.25x"; active: playback-speed == 1.25; clicked => { playback-speed = 1.25; change-speed(1.25); show-speed-menu = false; } }
+                    TrackItem { label: "2x"; active: playback-speed == 2.0; clicked => { playback-speed = 2.0; change-speed(2.0); show-speed-menu = false; } }
+                    TrackItem { label: "1.75x"; active: playback-speed == 1.75; clicked => { playback-speed = 1.75; change-speed(1.75); show-speed-menu = false; } }
                     TrackItem { label: "1.5x"; active: playback-speed == 1.5; clicked => { playback-speed = 1.5; change-speed(1.5); show-speed-menu = false; } }
-                    TrackItem { label: "2.0x"; active: playback-speed == 2.0; clicked => { playback-speed = 2.0; change-speed(2.0); show-speed-menu = false; } }
-                    TrackItem { label: "3.0x"; active: playback-speed == 3.0; clicked => { playback-speed = 3.0; change-speed(3.0); show-speed-menu = false; } }
-                    TrackItem { label: "4.0x"; active: playback-speed == 4.0; clicked => { playback-speed = 4.0; change-speed(4.0); show-speed-menu = false; } }
+                    TrackItem { label: "1.25x"; active: playback-speed == 1.25; clicked => { playback-speed = 1.25; change-speed(1.25); show-speed-menu = false; } }
+                    TrackItem { label: "1x"; active: playback-speed == 1.0; clicked => { playback-speed = 1.0; change-speed(1.0); show-speed-menu = false; } }
+                    TrackItem { label: "0.75x"; active: playback-speed == 0.75; clicked => { playback-speed = 0.75; change-speed(0.75); show-speed-menu = false; } }
+                    TrackItem { label: "0.5x"; active: playback-speed == 0.5; clicked => { playback-speed = 0.5; change-speed(0.5); show-speed-menu = false; } }
+                    TrackItem { label: "0.25x"; active: playback-speed == 0.25; clicked => { playback-speed = 0.25; change-speed(0.25); show-speed-menu = false; } }
                 }
             }
         }
@@ -1417,21 +1717,21 @@ export component PlayerPage inherits Rectangle {
         y: parent.height - upscaler-menu.height - 112px;
         width: 260px;
         height: min(500px, parent.height - 200px);
-        background: #15121ff5;
-        border-radius: 12px;
+        background: Theme.card-background;
+        border-radius: Theme.border-radius;
         border-width: 1px;
-        border-color: #ffffff1f;
+        border-color: Theme.divider;
         z: 180;
 
         VerticalLayout {
-            padding: 12px;
+            padding: 16px;
             spacing: 4px;
 
             Text {
-                height: 52px;
+                height: 40px;
                 text: @tr("Upscaler" => "Upscaler");
-                color: #ffffff;
-                font-size: 20px;
+                color: Theme.surface-light;
+                font-size: 16px;
                 font-weight: 700;
                 vertical-alignment: center;
             }
@@ -1439,7 +1739,7 @@ export component PlayerPage inherits Rectangle {
             Text {
                 width: parent.width;
                 text: shader-status;
-                color: #ffffff99;
+                color: Theme.text-muted;
                 font-size: 12px;
                 wrap: word-wrap;
             }
@@ -1471,7 +1771,7 @@ export component PlayerPage inherits Rectangle {
     if (controls-visible && show-stats-menu) : stats-menu := PopupMenuSurface {
         x: parent.width - stats-menu.width - 32px;
         y: parent.height - stats-menu.height - 112px;
-        width: 480px;
+        width: min(480px, parent.width - 64px);
         height: 175px;
         background: Theme.card-background;
         border-radius: Theme.border-radius;
@@ -1481,50 +1781,50 @@ export component PlayerPage inherits Rectangle {
 
         VerticalLayout {
             padding: 24px;
-            spacing: 24px;
+            spacing: 20px;
             alignment: start;
 
             // Title
             Text {
                 text: @tr("PLAYER_STATISTICS" => "Statistics");
                 color: Theme.surface-light;
-                font-size: 16px;
+                font-size: 18px;
                 font-weight: 700;
             }
 
             // Stats row: Peers, Speed, Completed - inline label + value
             HorizontalLayout {
-                spacing: 24px;
+                spacing: 20px;
                 alignment: start;
 
                 HorizontalLayout {
                     spacing: 6px;
-                    Text { text: @tr("PLAYER_PEERS" => "Peers"); color: Theme.text-secondary; font-size: 14px; font-weight: 500; vertical-alignment: center; }
-                    Text { text: download-speed != "" ? peer-count : "0"; color: Theme.surface-light; font-size: 14px; font-weight: 500; vertical-alignment: center; }
+                    Text { text: @tr("PLAYER_PEERS" => "Peers"); color: Theme.text-muted; font-size: 15px; font-weight: 500; vertical-alignment: center; }
+                    Text { text: download-speed != "" ? peer-count : "0"; color: Theme.surface-light; font-size: 15px; font-weight: 700; vertical-alignment: center; }
                 }
 
                 HorizontalLayout {
                     spacing: 6px;
-                    Text { text: @tr("PLAYER_SPEED" => "Speed"); color: Theme.text-secondary; font-size: 14px; font-weight: 500; vertical-alignment: center; }
-                    Text { text: download-speed != "" ? download-speed : "0 KB/s"; color: Theme.surface-light; font-size: 14px; font-weight: 500; vertical-alignment: center; }
+                    Text { text: @tr("PLAYER_SPEED" => "Speed"); color: Theme.text-muted; font-size: 15px; font-weight: 500; vertical-alignment: center; }
+                    Text { text: download-speed != "" ? download-speed : "0 KB/s"; color: Theme.surface-light; font-size: 15px; font-weight: 700; vertical-alignment: center; }
                 }
 
                 HorizontalLayout {
                     spacing: 6px;
-                    Text { text: @tr("PLAYER_COMPLETED" => "Completed"); color: Theme.text-secondary; font-size: 14px; font-weight: 500; vertical-alignment: center; }
-                    Text { text: download-speed != "" ? round(stream-progress) + " %" : "0 %"; color: Theme.surface-light; font-size: 14px; font-weight: 500; vertical-alignment: center; }
+                    Text { text: @tr("PLAYER_COMPLETED" => "Completed"); color: Theme.text-muted; font-size: 15px; font-weight: 500; vertical-alignment: center; }
+                    Text { text: download-speed != "" ? round(stream-progress * 100.0) / 100.0 + " %" : "0 %"; color: Theme.surface-light; font-size: 15px; font-weight: 700; vertical-alignment: center; }
                 }
             }
 
             // Info hash section
             VerticalLayout {
-                spacing: 8px;
+                spacing: 6px;
                 alignment: start;
-                Text { text: @tr("PLAYER_INFO_HASH" => "Info hash"); color: Theme.text-secondary; font-size: 14px; font-weight: 500; }
+                Text { text: @tr("PLAYER_INFO_HASH" => "Info hash"); color: Theme.text-muted; font-size: 14px; font-weight: 500; }
                 Text {
                     text: info-hash != "" ? info-hash : "N/A";
                     color: Theme.surface-light;
-                    font-size: 14px;
+                    font-size: 15px;
                     font-weight: 500;
                     overflow: elide;
                 }
@@ -1532,431 +1832,107 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
-    // Retained temporarily as an inert compatibility tree while the Rust-side
-    // IconData bindings remain part of MainWindow's public interface.
-    if (false && controls-visible) : Rectangle {
-        y: parent.height - 100px;
-        width: 100%;
-        height: 100px;
-        background: @linear-gradient(0deg, #000000cc 0%, #00000000 100%);
-        z: 150;
+    // NextVideoPopup Overlay ("Up Next" card) matching stremio-web/src/routes/Player/NextVideoPopup
+    if (controls-visible && show-next-video-popup && has-next-episode) : next-video-popup := PopupMenuSurface {
+        x: parent.width - next-video-popup.width - 32px;
+        y: parent.height - next-video-popup.height - 112px;
+        width: min(560px, parent.width - 64px);
+        height: 180px;
+        background: Theme.card-background;
+        border-radius: Theme.border-radius;
+        border-width: 1px;
+        border-color: Theme.divider;
+        z: 180;
 
-        VerticalLayout {
-            padding-left: 24px;
-            padding-right: 24px;
-            spacing: 8px;
-            alignment: center;
-
-            // 1. Timeline / Seek Slider Row
-            HorizontalLayout {
-                spacing: 12px;
-                
-                Text {
-                    text: elapsed-time-str;
-                    color: #ffffffcc;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-
-                // Interactive Seek Bar
-                timeline-slider := Slider {
-                    horizontal-stretch: 1;
-                    minimum: 0;
-                    maximum: 100;
-                    value: progress * 100.0;
-                    changed(val) => {
-                        root.seek(val / 100.0);
-                    }
-                }
-
-                Text {
-                    text: total-time-str;
-                    color: #ffffffcc;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-            }
-
-            // 2. Playback Button Controls
-            HorizontalLayout {
-                spacing: 16px;
-                alignment: start;
-
-                // Play / Pause
-                PlayerIconButton {
-                    icon: paused ? icon-play : icon-pause;
-                    tooltip: paused ? @tr("PLAYER_PLAY" => "Play") + " (Space)" : @tr("PLAYER_PAUSE" => "Pause") + " (Space)";
-                    clicked => { toggle-pause(); }
-                }
-
-                // Next Episode
-                if (is-series) : PlayerIconButton {
-                    icon: icon-next;
-                    tooltip: @tr("PLAYER_NEXT_VIDEO" => "Next Video");
-                    disabled: !root.has-next-episode;
-                    clicked => { root.play-next-episode(); }
-                }
-
-                // Volume and Slider
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-                    
-                    PlayerIconButton {
-                        icon: (muted || volume == 0.0) ? icon-volume-mute : (volume < 0.5 ? icon-volume-low : icon-volume-high);
-                        tooltip: muted ? @tr("PLAYER_UNMUTE" => "Unmute") + " (M)" : @tr("PLAYER_MUTE" => "Mute") + " (M)";
-                        clicked => { toggle-mute(); }
-                    }
-
-                    Rectangle {
-                        width: 80px;
-                        height: 40px;
-                        
-                        Slider {
-                            y: 10px;
-                            width: 80px;
-                            minimum: 0;
-                            maximum: 100;
-                            value: muted ? 0.0 : volume * 100.0;
-                            changed(val) => {
-                                change-volume(val / 100.0);
-                            }
-                        }
-                    }
-                }
-
-                // Spacer
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-
-                PlayerIconButton {
-                    icon: icon-fullscreen;
-                    tooltip: @tr("CTX_FULLSCREEN" => "Fullscreen") + " (F)";
-                    clicked => { toggle-fullscreen(); }
-                }
-
-                // Subtitles Popup Button
-                Rectangle {
-                    width: 40px;
-                    height: 40px;
-                    
-                    PlayerIconButton {
-                        icon: icon-subtitles;
-                        tooltip: @tr("SUBTITLES" => "Subtitles");
-                        active: show-subtitles-menu;
-                        clicked => {
-                            show-subtitles-menu = !show-subtitles-menu;
-                            show-audio-menu = false;
-                            show-speed-menu = false;
-                            show-stats-menu = false;
-                        }
-                    }
-
-                    if (show-subtitles-menu) : Rectangle {
-                        x: -80px;
-                        y: -220px;
-                        width: 200px;
-                        height: 200px;
-                        background: #0f0d20f5;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: Theme.card-border;
-                        z: 40;
-
-                        ScrollView {
-                            VerticalLayout {
-                                padding: 8px;
-                                spacing: 4px;
-                                
-                                TrackItem {
-                                    label: @tr("None (Off)");
-                                    active: active-subtitle-idx == -1;
-                                    clicked => {
-                                        active-subtitle-idx = -1;
-                                        change-subtitle(-1);
-                                        show-subtitles-menu = false;
-                                    }
-                                }
-
-                                for sub-name[idx] in subtitles-tracks : TrackItem {
-                                    label: sub-name;
-                                    active: active-subtitle-idx == idx;
-                                    clicked => {
-                                        active-subtitle-idx = idx;
-                                        change-subtitle(idx);
-                                        show-subtitles-menu = false;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Audio Tracks Popup Button
-                Rectangle {
-                    width: 40px;
-                    height: 40px;
-                    
-                    PlayerIconButton {
-                        icon: icon-audio;
-                        tooltip: @tr("AUDIO_TRACKS" => "Audio Tracks");
-                        active: show-audio-menu;
-                        clicked => {
-                            show-audio-menu = !show-audio-menu;
-                            show-subtitles-menu = false;
-                            show-speed-menu = false;
-                            show-stats-menu = false;
-                        }
-                    }
-
-                    if (show-audio-menu) : Rectangle {
-                        x: -80px;
-                        y: -170px;
-                        width: 200px;
-                        height: 150px;
-                        background: #0f0d20f5;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: Theme.card-border;
-                        z: 40;
-
-                        ScrollView {
-                            VerticalLayout {
-                                padding: 8px;
-                                spacing: 4px;
-                                
-                                for aud-name[idx] in audio-tracks : TrackItem {
-                                    label: aud-name;
-                                    active: active-audio-idx == idx;
-                                    clicked => {
-                                        active-audio-idx = idx;
-                                        change-audio(idx);
-                                        show-audio-menu = false;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Speed Select Menu Button
-                Rectangle {
-                    width: 40px;
-                    height: 40px;
-                    
-                    PlayerIconButton {
-                        icon: icon-speed;
-                        tooltip: @tr("PLAYER_PLAYBACK_SPEED" => "Playback Speed");
-                        active: show-speed-menu;
-                        clicked => {
-                            show-speed-menu = !show-speed-menu;
-                            show-subtitles-menu = false;
-                            show-audio-menu = false;
-                            show-stats-menu = false;
-                        }
-                    }
-
-                    if (show-speed-menu) : Rectangle {
-                        x: -80px;
-                        y: -220px;
-                        width: 160px;
-                        height: 200px;
-                        background: #0f0d20f5;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: Theme.card-border;
-                        z: 40;
-
-                        VerticalLayout {
-                            padding: 8px;
-                            spacing: 4px;
-                            
-                            TrackItem {
-                                label: "0.5x (" + @tr("Slow") + ")";
-                                active: playback-speed == 0.5;
-                                clicked => {
-                                    playback-speed = 0.5;
-                                    change-speed(0.5);
-                                    show-speed-menu = false;
-                                }
-                            }
-                            TrackItem {
-                                label: "1.0x (" + @tr("Normal") + ")";
-                                active: playback-speed == 1.0;
-                                clicked => {
-                                    playback-speed = 1.0;
-                                    change-speed(1.0);
-                                    show-speed-menu = false;
-                                }
-                            }
-                            TrackItem {
-                                label: "1.25x";
-                                active: playback-speed == 1.25;
-                                clicked => {
-                                    playback-speed = 1.25;
-                                    change-speed(1.25);
-                                    show-speed-menu = false;
-                                }
-                            }
-                            TrackItem {
-                                label: "1.5x";
-                                active: playback-speed == 1.5;
-                                clicked => {
-                                    playback-speed = 1.5;
-                                    change-speed(1.5);
-                                    show-speed-menu = false;
-                                }
-                            }
-                            TrackItem {
-                                label: "2.0x (" + @tr("TORRENT_PROFILE_FAST" => "Fast") + ")";
-                                active: playback-speed == 2.0;
-                                clicked => {
-                                    playback-speed = 2.0;
-                                    change-speed(2.0);
-                                    show-speed-menu = false;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Stats Overlay Menu Button
-                Rectangle {
-                    width: 40px;
-                    height: 40px;
-                    
-                    PlayerIconButton {
-                        icon: icon-stats;
-                        tooltip: @tr("Playback information");
-                        active: show-stats-menu;
-                        clicked => {
-                            show-stats-menu = !show-stats-menu;
-                            show-subtitles-menu = false;
-                            show-audio-menu = false;
-                            show-speed-menu = false;
-                        }
-                    }
-
-                    if (show-stats-menu) : Rectangle {
-                        x: -240px;
-                        y: -225px;
-                        width: 280px;
-                        height: 205px;
-                        background: #0f0d20f5;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: Theme.card-border;
-                        z: 40;
-
-                        VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
-                            alignment: start;
-
-                            Text {
-                                text: @tr("Video Statistics");
-                                color: Theme.accent;
-                                font-size: 13px;
-                                font-weight: 700;
-                            }
-                            Text {
-                                text: @tr("Container: {}", file-format == "" ? @tr("UNKNOWN_TRACK_LANG" => "Unknown") : file-format);
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                            Text {
-                                text: @tr("Video format: {}", video-format == "" ? @tr("UNKNOWN_TRACK_LANG" => "Unknown") : video-format);
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                            Text {
-                                text: @tr("Audio format: {}", audio-format == "" ? @tr("UNKNOWN_TRACK_LANG" => "Unknown") : audio-format);
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                            Text {
-                                text: @tr("Decoder: {}", (hardware-decoder == "" || hardware-decoder == "no") ? @tr("Software") : hardware-decoder);
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                            Text {
-                                text: @tr("Buffered: {}%", round(buffered-percent));
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                            if (download-speed != "") : Text {
-                                text: @tr("Torrent: {} down / {} up · {} peers", download-speed, upload-speed, peer-count);
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                            if (download-speed != "") : Text {
-                                text: @tr("Streamed: {}%", round(stream-progress));
-                                color: #ffffffcc;
-                                font-size: 11px;
-                            }
-                        }
-                    }
-                }
-
-                // Side Playlist Drawer Trigger Button
-                if (is-series) : PlayerIconButton {
-                    icon: icon-menu;
-                    tooltip: @tr("Episode list");
-                    active: show-playlist-drawer;
-                    clicked => {
-                        show-playlist-drawer = !show-playlist-drawer;
-                    }
-                }
-            }
-        }
-    }
-
-    ContextMenuSurface {
-        width: parent.width;
-        height: parent.height;
-        unit: 16px;
-        open <=> root.show-context-menu;
-        requested-x: root.context-menu-x;
-        requested-y: root.context-menu-y;
-        menu-width: 19 * self.unit;
-        menu-height: 10.75 * self.unit;
-        auto-close: true;
-        close-requested => { root.show-context-menu = false; }
-
-        VerticalLayout {
-            padding-top: 0.5 * 16px;
-            padding-bottom: 0.5 * 16px;
+        HorizontalLayout {
+            padding: 0px;
             spacing: 0px;
 
-            ContextMenuOption {
-                unit: 16px;
-                label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
-                show-icon: true;
-                icon-source: @image-url("../assets/images/icons/link.svg");
-                clicked => {
-                    root.copy-stream-link();
-                    root.show-context-menu = false;
+            Rectangle {
+                width: 150px;
+                height: 100%;
+                background: Theme.overlay;
+                clip: true;
+
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: next-episode-poster;
+                    image-fit: cover;
                 }
             }
-            ContextMenuOption {
-                unit: 16px;
-                label: @tr("CTX_DOWNLOAD_VIDEO" => "Download this video");
-                show-icon: true;
-                icon-source: @image-url("../assets/images/icons/download.svg");
-                clicked => {
-                    root.download-video();
-                    root.show-context-menu = false;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                padding: 20px;
+                spacing: 12px;
+
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: next-series-name != "" ? @tr("Next episode from") + " " + next-series-name : @tr("Up Next");
+                        color: Theme.accent;
+                        font-size: 14px;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: next-episode-title;
+                        color: Theme.text-primary;
+                        font-size: 17px;
+                        font-weight: 600;
+                        overflow: elide;
+                    }
                 }
-            }
-            ContextMenuOption {
-                unit: 16px;
-                label: @tr("Playback information");
-                show-icon: true;
-                icon-source: @image-url("../assets/images/icons/settings-outline.svg");
-                clicked => {
-                    root.show-stats-menu = true;
-                    root.show-context-menu = false;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+
+                    ButtonSurface {
+                        height: 40px;
+                        border-radius: 20px;
+                        background: self.has-hover ? Theme.overlay-pressed : Theme.overlay-hover;
+                        HorizontalLayout {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            alignment: center;
+                            Text {
+                                text: @tr("Dismiss");
+                                color: Theme.text-primary;
+                                font-size: 14px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+                        }
+                        clicked => {
+                            show-next-video-popup = false;
+                            root.next-popup-dismissed = true;
+                            dismiss-next-video-popup();
+                        }
+                    }
+
+                    ButtonSurface {
+                        height: 40px;
+                        border-radius: 20px;
+                        background: Theme.accent;
+                        HorizontalLayout {
+                            padding-left: 24px;
+                            padding-right: 24px;
+                            alignment: center;
+                            Text {
+                                text: @tr("Watch Now") + " (" + next-video-countdown + "s)";
+                                color: Theme.surface-light;
+                                font-size: 14px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                        clicked => {
+                            show-next-video-popup = false;
+                            play-next-episode();
+                        }
+                    }
                 }
             }
         }

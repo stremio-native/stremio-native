@@ -22,6 +22,7 @@ export component ButtonSurface inherits Rectangle {
     callback pointer-down;
     callback pointer-up;
     callback pointer-cancelled;
+    callback context-requested(length, length);
 
     opacity: root.enabled ? 1 : 0.5;
     border-width: root.has-focus ? Theme.focus-outline-size : 0px;
@@ -45,6 +46,13 @@ export component ButtonSurface inherits Rectangle {
         clicked => { root.clicked(); }
         double-clicked => { root.double-clicked(); }
         pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                root.context-requested(
+                    root.absolute-position.x + pointer-area.mouse-x,
+                    root.absolute-position.y + pointer-area.mouse-y,
+                );
+                return;
+            }
             if (event.button != PointerEventButton.left) {
                 return;
             }

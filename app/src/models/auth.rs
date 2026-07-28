@@ -19,6 +19,19 @@ use tokio::time::{Duration, sleep};
 const STREMIO_URL: &str = "https://www.strem.io";
 const MAX_SOCIAL_LOGIN_TRIES: usize = 25;
 
+fn is_valid_email(value: &str) -> bool {
+    let value = value.trim();
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !domain.contains('@')
+        && !value.chars().any(char::is_whitespace)
+}
+
 #[derive(Deserialize)]
 struct FacebookLoginResponse {
     user: FacebookLoginUser,
@@ -64,6 +77,12 @@ pub fn setup(ui: &MainWindow, runtime: &Arc<Runtime<DesktopEnv, AppModel>>) {
         let runtime = runtime.clone();
         let ui_weak = ui_weak.clone();
         move |email, password| {
+            if !is_valid_email(email.as_str()) {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_error_message("Please enter a valid email address".into());
+                }
+                return;
+            }
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_loading(true);
                 ui.set_error_message("".into());
@@ -89,6 +108,12 @@ pub fn setup(ui: &MainWindow, runtime: &Arc<Runtime<DesktopEnv, AppModel>>) {
         let runtime = runtime.clone();
         let ui_weak = ui_weak.clone();
         move |email, password, tos, privacy, marketing| {
+            if !is_valid_email(email.as_str()) {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_error_message("Please enter a valid email address".into());
+                }
+                return;
+            }
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_loading(true);
                 ui.set_error_message("".into());
@@ -259,6 +284,10 @@ pub fn setup(ui: &MainWindow, runtime: &Arc<Runtime<DesktopEnv, AppModel>>) {
 
     ui.on_request_password_reset({
         move |email| {
+            if !is_valid_email(email.as_str()) {
+                tracing::warn!(%email, "ignored password reset for an invalid email address");
+                return;
+            }
             let mut reset_url = match url::Url::parse(&format!("{STREMIO_URL}/reset-password/")) {
                 Ok(url) => url,
                 Err(error) => {
@@ -309,4 +338,18 @@ pub fn setup(ui: &MainWindow, runtime: &Arc<Runtime<DesktopEnv, AppModel>>) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_email;
+
+    #[test]
+    fn validates_email_shape_before_authentication() {
+        assert!(is_valid_email("viewer@example.com"));
+        assert!(is_valid_email("viewer@localhost"));
+        assert!(!is_valid_email("viewer"));
+        assert!(!is_valid_email("@example.com"));
+        assert!(!is_valid_email("viewer @example.com"));
+    }
 }

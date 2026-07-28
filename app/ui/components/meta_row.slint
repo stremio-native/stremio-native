@@ -135,10 +135,13 @@ export component MetaRowPlaceholder inherits Rectangle {
     in property <bool> show-see-all: false;
     in property <[int]> items: [0, 1, 2, 3, 4, 5, 6, 7];
     in property <length> item-width: 11 * root.unit;
-    in property <float> poster-ratio: Theme.poster-shape-ratio;
+    in property <string> poster-shape: "poster";
+    in property <float> poster-ratio: root.poster-shape == "landscape"
+        ? Theme.landscape-shape-ratio
+        : (root.poster-shape == "square" ? 1.0 : Theme.poster-shape-ratio);
 
     width: 80 * root.unit;
-    height: 3 * root.unit + root.item-width * root.poster-ratio + 2.8 * root.unit;
+    height: 3 * root.unit + root.item-width * root.poster-ratio + 2.8 * root.unit + 2 * root.unit;
     background: transparent;
     clip: true;
 

@@ -12,6 +12,8 @@ pub struct StreamSelectionView {
     pub name: String,
     pub description: String,
     pub provider: String,
+    pub thumbnail: Option<String>,
+    pub progress: f32,
 }
 
 #[derive(Clone)]
@@ -121,6 +123,14 @@ impl PlaybackSelections {
                     id,
                     name,
                     description,
+                    thumbnail: stream.thumbnail.clone(),
+                    progress: stream
+                        .behavior_hints
+                        .other
+                        .get("progress")
+                        .and_then(serde_json::Value::as_f64)
+                        .map(|progress| (progress / 100.0).clamp(0.0, 1.0) as f32)
+                        .unwrap_or_default(),
                     provider: provider_names
                         .get(resource.request.base.as_str())
                         .map(|name| (*name).to_owned())

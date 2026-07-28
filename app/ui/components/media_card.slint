@@ -12,6 +12,8 @@ export struct MediaCardItem {
     show-checkmark: bool,
     show-progress: bool,
     progress-value: float,
+    new-videos: int,
+    can-play: bool,
 }
 
 // Reusable MetaItem port. Page navigation and image loading remain callbacks;
@@ -30,12 +32,19 @@ export component MediaCard inherits Rectangle {
     in property <image> fallback-icon-source: @image-url("../assets/images/icons/movies.svg");
     in property <bool> enable-lazy-loading: false;
     in property <bool> is-visible: true;
+    in property <bool> library-context-menu: false;
+    in property <bool> continue-watching-context-menu: false;
+    in property <bool> show-watched-context-action: true;
 
     callback clicked;
     callback double-clicked;
     callback remove-clicked;
     callback play-clicked;
     callback menu-clicked;
+    callback context-requested(length, length);
+    callback watched-change-requested(bool);
+    callback library-remove-requested;
+    callback dismiss-requested;
     callback poster-requested(string);
 
     function request-poster-if-needed() {
@@ -79,6 +88,34 @@ export component MediaCard inherits Rectangle {
         border-width: 0px;
         clicked => { root.clicked(); }
         double-clicked => { root.double-clicked(); }
+        context-requested(x, y) => { root.context-requested(x, y); }
+    }
+
+    if (root.library-context-menu) : ContextMenuArea {
+        width: parent.width;
+        height: parent.height;
+        Menu {
+            if (root.item.can-play) : MenuItem {
+                title: @tr("LIBRARY_PLAY" => "Play");
+                activated => { root.play-clicked(); }
+            }
+            MenuItem {
+                title: @tr("LIBRARY_DETAILS" => "Details");
+                activated => { root.clicked(); }
+            }
+            if (root.continue-watching-context-menu && root.item.show-progress) : MenuItem {
+                title: @tr("LIBRARY_RESUME_DISMISS" => "Dismiss");
+                activated => { root.dismiss-requested(); }
+            }
+            if (root.show-watched-context-action) : MenuItem {
+                title: root.item.show-checkmark ? @tr("Mark as unwatched") : @tr("Mark as watched");
+                activated => { root.watched-change-requested(!root.item.show-checkmark); }
+            }
+            if (!root.continue-watching-context-menu) : MenuItem {
+                title: @tr("Remove from Library");
+                activated => { root.library-remove-requested(); }
+            }
+        }
     }
 
     // CSS box-shadow equivalent, outside the clipped poster bounds.
@@ -105,7 +142,11 @@ export component MediaCard inherits Rectangle {
             y: parent.height * 0.25;
             width: 80%;
             height: 50%;
-            source: root.fallback-icon-source;
+            source: root.item.media-type == "series" ? @image-url("../assets/images/icons/series.svg")
+                : (root.item.media-type == "channel" ? @image-url("../assets/images/icons/channels.svg")
+                : (root.item.media-type == "tv" ? @image-url("../assets/images/icons/tv.svg")
+                : (root.item.media-type == "anime" ? @image-url("../assets/images/icons/anime.svg")
+                : root.fallback-icon-source)));
             colorize: Theme.primary-foreground;
             opacity: 0.2;
             image-fit: contain;
@@ -212,7 +253,7 @@ export component MediaCard inherits Rectangle {
             }
         }
 
-        if (root.new-videos > 0) : Rectangle {
+        if (root.item.new-videos > 0 || root.new-videos > 0) : Rectangle {
             x: parent.width - 2.75 * root.unit;
             y: 1 * root.unit;
             width: 2.25 * root.unit;
@@ -252,7 +293,7 @@ export component MediaCard inherits Rectangle {
                     image-fit: contain;
                 }
                 Text {
-                    text: root.new-videos;
+                    text: root.item.new-videos > 0 ? root.item.new-videos : root.new-videos;
                     color: Theme.primary-accent;
                     font-size: 0.8 * root.unit;
                     font-weight: 600;

@@ -9,17 +9,26 @@ import { SkeletonBlock } from "feedback.slint";
 export component MediaCatalogRow inherits MetaRow {
     in property <[MediaCardItem]> items: [];
     in property <bool> loading: false;
+    in property <string> poster-shape: "poster";
     in property <length> card-width: 12 * root.unit;
-    in property <length> card-height:
-        (root.card-width - 2 * root.unit) * Theme.poster-shape-ratio + 6 * root.unit;
+    in property <length> card-height: root.poster-shape == "landscape"
+        ? (root.card-width - 2 * root.unit) * Theme.landscape-shape-ratio + 6 * root.unit
+        : (root.poster-shape == "square"
+            ? (root.card-width - 2 * root.unit) + 6 * root.unit
+            : (root.card-width - 2 * root.unit) * Theme.poster-shape-ratio + 6 * root.unit);
     in property <bool> show-close-button: false;
     in property <bool> show-play-button: false;
     in property <bool> show-menu-button: false;
     in property <bool> enable-lazy-loading: true;
+    in property <bool> library-context-menu: false;
+    in property <bool> continue-watching-context-menu: false;
+    in property <bool> show-watched-context-action: true;
     callback item-selected(string, string, string);
     callback remove-clicked(string);
     callback play-clicked(string);
     callback menu-clicked(string);
+    callback context-requested(string, length, length);
+    callback dismiss-clicked(string);
     callback poster-requested(string);
 
     content-width: max(root.width, (root.loading ? 8 : root.items.length) * root.card-width);
@@ -30,10 +39,30 @@ export component MediaCatalogRow inherits MetaRow {
         y: 0px;
         spacing: 0.5 * root.unit;
 
-        for _idx in 8 : SkeletonBlock {
-            width: max(9 * root.unit, root.card-width - root.unit);
+        for _idx in 8 : Rectangle {
+            width: root.card-width;
             height: root.card-height;
-            border-radius: Theme.border-radius;
+            background: transparent;
+
+            property <length> poster-w: max(0px, parent.width - 2 * root.unit);
+            property <length> poster-h: root.poster-shape == "landscape"
+                ? poster-w * Theme.landscape-shape-ratio
+                : (root.poster-shape == "square" ? poster-w : poster-w * Theme.poster-shape-ratio);
+
+            SkeletonBlock {
+                x: root.unit;
+                y: root.unit;
+                width: poster-w;
+                height: poster-h;
+                radius: Theme.border-radius;
+            }
+            SkeletonBlock {
+                x: root.unit + poster-w * 0.2;
+                y: root.unit + poster-h + root.unit;
+                width: poster-w * 0.6;
+                height: root.unit;
+                radius: Theme.compact-radius;
+            }
         }
     }
 
@@ -44,11 +73,15 @@ export component MediaCatalogRow inherits MetaRow {
         width: root.card-width;
         height: root.card-height;
         unit: root.unit;
+        poster-shape: root.poster-shape;
         item: card-item;
         show-close-button: root.show-close-button;
-        show-play-button: root.show-play-button;
+        show-play-button: root.show-play-button && card-item.can-play;
         show-menu-button: root.show-menu-button;
         enable-lazy-loading: root.enable-lazy-loading;
+        library-context-menu: root.library-context-menu;
+        continue-watching-context-menu: root.continue-watching-context-menu;
+        show-watched-context-action: root.show-watched-context-action;
         is-visible: !root.loading && (!root.enable-lazy-loading
             || (self.x + root.content-scroll-offset + self.width >= -root.card-width
                 && self.x + root.content-scroll-offset <= root.width + root.card-width));
@@ -58,6 +91,8 @@ export component MediaCatalogRow inherits MetaRow {
         remove-clicked => { root.remove-clicked(card-item.id); }
         play-clicked => { root.play-clicked(card-item.id); }
         menu-clicked => { root.menu-clicked(card-item.id); }
+        context-requested(x, y) => { root.context-requested(card-item.id, x, y); }
+        dismiss-requested => { root.dismiss-clicked(card-item.id); }
         poster-requested(url) => { root.poster-requested(url); }
     }
 }
@@ -72,9 +107,17 @@ export component MediaCardGridRow inherits Rectangle {
         (root.card-width - 2 * root.unit) * Theme.poster-shape-ratio + 6 * root.unit;
     in property <length> spacing: 0.5 * root.unit;
     in property <bool> enable-lazy-loading: false;
+    in property <bool> library-context-menu: false;
+    in property <bool> continue-watching-context-menu: false;
+    in property <bool> show-watched-context-action: true;
     callback item-selected(string, string, string);
     callback item-activated(string, string, string);
     callback poster-requested(string);
+    callback menu-clicked(string, bool, length, length);
+    callback watched-change-requested(string, bool);
+    callback library-remove-requested(string);
+    callback play-clicked(string);
+    callback dismiss-requested(string);
 
     height: root.card-height;
     background: transparent;
@@ -87,6 +130,10 @@ export component MediaCardGridRow inherits Rectangle {
         unit: root.unit;
         item: card-item;
         enable-lazy-loading: root.enable-lazy-loading;
+        library-context-menu: root.library-context-menu;
+        continue-watching-context-menu: root.continue-watching-context-menu;
+        show-watched-context-action: root.show-watched-context-action;
+        show-play-button: card-item.can-play;
         clicked => {
             root.item-selected(card-item.id, card-item.media-type, card-item.video-id);
         }
@@ -94,6 +141,17 @@ export component MediaCardGridRow inherits Rectangle {
             root.item-activated(card-item.id, card-item.media-type, card-item.video-id);
         }
         poster-requested(url) => { root.poster-requested(url); }
+        context-requested(x, y) => {
+            if (!root.library-context-menu) {
+                root.menu-clicked(card-item.id, card-item.show-checkmark, x, y);
+            }
+        }
+        watched-change-requested(watched) => {
+            root.watched-change-requested(card-item.id, watched);
+        }
+        library-remove-requested => { root.library-remove-requested(card-item.id); }
+        play-clicked => { root.play-clicked(card-item.id); }
+        dismiss-requested => { root.dismiss-requested(card-item.id); }
     }
 }
 

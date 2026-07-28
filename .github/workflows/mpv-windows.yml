@@ -178,7 +178,7 @@ jobs:
           arch=('x86_64')
           url="https://github.com/perpetus/stremio-native"
           license=('GPL-3.0')
-          depends=('openssl' 'libtorrent-rasterbar' 'boost-libs' 'mpv' 'gtk3' 'libayatana-appindicator')
+          depends=('openssl' 'mpv' 'gtk3' 'libayatana-appindicator' 'fontconfig' 'freetype2' 'libxkbcommon' 'libxcursor' 'libx11' 'libx11-xcb' 'wayland')
           options=('!strip' '!debug')
           source=("stremio-native")
           sha256sums=('SKIP')
@@ -241,7 +241,7 @@ jobs:
           License:        GPLv3
           URL:            https://github.com/perpetus/stremio-native
           Source0:        stremio-native
-          Requires:       openssl libtorrent-rasterbar mpv gtk3 libayatana-appindicator3
+          Requires:       openssl mpv gtk3 libayatana-appindicator3 fontconfig freetype libxkbcommon libXcursor libX11 wayland-client
 
           %description
           High-performance native Stremio client built with Rust and Slint.

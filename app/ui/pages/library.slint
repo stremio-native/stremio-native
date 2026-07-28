@@ -4,6 +4,7 @@ import { MediaCardItem } from "../components/media_card.slint";
 import { MediaCardGridRow, MediaGridPlaceholder } from "../components/media_carousel.slint";
 import { EmptyState } from "../components/feedback.slint";
 import { SelectField } from "../components/select.slint";
+import { ButtonSurface, PillButton } from "../components/button.slint";
 
 export struct LibraryRow {
     cols: [MediaCardItem],
@@ -15,6 +16,9 @@ export component LibraryPage inherits Rectangle {
     in property <[LibraryRow]> rows: [];
     in property <int> column-count: 6;
     in property <bool> loading: false;
+    in property <bool> has-next-page: false;
+    in property <bool> authenticated: false;
+    in property <bool> continue-watching-mode: false;
     in-out property <string> active-type: "All";
     in-out property <string> active-sort: "Last Watched";
 
@@ -23,7 +27,34 @@ export component LibraryPage inherits Rectangle {
     callback item-selected(string, string, string);
     callback load-next-page;
     callback poster-requested(string);
+    callback request-login;
+    callback remove-item(string);
+    callback watched-changed(string, bool);
+    callback play-item(string);
+    callback dismiss-item(string);
     in-out property <length> scroll-y: 0px;
+
+    private property <bool> pagination-latched: false;
+    private property <int> pagination-content-length: root.rows.length;
+    changed pagination-content-length => { root.pagination-latched = false; }
+    changed has-next-page => {
+        if (root.has-next-page) {
+            root.pagination-latched = false;
+        }
+    }
+    function request-next-page() {
+        if (root.has-next-page && !root.pagination-latched) {
+            root.pagination-latched = true;
+            root.load-next-page();
+        }
+    }
+    function check-pagination(remaining: length) {
+        if (remaining <= 25 * root.unit) {
+            root.request-next-page();
+        } else {
+            root.pagination-latched = false;
+        }
+    }
 
     in property <length> unit: Theme.root-font-size;
     in-out property <bool> type-open: false;
@@ -39,7 +70,7 @@ export component LibraryPage inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        Rectangle {
+        if (root.authenticated) : Rectangle {
             height: 5.75 * root.unit;
             z: 1000;
 
@@ -65,46 +96,137 @@ export component LibraryPage inherits Rectangle {
                     }
                 }
 
-                SelectField {
-                    unit: root.unit;
-                    field-width: 15 * root.unit;
-                    value: root.active-sort;
-                    options: ["Last Watched", "A–Z", "Z–A", "Most Watched", "Watched", "Not Watched"];
-                    open: root.sort-open;
-                    toggle => {
-                        root.sort-open = !root.sort-open;
-                        root.type-open = false;
-                    }
-                    selected(value) => {
-                        root.sort-open = false;
-                        root.active-sort = value;
-                        root.sort-changed(value);
+                HorizontalLayout {
+                    spacing: 0.5 * root.unit;
+                    for sort-label in ["Last Watched", "A–Z", "Z–A", "Most Watched", "Watched", "Not Watched"] : ButtonSurface {
+                        height: 3.25 * root.unit;
+                        min-width: 7 * root.unit;
+                        border-radius: self.height / 2;
+                        background: sort-label == root.active-sort
+                            ? Theme.primary-accent
+                            : (self.has-hover ? Theme.overlay-hover : Theme.overlay-color);
+                        border-width: self.has-focus ? Theme.focus-outline-size : 0px;
+                        border-color: Theme.surface-light;
+                        accessible-name: sort-label;
+                        clicked => {
+                            root.active-sort = sort-label;
+                            root.sort-changed(sort-label);
+                        }
+                        Text {
+                            text: sort-label;
+                            color: Theme.primary-foreground;
+                            font-size: 0.9 * root.unit;
+                            font-weight: sort-label == root.active-sort ? 700 : 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
         }
 
-        if (root.loading) : MediaGridPlaceholder {
+        if (!root.authenticated) : VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            spacing: 1.5 * root.unit;
+            Text {
+                text: @tr("Library is only available for logged in users");
+                color: Theme.text-primary;
+                opacity: 0.55;
+                font-size: 1.6 * root.unit;
+                horizontal-alignment: center;
+            }
+            Image {
+                width: 8 * root.unit;
+                height: 6 * root.unit;
+                source: @image-url("../assets/images/icons/cloud-library.svg");
+                colorize: Theme.primary-foreground;
+                opacity: 0.35;
+                image-fit: contain;
+            }
+            HorizontalLayout {
+                width: 34 * root.unit;
+                height: 5 * root.unit;
+                spacing: 3 * root.unit;
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: root.unit;
+                    Image {
+                        width: 3 * root.unit;
+                        source: @image-url("../assets/images/icons/cloud-sync.svg");
+                        colorize: Theme.primary-foreground;
+                        opacity: 0.45;
+                        image-fit: contain;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: @tr("Access your favorite movies and TV shows anytime, anywhere");
+                        color: Theme.primary-foreground;
+                        font-size: root.unit;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: root.unit;
+                    Image {
+                        width: 3 * root.unit;
+                        source: @image-url("../assets/images/icons/person.svg");
+                        colorize: Theme.primary-foreground;
+                        opacity: 0.45;
+                        image-fit: contain;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: @tr("Recommendations tailored to your viewing history");
+                        color: Theme.primary-foreground;
+                        font-size: root.unit;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            PillButton {
+                width: 12 * root.unit;
+                unit: root.unit;
+                label: @tr("BUTTON_LOGIN" => "Log in");
+                primary: true;
+                clicked => { root.request-login(); }
+            }
+        }
+
+        if (root.authenticated && root.loading) : MediaGridPlaceholder {
             vertical-stretch: 1;
             unit: root.unit;
             card-width: root.card-width;
             card-height: root.card-height;
         }
 
-        if (!root.loading && root.rows.length == 0) : EmptyState {
+        if (root.authenticated && !root.loading && root.rows.length == 0) : EmptyState {
             vertical-stretch: 1;
             unit: root.unit;
             icon-source: @image-url("../assets/images/icons/library.svg");
-            title: @tr("MOBILE_EMPTY_LIBRARY" => "Your library is empty");
-            message: @tr("Add movies and series to find them here.");
+            title: root.continue-watching-mode
+                ? @tr("BOARD_CONTINUE_WATCHING_EMPTY" => "Your Continue Watching list is empty")
+                : @tr("MOBILE_EMPTY_LIBRARY" => "Your library is empty");
+            message: root.continue-watching-mode
+                ? @tr("Start watching something and it will appear here.")
+                : @tr("Add movies and series to find them here.");
         }
 
-        if (!root.loading && root.rows.length > 0) : library-scroll := ListView {
+        if (root.authenticated && !root.loading && root.rows.length > 0) : library-scroll := ListView {
             vertical-stretch: 1;
             viewport-width: root.width;
             viewport-y <=> root.scroll-y;
             mouse-drag-pan-enabled: true;
             horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            changed viewport-y => {
+                root.check-pagination(self.viewport-height + self.viewport-y - self.height);
+            }
+            changed viewport-height => {
+                root.check-pagination(self.viewport-height + self.viewport-y - self.height);
+            }
 
             for row[row-index] in root.rows : Rectangle {
                 width: root.width;
@@ -112,7 +234,7 @@ export component LibraryPage inherits Rectangle {
 
                 init => {
                     if (row-index == root.rows.length - 1) {
-                        root.load-next-page();
+                        root.request-next-page();
                     }
                 }
 
@@ -125,10 +247,18 @@ export component LibraryPage inherits Rectangle {
                     card-width: root.card-width;
                     card-height: root.card-height;
                     spacing: 0.5 * root.unit;
+                    library-context-menu: true;
+                    continue-watching-context-menu: root.continue-watching-mode;
                     item-selected(id, media-type, video-id) => {
                         root.item-selected(id, media-type, video-id);
                     }
                     poster-requested(url) => { root.poster-requested(url); }
+                    watched-change-requested(id, watched) => {
+                        root.watched-changed(id, watched);
+                    }
+                    library-remove-requested(id) => { root.remove-item(id); }
+                    play-clicked(id) => { root.play-item(id); }
+                    dismiss-requested(id) => { root.dismiss-item(id); }
                 }
             }
         }

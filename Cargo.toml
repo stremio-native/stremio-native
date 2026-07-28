@@ -12,12 +12,13 @@ exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core"]
 anyhow = "1.0.104"
 async-trait = "0.1.91"
 axum = "0.8.9"
+base64 = "0.22.1"
 blake3 = "1"
 chrono = "0.4.45"
+dirs = "6.0.0"
 futures = "0.3.33"
 glow = "0.18.0"
 http = "1.4.2"
-iconflow = "1.0.0"
 image = { version = "0.25.10", default-features = false }
 moka = "0.12.15"
 percent-encoding = "2.3.2"
@@ -30,7 +31,6 @@ slint = { version = "1.17.1", default-features = false }
 slint-build = "1.17.1"
 stremio-core = { git = "https://github.com/perpetus/stremio-core.git", rev = "4562b37be8ea788801e12c608a6aa3e43c646123", features = ["derive", "analytics", "env-future-send"] }
 stream-server = { git = "https://github.com/perpetus/stream-server.git", rev = "73a23325a49e76f7dee0afe08bf3e1a9b3ef3eec", package = "server" }
-settings-gui = { git = "https://github.com/perpetus/stream-server.git", rev = "73a23325a49e76f7dee0afe08bf3e1a9b3ef3eec" }
 sys-locale = "0.3.2"
 thiserror = "2.0.19"
 tokio = "1.53.1"

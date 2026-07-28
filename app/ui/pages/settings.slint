@@ -1,10 +1,12 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, IconData } from "../theme.slint";
-import { MenuButton, PillButton } from "../components/button.slint";
+import { IconAction, MenuButton, PillButton } from "../components/button.slint";
 import { SelectField } from "../components/select.slint";
 import { NativeTextField } from "../components/text_input.slint";
 import { ToggleSwitch } from "../components/toggle.slint";
 import { Slider } from "../components/slider.slint";
+import { ColorInput, ColorPicker } from "../components/color_input.slint";
+import { ModalDialog } from "../components/overlays.slint";
 
 component SettingsSection inherits VerticalLayout {
     in property <length> unit: 16px;
@@ -98,6 +100,7 @@ component SettingsOption inherits Rectangle {
             }
         }
     }
+
 }
 
 export component SettingsPage inherits Rectangle {
@@ -151,6 +154,30 @@ export component SettingsPage inherits Rectangle {
     in property <IconData> refresh-icon;
     in property <IconData> folder-icon;
     in-out property <bool> esc-exit-fullscreen: true;
+    in property <string> user-email: "";
+    in property <string> user-id: "";
+    in property <image> user-avatar;
+    in property <image> anonymous-avatar;
+    in property <image> default-avatar;
+    in property <bool> has-avatar: false;
+    in property <bool> authenticated: false;
+    in property <bool> trakt-authenticated: false;
+    in-out property <color> subtitles-text-color: #ffffffff;
+    in-out property <color> subtitles-background-color: #00000000;
+    in-out property <color> subtitles-outline-color: #000000ff;
+    in-out property <bool> ass-subtitles-styling: false;
+    in-out property <string> audio-language: "English";
+    in-out property <bool> surround-sound: false;
+    in-out property <string> seek-short-duration: "3";
+    in-out property <string> next-video-popup-duration: "35";
+    in-out property <string> external-player: "Built-in player";
+    in property <[string]> streaming-server-urls: [];
+    in-out property <string> new-streaming-server-url: "";
+    in-out property <string> streaming-https-endpoint: "Disabled";
+    in-out property <string> streaming-transcode-profile: "Disabled";
+    private property <bool> color-dialog-open: false;
+    private property <int> color-dialog-kind: 0;
+    private property <color> color-dialog-value: #ffffffff;
 
     callback open-external-url(string);
     callback apply-cache-settings(float);
@@ -187,6 +214,22 @@ export component SettingsPage inherits Rectangle {
     callback change-seek-duration(string);
     callback change-pause-on-minimize(bool);
     callback change-quit-on-close(bool);
+    callback logout;
+    callback toggle-trakt;
+    callback change-subtitles-text-color(color);
+    callback change-subtitles-background-color(color);
+    callback change-subtitles-outline-color(color);
+    callback change-ass-subtitles-styling(bool);
+    callback change-audio-language(string);
+    callback change-surround-sound(bool);
+    callback change-seek-short-duration(string);
+    callback change-next-video-popup-duration(string);
+    callback change-external-player(string);
+    callback add-streaming-server-url(string);
+    callback delete-streaming-server-url(string);
+    callback copy-remote-url(string);
+    callback change-streaming-https-endpoint(string);
+    callback change-streaming-transcode-profile(string);
 
     in property <length> unit: Theme.root-font-size;
     in-out property <int> active-category: 0;
@@ -269,6 +312,63 @@ export component SettingsPage inherits Rectangle {
                     unit: root.unit;
                     title: @tr("SETTINGS_NAV_GENERAL" => "General");
 
+                    Rectangle {
+                        height: 7 * root.unit;
+                        background: transparent;
+
+                        HorizontalLayout {
+                            spacing: 1.5 * root.unit;
+                            alignment: start;
+
+                            Rectangle {
+                                width: 5 * root.unit;
+                                height: 5 * root.unit;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: self.width / 2;
+                                background: Theme.overlay;
+                                clip: true;
+
+                                Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: root.authenticated
+                                        ? (root.has-avatar ? root.user-avatar : root.default-avatar)
+                                        : root.anonymous-avatar;
+                                    image-fit: cover;
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 0.35 * root.unit;
+
+                                Text {
+                                    text: root.authenticated
+                                        ? root.user-email
+                                        : @tr("ANONYMOUS_USER" => "Anonymous user");
+                                    color: Theme.text-primary;
+                                    font-size: 1.05 * root.unit;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+                                SettingsLink {
+                                    unit: root.unit;
+                                    label: root.authenticated
+                                        ? @tr("LOG_OUT" => "Log out")
+                                        : @tr("LOG_IN_SIGN_UP" => "Log in / Sign up");
+                                    clicked => {
+                                        if (root.authenticated) {
+                                            root.logout();
+                                        } else {
+                                            root.open-external-url("https://web.stremio.com/#/intro");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_DISCORD" => "Show watching activity on Discord");
@@ -277,6 +377,20 @@ export component SettingsPage inherits Rectangle {
                             unit: root.unit;
                             checked: root.discord-rpc-enabled;
                             toggled => { root.change-discord-rpc-enabled(self.checked); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_TRAKT" => "Trakt Scrobbling");
+                        PillButton {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            label: root.trakt-authenticated
+                                ? @tr("LOG_OUT" => "Log out")
+                                : @tr("SETTINGS_TRAKT_AUTHENTICATE" => "Authenticate Trakt");
+                            outlined: true;
+                            enabled: root.authenticated;
+                            clicked => { root.toggle-trakt(); }
                         }
                     }
 
@@ -346,6 +460,20 @@ export component SettingsPage inherits Rectangle {
                         unit: root.unit;
                         label: @tr("SETTINGS_REQ_EXPORT" => "Request data export");
                         clicked => { root.export-data(); }
+                    }
+                    if (root.authenticated) : SettingsLink {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_SUBSCRIBE_CALENDAR" => "Subscribe to calendar");
+                        clicked => {
+                            root.open-external-url("https://www.strem.io/calendar/" + root.user-id + ".ics");
+                        }
+                    }
+                    if (root.authenticated) : SettingsLink {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_CHANGE_PASSWORD" => "Change password");
+                        clicked => {
+                            root.open-external-url("https://www.strem.io/reset-password/" + root.user-email);
+                        }
                     }
                     SettingsLink {
                         unit: root.unit;
@@ -468,6 +596,48 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
+                        label: @tr("SETTINGS_SUBTITLES_COLOR" => "Subtitles color");
+                        ColorInput {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            value: root.subtitles-text-color;
+                            open-requested(value) => {
+                                root.color-dialog-kind = 1;
+                                root.color-dialog-value = value;
+                                root.color-dialog-open = true;
+                            }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_SUBTITLES_COLOR_BACKGROUND" => "Subtitles background color");
+                        ColorInput {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            value: root.subtitles-background-color;
+                            open-requested(value) => {
+                                root.color-dialog-kind = 2;
+                                root.color-dialog-value = value;
+                                root.color-dialog-open = true;
+                            }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_SUBTITLES_COLOR_OUTLINE" => "Subtitles outline color");
+                        ColorInput {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            value: root.subtitles-outline-color;
+                            open-requested(value) => {
+                                root.color-dialog-kind = 3;
+                                root.color-dialog-value = value;
+                                root.color-dialog-open = true;
+                            }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
                         label: @tr("PLAYER_SUBTITLES_VERTICAL_POSITION" => "Vertical Position");
                         description: @tr("Percentage from the bottom edge.");
                         NativeTextField {
@@ -476,6 +646,26 @@ export component SettingsPage inherits Rectangle {
                             text: root.subtitles-offset;
                             placeholder-text: "5";
                             accepted => { root.change-subtitles-offset(self.text); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_DEFAULT_AUDIO_TRACK" => "Default audio track");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text: root.audio-language;
+                            placeholder-text: @tr("English");
+                            accepted => { root.change-audio-language(self.text); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_SURROUND_SOUND" => "Surround sound");
+                        ToggleSwitch {
+                            unit: root.unit;
+                            checked: root.surround-sound;
+                            toggled => { root.change-surround-sound(self.checked); }
                         }
                     }
 
@@ -504,8 +694,53 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
+                        label: @tr("SETTINGS_SEEK_KEY_SHIFT" => "Shift + seek step");
+                        description: @tr("Seconds skipped while holding Shift.");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text <=> root.seek-short-duration;
+                            placeholder-text: "3";
+                            accepted => { root.change-seek-short-duration(self.text); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_NEXT_VIDEO_POPUP_DURATION" => "Next video popup duration");
+                        description: @tr("Duration in seconds; use 0 to disable.");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text <=> root.next-video-popup-duration;
+                            placeholder-text: "35";
+                            accepted => { root.change-next-video-popup-duration(self.text); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_PLAY_IN_EXTERNAL_PLAYER" => "Play in external player");
+                        description: @tr("Leave empty to use the built-in player.");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text <=> root.external-player;
+                            placeholder-text: @tr("Built-in player");
+                            accepted => { root.change-external-player(self.text); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
                         label: @tr("SETTINGS_PAUSE_MINIMIZED" => "Pause playback when minimized");
                         ToggleSwitch { unit: root.unit; checked: root.pause-on-minimize; toggled => { root.change-pause-on-minimize(self.checked); } }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_ASS_SUBTITLES_STYLING" => "Use embedded ASS subtitle styling");
+                        ToggleSwitch {
+                            unit: root.unit;
+                            checked: root.ass-subtitles-styling;
+                            toggled => { root.change-ass-subtitles-styling(self.checked); }
+                        }
                     }
                     SettingsOption {
                         unit: root.unit;
@@ -568,6 +803,66 @@ export component SettingsPage inherits Rectangle {
                 streaming-sec := SettingsSection {
                     unit: root.unit;
                     title: @tr("SETTINGS_NAV_STREAMING" => "Streaming");
+                    Text {
+                        height: 2.5 * root.unit;
+                        text: @tr("Streaming server URLs");
+                        color: Theme.text-secondary;
+                        font-size: root.unit;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    for server in root.streaming-server-urls : Rectangle {
+                        height: 3.5 * root.unit;
+                        border-radius: Theme.border-radius;
+                        background: Theme.overlay;
+
+                        HorizontalLayout {
+                            padding-left: root.unit;
+                            spacing: root.unit;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: server;
+                                color: Theme.text-primary;
+                                font-size: 0.9 * root.unit;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            IconAction {
+                                width: 3.5 * root.unit;
+                                height: 3.5 * root.unit;
+                                unit: root.unit;
+                                icon-source: @image-url("../assets/images/icons/delete.svg");
+                                accessible-name: @tr("Delete server URL");
+                                clicked => { root.delete-streaming-server-url(server); }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        height: 3.5 * root.unit;
+                        spacing: root.unit;
+                        NativeTextField {
+                            horizontal-stretch: 1;
+                            unit: root.unit;
+                            text <=> root.new-streaming-server-url;
+                            placeholder-text: "https://example.com/";
+                            accepted => {
+                                if (self.text != "") {
+                                    root.add-streaming-server-url(self.text);
+                                    root.new-streaming-server-url = "";
+                                }
+                            }
+                        }
+                        PillButton {
+                            width: 9 * root.unit;
+                            unit: root.unit;
+                            label: @tr("Add URL");
+                            enabled: root.new-streaming-server-url != "";
+                            clicked => {
+                                root.add-streaming-server-url(root.new-streaming-server-url);
+                                root.new-streaming-server-url = "";
+                            }
+                        }
+                    }
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("STREMIO_TV_SETTINGS_SERVER_URL" => "Streaming server URL");
@@ -587,6 +882,35 @@ export component SettingsPage inherits Rectangle {
                         unit: root.unit;
                         label: @tr("Remote access URL");
                         description: root.streaming-remote-url;
+                        PillButton {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            label: @tr("SETTINGS_COPY_REMOTE_URL" => "Copy URL");
+                            outlined: true;
+                            clicked => { root.copy-remote-url(root.streaming-remote-url); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_HTTPS_ENDPOINT" => "HTTPS endpoint");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text <=> root.streaming-https-endpoint;
+                            placeholder-text: @tr("Disabled");
+                            accepted => { root.change-streaming-https-endpoint(self.text); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_TRANSCODE_PROFILE" => "Transcoding profile");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text <=> root.streaming-transcode-profile;
+                            placeholder-text: @tr("Disabled");
+                            accepted => { root.change-streaming-transcode-profile(self.text); }
+                        }
                     }
                     SettingsOption {
                         unit: root.unit;
@@ -659,12 +983,81 @@ export component SettingsPage inherits Rectangle {
                 shortcuts-sec := SettingsSection {
                     unit: root.unit;
                     title: @tr("SETTINGS_NAV_SHORTCUTS" => "Shortcuts");
-                    SettingsOption { unit: root.unit; label: @tr("SETTINGS_SHORTCUT_PLAY_PAUSE" => "Play / Pause"); Text { text: @tr("SETTINGS_SHORTCUT_SPACE" => "Space"); color: Theme.text-primary; opacity: 0.5; font-size: root.unit; horizontal-alignment: center; } }
-                    SettingsOption { unit: root.unit; label: @tr("CTX_FULLSCREEN" => "Fullscreen"); Text { text: "F"; color: Theme.text-primary; opacity: 0.5; font-size: root.unit; horizontal-alignment: center; } }
-                    SettingsOption { unit: root.unit; label: @tr("Volume"); Text { text: @tr("Up / Down"); color: Theme.text-primary; opacity: 0.5; font-size: root.unit; horizontal-alignment: center; } }
-                    SettingsOption { unit: root.unit; label: @tr("Seek"); Text { text: @tr("Left / Right"); color: Theme.text-primary; opacity: 0.5; font-size: root.unit; horizontal-alignment: center; } }
+                    for shortcut in [
+                        { label: @tr("SETTINGS_SHORTCUT_NAVIGATE_MENUS" => "Navigate menus"), value: "1 – 6" },
+                        { label: @tr("SETTINGS_SHORTCUT_GO_TO_SEARCH" => "Go to Search"), value: "0" },
+                        { label: @tr("SETTINGS_SHORTCUT_NAVIGATE_HISTORY" => "Navigate history"), value: "Backspace / Ctrl + Backspace" },
+                        { label: @tr("SETTINGS_SHORTCUT_FULLSCREEN" => "Fullscreen"), value: "F" },
+                        { label: @tr("SETTINGS_SHORTCUT_SHORTCUTS" => "Show shortcuts"), value: "Ctrl + /" },
+                        { label: @tr("GAMEPAD_ACTION_GUIDE" => "Gamepad guide"), value: "Ctrl + G" },
+                        { label: @tr("SETTINGS_SHORTCUT_PLAY_PAUSE" => "Play / Pause"), value: "Space" },
+                        { label: @tr("SETTINGS_SHORTCUT_SEEK_FORWARD" => "Seek forward"), value: "→ / Shift + →" },
+                        { label: @tr("SETTINGS_SHORTCUT_SEEK_BACKWARD" => "Seek backward"), value: "← / Shift + ←" },
+                        { label: @tr("SETTINGS_SHORTCUT_VOLUME" => "Volume"), value: "↑ / ↓" },
+                        { label: @tr("SETTINGS_SHORTCUT_MUTE" => "Mute"), value: "M" },
+                        { label: @tr("SETTINGS_SHORTCUT_SUBTITLES_SIZE" => "Subtitle size"), value: "- / =" },
+                        { label: @tr("SETTINGS_SHORTCUT_SUBTITLES_DELAY" => "Subtitle delay"), value: "G / H" },
+                        { label: @tr("SETTINGS_SHORTCUT_PLAYBACK_SPEED" => "Playback speed"), value: "[ / ]" },
+                        { label: @tr("SETTINGS_SHORTCUT_TOGGLE_SUBTITLES" => "Toggle subtitles"), value: "C" },
+                        { label: @tr("SETTINGS_SHORTCUT_MENU_SUBTITLES" => "Subtitles menu"), value: "S" },
+                        { label: @tr("SETTINGS_SHORTCUT_MENU_AUDIO" => "Audio menu"), value: "A" },
+                        { label: @tr("SETTINGS_SHORTCUT_MENU_INFO" => "Info menu"), value: "I" },
+                        { label: @tr("SETTINGS_SHORTCUT_MENU_PLAYBACK_SPEED" => "Playback speed menu"), value: "R" },
+                        { label: @tr("SETTINGS_SHORTCUT_MENU_STATISTICS" => "Statistics menu"), value: "D" },
+                        { label: @tr("SETTINGS_SHORTCUT_PLAY_NEXT" => "Play next"), value: "Shift + N" },
+                        { label: @tr("SETTINGS_SHORTCUT_EXIT_BACK" => "Exit / Back"), value: "Esc" },
+                    ] : SettingsOption {
+                        unit: root.unit;
+                        label: shortcut.label;
+                        Text {
+                            text: shortcut.value;
+                            color: Theme.text-primary;
+                            opacity: 0.65;
+                            font-size: root.unit;
+                            horizontal-alignment: center;
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    ModalDialog {
+        width: 100%;
+        height: 100%;
+        z: 2000;
+        unit: root.unit;
+        open: root.color-dialog-open;
+        title: @tr("Choose color");
+        dialog-width: 32 * root.unit;
+        dialog-height: 30 * root.unit;
+        actions: [
+            { id: "cancel", label: @tr("BUTTON_CANCEL" => "Cancel"), icon: @image-url("../assets/images/icons/close.svg"), has-icon: false, enabled: true, primary: false },
+            { id: "save", label: @tr("Save"), icon: @image-url("../assets/images/icons/checkmark.svg"), has-icon: false, enabled: true, primary: true },
+        ];
+        close-requested => { root.color-dialog-open = false; }
+        action-triggered(action) => {
+            if (action == "save") {
+                if (root.color-dialog-kind == 1) {
+                    root.subtitles-text-color = root.color-dialog-value;
+                    root.change-subtitles-text-color(root.color-dialog-value);
+                } else if (root.color-dialog-kind == 2) {
+                    root.subtitles-background-color = root.color-dialog-value;
+                    root.change-subtitles-background-color(root.color-dialog-value);
+                } else if (root.color-dialog-kind == 3) {
+                    root.subtitles-outline-color = root.color-dialog-value;
+                    root.change-subtitles-outline-color(root.color-dialog-value);
+                }
+            }
+            root.color-dialog-open = false;
+        }
+
+        ColorPicker {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            unit: root.unit;
+            value: root.color-dialog-value;
+            input(value) => { root.color-dialog-value = value; }
         }
     }
 }

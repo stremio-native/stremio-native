@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
 use std::sync::{OnceLock, RwLock};
 
 static APP_CONFIG: OnceLock<RwLock<AppConfig>> = OnceLock::new();
@@ -162,44 +160,18 @@ pub async fn init_config() {
         loaded_from_db = true;
     }
 
-    // 2. If not found in database, check for legacy config.json file
+    // A clean install starts from database-backed defaults. Legacy working-
+    // directory files are intentionally left untouched for manual recovery.
     if !loaded_from_db {
-        let config_path = Path::new("config.json");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path)
-                && let Ok(mut legacy_config) = serde_json::from_str::<AppConfig>(&content)
-            {
-                legacy_config.migrate();
-                config = legacy_config;
-
-                // Save legacy config to database
-                if let Ok(conn) = crate::db::get_conn()
-                    && let Ok(serialized) = serde_json::to_string(&config)
-                {
-                    let _ = conn
-                        .execute(
-                            "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
-                            [serialized],
-                        )
-                        .await;
-                }
-
-                // Rename legacy config.json to config.json.bak
-                let backup_path = Path::new("config.json.bak");
-                let _ = fs::rename(config_path, backup_path);
-            }
-        } else {
-            // First run, populate default config in database
-            if let Ok(conn) = crate::db::get_conn()
-                && let Ok(serialized) = serde_json::to_string(&config)
-            {
-                let _ = conn
-                    .execute(
-                        "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
-                        [serialized],
-                    )
-                    .await;
-            }
+        if let Ok(conn) = crate::db::get_conn()
+            && let Ok(serialized) = serde_json::to_string(&config)
+        {
+            let _ = conn
+                .execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
+                    [serialized],
+                )
+                .await;
         }
     }
 

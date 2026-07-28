@@ -2,21 +2,29 @@ import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { MediaCardItem } from "../components/media_card.slint";
 import { MediaCardGridRow, MediaGridPlaceholder } from "../components/media_carousel.slint";
-import { IconAction, PillButton } from "../components/button.slint";
+import { ButtonSurface, IconAction, PillButton } from "../components/button.slint";
 import { EmptyState } from "../components/feedback.slint";
 import { MetaStringLinks } from "../components/meta_preview.slint";
 import { SelectField } from "../components/select.slint";
+import { ModalDialog } from "../components/overlays.slint";
 
 export struct DiscoverRow {
     cols: [MediaCardItem],
 }
 
+export struct DiscoverFilterOption {
+    extra-name: string,
+    extra-label: string,
+    value: string,
+    label: string,
+    selected: bool,
+}
+
 export component DiscoverPage inherits Rectangle {
-    width: 1280px;
-    height: 720px;
     in property <[DiscoverRow]> rows: [];
     in property <int> column-count: 6;
     in property <bool> loading: false;
+    in property <bool> has-next-page: false;
 
     in property <[string]> available-types: [];
     in property <string> active-type: "";
@@ -24,6 +32,9 @@ export component DiscoverPage inherits Rectangle {
     in property <string> active-catalog: "";
     in property <[string]> available-genres: [];
     in property <string> active-genre: "";
+    in property <[DiscoverFilterOption]> available-extra-options: [];
+    in property <bool> selected-addon-installed: true;
+    in property <string> selected-addon-name: "";
 
     in-out property <length> scroll-y: 0px;
 
@@ -53,13 +64,39 @@ export component DiscoverPage inherits Rectangle {
     callback toggle-library-preview;
     callback toggle-watched-preview;
     callback play-trailer-preview(string);
+    callback extra-changed(string, string);
+    callback install-selected-addon;
+    callback metadata-filter-selected(string);
+
+    private property <bool> pagination-latched: false;
+    private property <int> pagination-content-length: root.rows.length;
+    changed pagination-content-length => { root.pagination-latched = false; }
+    changed has-next-page => {
+        if (root.has-next-page) {
+            root.pagination-latched = false;
+        }
+    }
+    function request-next-page() {
+        if (root.has-next-page && !root.pagination-latched) {
+            root.pagination-latched = true;
+            root.load-next-page();
+        }
+    }
+    function check-pagination(remaining: length) {
+        if (remaining <= 25 * root.unit) {
+            root.request-next-page();
+        } else {
+            root.pagination-latched = false;
+        }
+    }
 
     in property <length> unit: Theme.root-font-size;
-    property <bool> preview-visible: root.has-preview && root.preview-title != "" && root.width > 1000px;
+    property <bool> preview-visible: root.has-preview && root.preview-title != "";
     in-out property <bool> type-open: false;
     in-out property <bool> catalog-open: false;
     in-out property <bool> genre-open: false;
-    property <length> preview-panel-width: min(36 * root.unit, 0.3 * root.width);
+    in-out property <bool> all-filters-open: false;
+    property <length> preview-panel-width: 29 * root.unit;
     property <length> grid-width: catalog.width - 3 * root.unit;
     property <length> card-width: root.column-count > 0
         ? (root.grid-width - (root.column-count - 1) * 0.5 * root.unit) / root.column-count
@@ -76,8 +113,7 @@ export component DiscoverPage inherits Rectangle {
             spacing: 0px;
 
             Rectangle {
-                height: 5.75 * root.unit;
-                z: 1000;
+                height: root.selected-addon-installed ? 5.75 * root.unit : 10 * root.unit;
 
                 HorizontalLayout {
                     padding: 1.5 * root.unit;
@@ -137,6 +173,65 @@ export component DiscoverPage inherits Rectangle {
                             root.genre-changed(value);
                         }
                     }
+
+                    if (root.available-extra-options.length > 0) : PillButton {
+                        width: 10 * root.unit;
+                        height: 3.25 * root.unit;
+                        unit: root.unit;
+                        label: @tr("All filters");
+                        show-icon: true;
+                        use-svg-icon: true;
+                        icon-source: @image-url("../assets/images/icons/filters.svg");
+                        clicked => {
+                            root.type-open = false;
+                            root.catalog-open = false;
+                            root.genre-open = false;
+                            root.all-filters-open = true;
+                        }
+                    }
+                }
+
+                if (!root.selected-addon-installed) : Rectangle {
+                    x: 1.5 * root.unit;
+                    y: 5.5 * root.unit;
+                    width: parent.width - 3 * root.unit;
+                    height: 3.5 * root.unit;
+                    border-radius: Theme.border-radius;
+                    background: Theme.modal-color;
+                    border-width: 1px;
+                    border-color: Theme.warning;
+
+                    HorizontalLayout {
+                        padding-left: root.unit;
+                        padding-right: 0.5 * root.unit;
+                        spacing: root.unit;
+                        alignment: center;
+                        Image {
+                            width: 1.5 * root.unit;
+                            height: 1.5 * root.unit;
+                            source: @image-url("../assets/images/icons/warning.svg");
+                            colorize: Theme.warning;
+                            image-fit: contain;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: @tr("This catalog belongs to an addon that is not installed")
+                                + (root.selected-addon-name != "" ? ": " + root.selected-addon-name : "");
+                            color: Theme.primary-foreground;
+                            font-size: 0.95 * root.unit;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        PillButton {
+                            width: 8 * root.unit;
+                            height: 2.75 * root.unit;
+                            unit: root.unit;
+                            label: @tr("Install");
+                            surface-color: Theme.secondary-accent;
+                            hover-color: Theme.secondary-accent.brighter(0.2);
+                            clicked => { root.install-selected-addon(); }
+                        }
+                    }
                 }
             }
 
@@ -148,8 +243,6 @@ export component DiscoverPage inherits Rectangle {
             }
 
             if (!root.loading && root.rows.length == 0) : EmptyState {
-                width: max(0px, root.width
-                    - (root.preview-visible ? root.preview-panel-width : 0px));
                 vertical-stretch: 1;
                 unit: root.unit;
                 icon-source: @image-url("../assets/images/icons/discover.svg");
@@ -163,6 +256,12 @@ export component DiscoverPage inherits Rectangle {
                 viewport-y <=> root.scroll-y;
                 mouse-drag-pan-enabled: true;
                 horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                changed viewport-y => {
+                    root.check-pagination(self.viewport-height + self.viewport-y - self.height);
+                }
+                changed viewport-height => {
+                    root.check-pagination(self.viewport-height + self.viewport-y - self.height);
+                }
 
                 for row[row-index] in root.rows : Rectangle {
                     width: catalog.width;
@@ -171,7 +270,7 @@ export component DiscoverPage inherits Rectangle {
 
                     init => {
                         if (row-index == root.rows.length - 1) {
-                            root.load-next-page();
+                            root.request-next-page();
                         }
                     }
 
@@ -207,7 +306,7 @@ export component DiscoverPage inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 image-fit: cover;
-                opacity: 0.07;
+                opacity: 0.15;
             }
 
             ScrollView {
@@ -285,6 +384,7 @@ export component DiscoverPage inherits Rectangle {
                         unit: root.unit;
                         label: @tr("LINKS_GENRES" => "Genres");
                         values: root.preview-genres;
+                        link-selected(value) => { root.metadata-filter-selected(value); }
                     }
 
                     if (root.preview-cast.length > 0) : MetaStringLinks {
@@ -293,6 +393,7 @@ export component DiscoverPage inherits Rectangle {
                         unit: root.unit;
                         label: @tr("CAST" => "Cast");
                         values: root.preview-cast;
+                        link-selected(value) => { root.metadata-filter-selected(value); }
                     }
 
                     if (root.preview-directors.length > 0) : MetaStringLinks {
@@ -301,6 +402,7 @@ export component DiscoverPage inherits Rectangle {
                         unit: root.unit;
                         label: @tr("LINKS_DIRECTORS" => "Directors");
                         values: root.preview-directors;
+                        link-selected(value) => { root.metadata-filter-selected(value); }
                     }
                 }
             }
@@ -363,6 +465,66 @@ export component DiscoverPage inherits Rectangle {
                     label: @tr("SHOW" => "Show");
                     primary: true;
                     clicked => { root.play-preview(); }
+                }
+            }
+        }
+    }
+
+    ModalDialog {
+        open: root.all-filters-open;
+        unit: root.unit;
+        title: @tr("All filters");
+        dialog-width: 42 * root.unit;
+        dialog-height: 38 * root.unit;
+        close-requested => { root.all-filters-open = false; }
+
+        ScrollView {
+            width: parent.width;
+            height: parent.height;
+            viewport-width: parent.width;
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            VerticalLayout {
+                width: parent.width;
+                spacing: 0.5 * root.unit;
+                for option in root.available-extra-options : ButtonSurface {
+                    height: 3.25 * root.unit;
+                    border-radius: Theme.border-radius;
+                    background: option.selected
+                        ? Theme.primary-accent
+                        : (self.has-hover ? Theme.overlay-hover : Theme.overlay-color);
+                    accessible-name: option.extra-label + ": " + option.label;
+                    clicked => {
+                        root.extra-changed(option.extra-name, option.value);
+                        root.all-filters-open = false;
+                    }
+                    HorizontalLayout {
+                        padding-left: root.unit;
+                        padding-right: root.unit;
+                        spacing: root.unit;
+                        Text {
+                            width: 10 * root.unit;
+                            text: option.extra-label;
+                            color: Theme.text-secondary;
+                            font-size: 0.9 * root.unit;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: option.label;
+                            color: Theme.primary-foreground;
+                            font-size: root.unit;
+                            font-weight: option.selected ? 700 : 500;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if (option.selected) : Image {
+                            width: 1.25 * root.unit;
+                            source: @image-url("../assets/images/icons/checkmark.svg");
+                            colorize: Theme.primary-foreground;
+                            image-fit: contain;
+                        }
+                    }
                 }
             }
         }

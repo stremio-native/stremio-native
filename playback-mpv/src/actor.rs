@@ -142,6 +142,8 @@ pub enum PlaybackCommand {
     SetVideoScale(u8),
     SetAudioTrack(Option<String>),
     SetSubtitleTrack(Option<String>),
+    SetAudioLanguage(String),
+    SetSubtitleLanguage(String),
     AddSubtitle { url: String, title: Option<String> },
     SetSubtitleDelay(i64),
     SetSubtitleScale(f64),
@@ -439,7 +441,7 @@ fn handle_command(
             client.command(&["seek", &seconds.to_string(), "relative+exact"])
         }
         PlaybackCommand::SetVolume(volume) => {
-            client.set_double("volume", volume.clamp(0.0, 1.0) * 100.0)
+            client.set_double("volume", volume.clamp(0.0, 2.0) * 100.0)
         }
         PlaybackCommand::SetMuted(muted) => client.set_flag("mute", muted),
         PlaybackCommand::SetSpeed(speed) => client.set_double("speed", speed.clamp(0.25, 4.0)),
@@ -461,6 +463,8 @@ fn handle_command(
         PlaybackCommand::SetSubtitleTrack(track) => {
             client.set_string("sid", track.as_deref().unwrap_or("no"))
         }
+        PlaybackCommand::SetAudioLanguage(language) => client.set_string("alang", &language),
+        PlaybackCommand::SetSubtitleLanguage(language) => client.set_string("slang", &language),
         PlaybackCommand::AddSubtitle { url, title } => {
             let title = title.unwrap_or_default();
             client.command_async(
@@ -636,7 +640,7 @@ fn update_property(event: &MpvEvent, state: &mut PlaybackState) {
         "seeking" => state.seeking = property_flag(property).unwrap_or(state.seeking),
         "volume" => {
             state.volume =
-                (property_double(property).unwrap_or(state.volume * 100.0) / 100.0).clamp(0.0, 1.0)
+                (property_double(property).unwrap_or(state.volume * 100.0) / 100.0).clamp(0.0, 2.0)
         }
         "mute" => state.muted = property_flag(property).unwrap_or(state.muted),
         "speed" => state.speed = property_double(property).unwrap_or(state.speed),

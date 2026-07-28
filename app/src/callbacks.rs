@@ -34,6 +34,7 @@ pub fn setup_ui_callbacks(
     models::board::setup(ui, runtime, &navigation);
     models::calendar::setup(ui, runtime, &navigation);
     models::discover::setup(ui, runtime, &navigation);
+    models::events::setup(ui, runtime);
     models::library::setup(ui, runtime, &navigation);
     models::search::setup(ui, runtime, &navigation);
     models::addons::setup(ui, runtime, &navigation);
@@ -115,6 +116,41 @@ pub fn setup_ui_callbacks(
     });
 
     let clipboard = Arc::new(Mutex::new(arboard::Clipboard::new().ok()));
+
+    ui.on_play_url_magnet_from_clipboard({
+        let ui_weak = ui.as_weak();
+        let runtime = runtime.clone();
+        let navigation = navigation.clone();
+        let clipboard = clipboard.clone();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let text = clipboard
+                .lock()
+                .ok()
+                .and_then(|mut cb| cb.as_mut()?.get_text().ok())
+                .unwrap_or_default();
+            let trimmed = text.trim();
+            if !trimmed.is_empty()
+                && (trimmed.starts_with("magnet:")
+                    || trimmed.starts_with("stremio:")
+                    || trimmed.starts_with("http://")
+                    || trimmed.starts_with("https://"))
+            {
+                crate::deep_link::handle(
+                    crate::single_instance::AppCommand::Open(trimmed.to_owned()),
+                    &ui,
+                    &runtime,
+                    &navigation,
+                );
+            } else {
+                ui.set_error_message(
+                    "Clipboard does not contain a valid URL or magnet link.".into(),
+                );
+            }
+        }
+    });
 
     ui.on_details_copy_stream_link({
         let runtime = runtime.clone();

@@ -1,19 +1,24 @@
 import { ScrollView, ListView } from "std-widgets.slint";
 import { Theme, IconData } from "../theme.slint";
-import { ButtonSurface, ChevronTextButton, IconAction } from "../components/button.slint";
+import { ButtonSurface, ChevronTextButton, IconAction, PillButton } from "../components/button.slint";
 import { EmptyState, SkeletonBlock } from "../components/feedback.slint";
 import { StreamRow, Video, VideoPlaceholder } from "../components/media_rows.slint";
 import { MetaPreview, MetaPreviewPlaceholder } from "../components/meta_preview.slint";
 import { SelectField, SeasonSelectField } from "../components/select.slint";
 import { SearchBar } from "../components/text_input.slint";
 import { ToggleSwitch } from "../components/toggle.slint";
-import { ContextMenuSurface, ContextMenuOption } from "../components/overlays.slint";
+import { ModalDialog } from "../components/overlays.slint";
+import { NumberInput } from "../components/number_input.slint";
+import { SharePrompt } from "../components/share_prompt.slint";
 
 export struct StreamLink {
     id: string,
     name: string,
     description: string,
     provider: string,
+    thumbnail-url: string,
+    thumbnail: image,
+    progress: float,
 }
 
 export struct EpisodeItem {
@@ -28,6 +33,7 @@ export struct EpisodeItem {
     is-watched: bool,
     is-scheduled: bool,
     progress: float,
+    can-play: bool,
 }
 
 export component DetailsPage inherits Rectangle {
@@ -81,6 +87,14 @@ export component DetailsPage inherits Rectangle {
     callback copy-magnet-link(string);
     callback copy-download-link(string);
     callback toggle-season-watched(int);
+    callback manual-episode-selected(int, int);
+    callback open-addons;
+    callback share-copy(string);
+    callback share-social(string, string);
+    in property <string> share-url: "";
+    in-out property <bool> share-modal-open: false;
+    in-out property <int> manual-season: root.active-season;
+    in-out property <int> manual-episode: 1;
     in property <IconData> icon-play;
     in property <IconData> icon-link;
     in property <IconData> icon-magnet;
@@ -201,6 +215,7 @@ export component DetailsPage inherits Rectangle {
             trailer-requested => { root.play-trailer(root.trailer-selection-id); }
             library-requested(_in-library) => { root.toggle-library(); }
             watched-requested(_watched) => { root.toggle-watched(); }
+            share-requested => { root.share-modal-open = true; }
         }
     }
 
@@ -304,6 +319,15 @@ export component DetailsPage inherits Rectangle {
                     enabled: root.active-season != root.last-season;
                     clicked => { root.season-step(1); }
                 }
+
+                ContextMenuArea {
+                    Menu {
+                        MenuItem {
+                            title: @tr("MARK_SEASON_WATCHED" => "Mark season as watched / unwatched");
+                            activated => { root.toggle-season-watched(root.active-season); }
+                        }
+                    }
+                }
             }
 
             if (root.is-series && !root.in-stream-view) : SearchBar {
@@ -373,12 +397,63 @@ export component DetailsPage inherits Rectangle {
                 }
             }
 
-            if ((!root.is-series || root.in-stream-view) && root.streams.length == 0) : EmptyState {
-                height: 8 * root.unit;
-                unit: root.unit;
-                icon-source: @image-url("../assets/images/icons/addons-outline.svg");
-                title: @tr("NO_STREAM" => "No streams were found");
-                message: @tr("INSTALL_MORE_ADDONS" => "For more streams, please install more addons");
+            if ((!root.is-series || root.in-stream-view) && root.streams.length == 0) : VerticalLayout {
+                vertical-stretch: 1;
+                padding-top: root.unit;
+                padding-bottom: root.unit;
+                spacing: root.unit;
+                alignment: center;
+
+                if (root.is-series) : HorizontalLayout {
+                    height: 3.5 * root.unit;
+                    spacing: 0.75 * root.unit;
+                    alignment: center;
+
+                    NumberInput {
+                        width: 9 * root.unit;
+                        unit: root.unit;
+                        label: @tr("SEASON" => "Season");
+                        value <=> root.manual-season;
+                        show-buttons: true;
+                        has-explicit-minimum: true;
+                        minimum: 0;
+                    }
+                    NumberInput {
+                        width: 9 * root.unit;
+                        unit: root.unit;
+                        label: @tr("EPISODE" => "Episode");
+                        value <=> root.manual-episode;
+                        show-buttons: true;
+                        has-explicit-minimum: true;
+                        minimum: 1;
+                    }
+                }
+
+                if (root.is-series) : PillButton {
+                    width: 15 * root.unit;
+                    unit: root.unit;
+                    label: @tr("SIDEBAR_SHOW_STREAMS" => "Show streams");
+                    clicked => {
+                        root.manual-episode-selected(root.manual-season, root.manual-episode);
+                        root.in-stream-view = true;
+                    }
+                }
+
+                EmptyState {
+                    height: 8 * root.unit;
+                    unit: root.unit;
+                    icon-source: @image-url("../assets/images/icons/addons-outline.svg");
+                    title: @tr("NO_STREAM" => "No streams were found");
+                    message: @tr("INSTALL_MORE_ADDONS" => "For more streams, please install more addons");
+                }
+
+                PillButton {
+                    width: 16 * root.unit;
+                    unit: root.unit;
+                    label: @tr("ADDON_CATALOGUE_MORE" => "Install more addons");
+                    outlined: true;
+                    clicked => { root.open-addons(); }
+                }
             }
 
             if ((!root.is-series || root.in-stream-view) && root.streams.length > 0) : ListView {
@@ -406,7 +481,30 @@ export component DetailsPage inherits Rectangle {
                         unit: root.unit;
                         name: stream.name;
                         description: stream.description;
+                        thumbnail: stream.thumbnail;
+                        progress: stream.progress;
                         play => { root.play-stream(stream.id); }
+                    }
+
+                    ContextMenuArea {
+                        Menu {
+                            MenuItem {
+                                title: @tr("CTX_PLAY" => "Play");
+                                activated => { root.play-stream(stream.id); }
+                            }
+                            MenuItem {
+                                title: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
+                                activated => { root.copy-stream-link(stream.id); }
+                            }
+                            MenuItem {
+                                title: @tr("CTX_COPY_MAGNET_LINK" => "Copy magnet link");
+                                activated => { root.copy-magnet-link(stream.id); }
+                            }
+                            MenuItem {
+                                title: @tr("CTX_COPY_VIDEO_DOWNLOAD_LINK" => "Copy video download link");
+                                activated => { root.copy-download-link(stream.id); }
+                            }
+                        }
                     }
                 }
             }
@@ -483,6 +581,27 @@ export component DetailsPage inherits Rectangle {
                     image-fit: cover;
                 }
             }
+        }
+    }
+
+    ModalDialog {
+        width: 100%;
+        height: 100%;
+        z: 2000;
+        unit: root.unit;
+        open: root.share-modal-open;
+        title: @tr("SHARE" => "Share");
+        dialog-width: 36 * root.unit;
+        dialog-height: 17 * root.unit;
+        close-requested => { root.share-modal-open = false; }
+
+        SharePrompt {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            unit: root.unit;
+            url: root.share-url;
+            copy-requested(url) => { root.share-copy(url); }
+            share-requested(platform, url) => { root.share-social(platform, url); }
         }
     }
 

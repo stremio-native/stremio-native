@@ -1,5 +1,5 @@
 use crate::{
-    MainWindow, NavigationController, StreamLink,
+    CastDevice, MainWindow, NavigationController, StreamLink,
     app_model::{AppModel, AppModelField, format_rate},
     image_cache, models,
     mpv_integration::NativePlaybackBridge,
@@ -141,6 +141,30 @@ pub fn start_event_loop(
                             Some(projection)
                         }
                     });
+                    let event_modal = profile_sync_needed.then(|| match &model.ctx.events.modal {
+                        Loadable::Ready(Some(event)) => Some((
+                            event.id.clone(),
+                            event.title.clone(),
+                            event.message.clone(),
+                            event.image_url.clone(),
+                            event
+                                .addon
+                                .as_ref()
+                                .map(|addon| addon.name.clone())
+                                .unwrap_or_default(),
+                            event
+                                .addon
+                                .as_ref()
+                                .map(|addon| addon.manifest_url.to_string())
+                                .unwrap_or_default(),
+                            event
+                                .external_url
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_default(),
+                        )),
+                        _ => None,
+                    });
 
                     let board_sync_needed = (first_render
                         || fields.contains(&AppModelField::ContinueWatching)
@@ -152,7 +176,9 @@ pub fn start_event_loop(
                         || fields.contains(&AppModelField::Discover))
                         && active_tab == 1;
                     let library_sync_needed = (first_render
-                        || fields.contains(&AppModelField::Library))
+                        || fields.contains(&AppModelField::Library)
+                        || fields.contains(&AppModelField::ContinueWatching)
+                        || fields.contains(&AppModelField::Ctx))
                         && active_tab == 2;
                     let addons_sync_needed = (first_render
                         || fields.contains(&AppModelField::RemoteAddons)
@@ -202,8 +228,10 @@ pub fn start_event_loop(
                         meta_details_changed && details_route_id.is_some();
                     let details_library_sync_needed =
                         details_context_changed && details_route_id.is_some();
-                    let settings_sync_needed =
-                        first_render || (fields.contains(&AppModelField::Ctx) && active_tab == 4);
+                    let settings_sync_needed = first_render
+                        || ((fields.contains(&AppModelField::Ctx)
+                            || fields.contains(&AppModelField::StreamingServer))
+                            && active_tab == 4);
                     let data_export_sync_needed =
                         fields.contains(&AppModelField::DataExport) && active_tab == 4;
                     let calendar_fingerprint_changed = if active_tab == 5
@@ -262,6 +290,11 @@ pub fn start_event_loop(
                     } else {
                         None
                     };
+                    let continue_watching_library_cloned = if library_sync_needed {
+                        Some(model.continue_watching.clone())
+                    } else {
+                        None
+                    };
                     let remote_addons_cloned = if addons_sync_needed {
                         Some(model.remote_addons.clone())
                     } else {
@@ -275,7 +308,22 @@ pub fn start_event_loop(
                         None
                     };
                     let settings_cloned = if settings_sync_needed {
-                        Some(model.ctx.profile.settings.clone())
+                        Some((
+                            model.ctx.profile.settings.clone(),
+                            model
+                                .ctx
+                                .profile
+                                .auth
+                                .as_ref()
+                                .map(|auth| auth.user.id.0.clone())
+                                .unwrap_or_default(),
+                            model.ctx.profile.has_trakt::<DesktopEnv>(),
+                            model.ctx.streaming_server_urls.clone(),
+                            match &model.streaming_server.settings {
+                                Loadable::Ready(settings) => Some(settings.clone()),
+                                _ => None,
+                            },
+                        ))
                     } else {
                         None
                     };
@@ -303,6 +351,22 @@ pub fn start_event_loop(
                             )),
                             _ => None,
                         });
+                    let cast_devices = streaming_stats_sync_needed.then(|| {
+                        match &model.streaming_server.playback_devices {
+                            Loadable::Ready(devices) => (
+                                devices
+                                    .iter()
+                                    .map(|device| CastDevice {
+                                        id: device.id.as_str().into(),
+                                        name: device.name.as_str().into(),
+                                    })
+                                    .collect::<Vec<_>>(),
+                                false,
+                            ),
+                            Loadable::Loading => (Vec::new(), true),
+                            _ => (Vec::new(), false),
+                        }
+                    });
 
                     let stream_selection_views = if details_stream_sync_needed {
                         {
@@ -319,6 +383,8 @@ pub fn start_event_loop(
                             fingerprint.str(&stream.name);
                             fingerprint.str(&stream.description);
                             fingerprint.str(&stream.provider);
+                            fingerprint.optional_str(stream.thumbnail.as_deref());
+                            fingerprint.u64(stream.progress.to_bits().into());
                         }
                         fingerprint.finish()
                     });
@@ -338,18 +404,19 @@ pub fn start_event_loop(
                         )
                         .unwrap_or(i32::MAX)
                     });
-                    let player_cloned = player_sync_needed.then(|| model.player.clone());
+                    let player_cloned = player_sync_needed
+                        .then(|| (model.player.clone(), model.ctx.streams.clone()));
 
                     drop(_clone_span);
                     // Drop the model guard before invoking event loop
                     drop(model);
                     let calendar_refresh_started = calendar_context_refresh_needed
                         && models::calendar::ensure_loaded(&runtime);
-                    if let (Some(playback), Some(player)) =
+                    if let (Some(playback), Some((player, streams))) =
                         (&native_playback_bridge, player_cloned.as_ref())
                         && navigation.is_player_visible()
                     {
-                        playback.sync_player(player, &ui_weak_clone, &navigation);
+                        playback.sync_player(player, streams, &ui_weak_clone, &navigation);
                     }
                     let ui_weak_for_sync = ui_weak_clone.clone();
                     let runtime_for_sync = runtime.clone();
@@ -412,6 +479,37 @@ pub fn start_event_loop(
                                 }
                             }
 
+                            if let Some(event) = event_modal {
+                                if let Some((
+                                    id,
+                                    title,
+                                    message,
+                                    image_url,
+                                    addon_name,
+                                    addon_manifest_url,
+                                    external_url,
+                                )) = event
+                                {
+                                    ui.set_event_modal_id(id.into());
+                                    ui.set_event_modal_title(title.into());
+                                    ui.set_event_modal_message(message.into());
+                                    ui.set_event_modal_artwork(image_cache::get_poster_image(
+                                        &Some(image_url),
+                                        &ui_weak_for_sync,
+                                    ));
+                                    ui.set_event_modal_addon_name(addon_name.into());
+                                    ui.set_event_modal_addon_manifest_url(
+                                        addon_manifest_url.into(),
+                                    );
+                                    ui.set_event_modal_external_url(external_url.into());
+                                    ui.set_event_modal_open(true);
+                                } else {
+                                    ui.set_event_modal_open(false);
+                                    ui.set_event_modal_id("".into());
+                                    ui.set_event_modal_artwork(slint::Image::default());
+                                }
+                            }
+
                             if board_sync_needed
                                 || discover_sync_needed
                                 || library_sync_needed
@@ -434,6 +532,12 @@ pub fn start_event_loop(
                                     ui.set_player_upload_speed("".into());
                                     ui.set_player_peer_count(0);
                                     ui.set_player_stream_progress(0.0);
+                                }
+                                if let Some((devices, loading)) = cast_devices {
+                                    ui.set_player_cast_devices(slint::ModelRc::new(
+                                        slint::VecModel::from(devices),
+                                    ));
+                                    ui.set_player_cast_devices_loading(loading);
                                 }
                             }
 
@@ -481,6 +585,24 @@ pub fn start_event_loop(
                                             name: link.name.into(),
                                             description: link.description.into(),
                                             provider: link.provider.into(),
+                                            thumbnail: link
+                                                .thumbnail
+                                                .as_deref()
+                                                .and_then(|thumbnail| {
+                                                    url::Url::parse(thumbnail).ok()
+                                                })
+                                                .map(|thumbnail| {
+                                                    image_cache::get_poster_image(
+                                                        &Some(thumbnail),
+                                                        &ui_weak_for_sync,
+                                                    )
+                                                })
+                                                .unwrap_or_default(),
+                                            thumbnail_url: link
+                                                .thumbnail
+                                                .unwrap_or_default()
+                                                .into(),
+                                            progress: link.progress,
                                         })
                                         .collect();
                                     let mut providers = vec![slint::SharedString::from("All")];
@@ -590,15 +712,27 @@ pub fn start_event_loop(
                                         disc,
                                         &ui_weak_for_sync,
                                         &runtime_for_sync,
+                                        &navigation_for_sync,
                                     );
                                 }
                             } else if active_tab == 2 && library_sync_needed {
-                                if let Some(lib) = &library_cloned {
+                                if ui.get_library_continue_watching_mode() {
+                                    if let Some(lib) = &continue_watching_library_cloned {
+                                        models::library::sync(
+                                            &ui,
+                                            lib,
+                                            &ui_weak_for_sync,
+                                            &runtime_for_sync,
+                                            true,
+                                        );
+                                    }
+                                } else if let Some(lib) = &library_cloned {
                                     models::library::sync(
                                         &ui,
                                         lib,
                                         &ui_weak_for_sync,
                                         &runtime_for_sync,
+                                        false,
                                     );
                                 }
                             } else if active_tab == 3 && addons_sync_needed {
@@ -650,8 +784,23 @@ pub fn start_event_loop(
                                 );
                             }
 
-                            if settings_sync_needed && let Some(set) = &settings_cloned {
-                                models::settings::sync(&ui, set);
+                            if settings_sync_needed
+                                && let Some((
+                                    settings,
+                                    user_id,
+                                    trakt_authenticated,
+                                    server_urls,
+                                    streaming_settings,
+                                )) = &settings_cloned
+                            {
+                                models::settings::sync(
+                                    &ui,
+                                    settings,
+                                    user_id,
+                                    *trakt_authenticated,
+                                    server_urls,
+                                    streaming_settings.as_ref(),
+                                );
                             }
                             if data_export_sync_needed
                                 && let Some(data_export) = &data_export_cloned

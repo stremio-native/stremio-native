@@ -1,0 +1,138 @@
+import { Theme } from "../theme.slint";
+import { ButtonSurface } from "button.slint";
+
+// Promotional/system event dialog, matching stremio-web's EventModal layout.
+// The core model owns dismissal; this component only projects the active event.
+export component EventModal inherits Rectangle {
+    in property <bool> open: false;
+    in property <length> unit: Theme.root-font-size;
+    in property <string> event-id: "";
+    in property <string> title: "";
+    in property <string> message: "";
+    in property <image> artwork;
+    in property <string> addon-name: "";
+    in property <string> addon-manifest-url: "";
+    in property <string> external-url: "";
+    callback close-requested(string);
+    callback action-requested(string, string);
+
+    visible: root.open;
+    background: Theme.background-dark-40;
+
+    close-layer := TouchArea {
+        enabled: root.open;
+        clicked => { root.close-requested(root.event-id); }
+    }
+
+    dialog := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(45 * root.unit, parent.width * 0.86);
+        height: min(37 * root.unit, parent.height * 0.84);
+        background: Theme.modal-color;
+        border-radius: Theme.border-radius;
+        drop-shadow-blur: Theme.outer-glow-blur;
+        drop-shadow-color: Theme.outer-glow-color;
+        clip: true;
+
+        TouchArea { }
+
+        close-button := ButtonSurface {
+            x: parent.width - 3.5 * root.unit;
+            y: 0.5 * root.unit;
+            width: 3 * root.unit;
+            height: 3 * root.unit;
+            border-radius: self.height / 2;
+            accessible-name: @tr("BUTTON_CLOSE" => "Close");
+            clicked => { root.close-requested(root.event-id); }
+            Image {
+                x: 0.75 * root.unit;
+                y: 0.75 * root.unit;
+                width: 1.5 * root.unit;
+                height: 1.5 * root.unit;
+                source: @image-url("../assets/images/icons/close.svg");
+                colorize: Theme.primary-foreground;
+                opacity: close-button.has-hover ? 1 : 0.55;
+                image-fit: contain;
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 4 * root.unit;
+            padding-right: 4 * root.unit;
+            padding-top: 1.5 * root.unit;
+            padding-bottom: 2.5 * root.unit;
+            spacing: 1.25 * root.unit;
+            alignment: center;
+
+            if (root.artwork.width > 0) : Image {
+                width: min(30 * root.unit, parent.width);
+                height: 20 * root.unit;
+                source: root.artwork;
+                image-fit: contain;
+            }
+
+            Text {
+                width: 100%;
+                text: root.title;
+                color: Theme.primary-foreground;
+                font-size: 1.325 * root.unit;
+                font-weight: 600;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            Text {
+                width: 100%;
+                text: root.message;
+                color: Theme.primary-foreground;
+                opacity: 0.5;
+                font-size: root.unit;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            if (root.addon-name != "") : VerticalLayout {
+                spacing: 0.5 * root.unit;
+                alignment: center;
+                Image {
+                    width: 2 * root.unit;
+                    height: 2 * root.unit;
+                    source: @image-url("../assets/images/icons/addons.svg");
+                    colorize: Theme.primary-accent;
+                    image-fit: contain;
+                }
+                Text {
+                    text: root.addon-name;
+                    color: Theme.primary-foreground;
+                    font-size: root.unit;
+                    horizontal-alignment: center;
+                }
+            }
+
+            if (root.addon-manifest-url != "" || root.external-url != "") : ButtonSurface {
+                height: 3.5 * root.unit;
+                min-width: 10 * root.unit;
+                border-radius: self.height / 2;
+                background: self.has-hover ? transparent : Theme.primary-foreground;
+                border-width: 2px;
+                border-color: Theme.primary-foreground;
+                accessible-name: root.addon-manifest-url != "" ? @tr("INSTALL_ADDON") : @tr("LEARN_MORE");
+                clicked => {
+                    root.action-requested(
+                        root.event-id,
+                        root.addon-manifest-url != "" ? root.addon-manifest-url : root.external-url
+                    );
+                }
+                Text {
+                    text: root.addon-manifest-url != "" ? @tr("INSTALL_ADDON") : @tr("LEARN_MORE");
+                    color: Theme.primary-accent;
+                    font-size: root.unit;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

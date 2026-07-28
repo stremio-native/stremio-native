@@ -1,7 +1,126 @@
 use anyhow::{Context, Result};
-use settings_gui::{
-    ChangelogPayload, CurrentLogTail, LogsSnapshot, ServerConnector, SettingsPayload,
-};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsPayload {
+    #[serde(rename = "cacheRoot", default)]
+    pub cache_root: String,
+    #[serde(rename = "cacheSize", default)]
+    pub cache_size: f64,
+    #[serde(rename = "proxyStreamsEnabled", default)]
+    pub proxy_streams_enabled: bool,
+    #[serde(rename = "btMaxConnections", default)]
+    pub bt_max_connections: u64,
+    #[serde(rename = "btHandshakeTimeout", default)]
+    pub bt_handshake_timeout: u64,
+    #[serde(rename = "btRequestTimeout", default)]
+    pub bt_request_timeout: u64,
+    #[serde(rename = "btDownloadSpeedSoftLimit", default)]
+    pub bt_download_speed_soft_limit: f64,
+    #[serde(rename = "btDownloadSpeedHardLimit", default)]
+    pub bt_download_speed_hard_limit: f64,
+    #[serde(rename = "btMinPeersForStable", default)]
+    pub bt_min_peers_for_stable: u64,
+    #[serde(rename = "btEnableDht", default)]
+    pub bt_enable_dht: bool,
+    #[serde(rename = "btEnablePex", default)]
+    pub bt_enable_pex: bool,
+    #[serde(rename = "btEnableLsd", default)]
+    pub bt_enable_lsd: bool,
+    #[serde(rename = "btEncryptionMode", default)]
+    pub bt_encryption_mode: String,
+    #[serde(rename = "btAnonymousMode", default)]
+    pub bt_anonymous_mode: bool,
+    #[serde(rename = "btAllowMultipleConnectionsPerIp", default)]
+    pub bt_allow_multiple_connections_per_ip: bool,
+    #[serde(rename = "btListenInterfaces", default)]
+    pub bt_listen_interfaces: String,
+    #[serde(rename = "btOutgoingInterfaces", default)]
+    pub bt_outgoing_interfaces: String,
+    #[serde(rename = "btOutgoingPort", default)]
+    pub bt_outgoing_port: u16,
+    #[serde(rename = "btNumOutgoingPorts", default)]
+    pub bt_num_outgoing_ports: u16,
+    #[serde(rename = "btProxyType", default)]
+    pub bt_proxy_type: String,
+    #[serde(rename = "btProxyHost", default)]
+    pub bt_proxy_host: String,
+    #[serde(rename = "btProxyPort", default)]
+    pub bt_proxy_port: u16,
+    #[serde(rename = "btProxyUsername", default)]
+    pub bt_proxy_username: String,
+    #[serde(rename = "btProxyPassword", default)]
+    pub bt_proxy_password: String,
+    #[serde(rename = "btProxyHostnames", default)]
+    pub bt_proxy_hostnames: bool,
+    #[serde(rename = "btProxyPeerConnections", default)]
+    pub bt_proxy_peer_connections: bool,
+    #[serde(rename = "btProxyTrackerConnections", default)]
+    pub bt_proxy_tracker_connections: bool,
+    #[serde(rename = "btProxySendHostInConnect", default)]
+    pub bt_proxy_send_host_in_connect: bool,
+    #[serde(rename = "btValidateHttpsTrackers", default)]
+    pub bt_validate_https_trackers: bool,
+    #[serde(rename = "btSsrfMitigation", default)]
+    pub bt_ssrf_mitigation: bool,
+    #[serde(rename = "autoUpdateEnabled", default)]
+    pub auto_update_enabled: bool,
+    #[serde(rename = "updateChannel", default)]
+    pub update_channel: String,
+    #[serde(rename = "updateCheckIntervalHours", default)]
+    pub update_check_interval_hours: u64,
+    #[serde(rename = "seedingEnabled", default)]
+    pub seeding_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogsSnapshot {
+    #[serde(default, alias = "logDir")]
+    pub log_dir: String,
+    #[serde(default, alias = "currentHumanLog")]
+    pub current_human_log: Option<String>,
+    #[serde(default, alias = "currentJsonLog")]
+    pub current_json_log: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrentLogTail {
+    #[serde(default)]
+    pub path: Option<String>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangelogPayload {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub tag: Option<String>,
+    pub release_url: Option<String>,
+    pub published_at: Option<String>,
+    pub channel: String,
+    pub state: String,
+    pub sections: Vec<ChangelogSectionPayload>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangelogSectionPayload {
+    pub title: String,
+    pub items: Vec<String>,
+}
+
+#[async_trait::async_trait]
+pub trait ServerConnector: Send + Sync + 'static {
+    async fn get_settings(&self) -> Result<SettingsPayload>;
+    async fn apply_settings(&self, settings: SettingsPayload) -> Result<()>;
+    async fn get_logs(&self) -> Result<LogsSnapshot>;
+    async fn get_current_log(&self) -> Result<CurrentLogTail>;
+    async fn get_changelog(&self, force: bool) -> Result<ChangelogPayload>;
+    async fn export_diagnostics(&self) -> Result<Vec<u8>>;
+}
 
 #[cfg(feature = "in-process")]
 static IN_PROCESS_ROUTER: std::sync::OnceLock<axum::Router> = std::sync::OnceLock::new();

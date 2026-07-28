@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-settings-gui.workspace = true
 stream-server.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls", "charset", "http2"] }
 http.workspace = true

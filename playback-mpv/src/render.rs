@@ -799,12 +799,29 @@ impl<'a> ResolverBridge<'a> {
     ) -> Result<RenderContext, MpvError> {
         // SAFETY: Slint invokes this function with its OpenGL context current,
         // and its resolver remains valid for synchronous symbol loading.
-        let gl =
-            Rc::new(unsafe { glow::Context::from_loader_function_cstr(|name| resolver(name)) });
+        //
+        // Phase timings are logged because this whole function runs synchronously
+        // on the UI thread; a cold GL driver can make one of these steps stall for
+        // seconds, freezing the window, and the breakdown pinpoints which one.
+        let load_start = std::time::Instant::now();
+        let mut resolved_symbols = 0u32;
+        let gl = Rc::new(unsafe {
+            glow::Context::from_loader_function_cstr(|name| {
+                resolved_symbols += 1;
+                resolver(name)
+            })
+        });
+        let load_ms = load_start.elapsed().as_millis();
+
+        let query_start = std::time::Instant::now();
         let capabilities = OpenGlContextCapabilities::for_context(&gl);
         let diagnostics = OpenGlDiagnostics::for_context(&gl);
+        let query_ms = query_start.elapsed().as_millis();
+
         let gl_state = OpenGlStateGuard::new(&gl, capabilities);
+        let prepare_start = std::time::Instant::now();
         prepare_for_mpv(&gl, capabilities);
+        let prepare_ms = prepare_start.elapsed().as_millis();
         let mut bridge = Self { resolver };
         let mut init_params = MpvOpenGlInitParams {
             get_proc_address: Some(resolve_open_gl),
@@ -833,9 +850,21 @@ impl<'a> ResolverBridge<'a> {
         let mut raw_context = std::ptr::null_mut();
         // SAFETY: Slint's context is current. Parameter storage and the resolver
         // bridge remain valid for the synchronous context creation call.
+        let create_start = std::time::Instant::now();
         client.api.result(unsafe {
             (client.api.render_create)(&mut raw_context, client.handle(), params.as_mut_ptr())
         })?;
+        let render_create_ms = create_start.elapsed().as_millis();
+
+        tracing::info!(
+            symbol_load_ms = load_ms,
+            resolved_symbols,
+            capability_query_ms = query_ms,
+            state_prepare_ms = prepare_ms,
+            render_create_ms,
+            "MPV render context phase timings"
+        );
+
         let context = NonNull::new(raw_context).ok_or(MpvError::NullRenderContext)?;
         let redraw = Box::new(RedrawCallback {
             pending: AtomicBool::new(false),
