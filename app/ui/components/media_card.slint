@@ -86,6 +86,7 @@ export component MediaCard inherits Rectangle {
         height: parent.height;
         accessible-name: root.item.title;
         border-width: 0px;
+        focus-outline-size: 0px;
         clicked => { root.clicked(); }
         double-clicked => { root.double-clicked(); }
         context-requested(x, y) => { root.context-requested(x, y); }
@@ -118,14 +119,16 @@ export component MediaCard inherits Rectangle {
         }
     }
 
-    // CSS box-shadow equivalent, outside the clipped poster bounds.
+    // CSS box-shadow equivalent: hollow 0.2rem stroke outline around the poster.
     if (root.highlighted) : Rectangle {
         x: root.unit - 0.2 * root.unit;
         y: root.unit - 0.2 * root.unit;
         width: root.poster-width + 0.4 * root.unit;
         height: root.poster-height + 0.4 * root.unit;
         border-radius: Theme.border-radius + 0.2 * root.unit;
-        background: Theme.primary-foreground;
+        border-width: 0.2 * root.unit;
+        border-color: Theme.primary-foreground;
+        background: transparent;
     }
 
     poster-container := Rectangle {

@@ -254,7 +254,6 @@ export component DiscoverPage inherits Rectangle {
                 vertical-stretch: 1;
                 viewport-width: catalog.width;
                 viewport-y <=> root.scroll-y;
-                mouse-drag-pan-enabled: true;
                 horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                 changed viewport-y => {
                     root.check-pagination(self.viewport-height + self.viewport-y - self.height);
@@ -313,7 +312,6 @@ export component DiscoverPage inherits Rectangle {
                 width: parent.width;
                 height: max(0px, parent.height - 6.5 * root.unit);
                 viewport-width: parent.width;
-                mouse-drag-pan-enabled: true;
                 horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                 vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
 

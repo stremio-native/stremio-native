@@ -23,6 +23,9 @@ pub struct AppConfig {
     #[serde(alias = "thumbfast_enabled")]
     pub thumbnail_previews_enabled: bool,
     pub onboarding_completed: bool,
+    pub download_bandwidth_limit_bps: u64,
+    pub region: String,
+    pub home_row_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +111,9 @@ impl Default for AppConfig {
             active_shader_preset: 0,
             thumbnail_previews_enabled: true,
             onboarding_completed: false,
+            download_bandwidth_limit_bps: 0,
+            region: "US".to_owned(),
+            home_row_order: Vec::new(),
         }
     }
 }
@@ -162,17 +168,16 @@ pub async fn init_config() {
 
     // A clean install starts from database-backed defaults. Legacy working-
     // directory files are intentionally left untouched for manual recovery.
-    if !loaded_from_db {
-        if let Ok(conn) = crate::db::get_conn()
-            && let Ok(serialized) = serde_json::to_string(&config)
-        {
-            let _ = conn
-                .execute(
-                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
-                    [serialized],
-                )
-                .await;
-        }
+    if !loaded_from_db
+        && let Ok(conn) = crate::db::get_conn()
+        && let Ok(serialized) = serde_json::to_string(&config)
+    {
+        let _ = conn
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
+                [serialized],
+            )
+            .await;
     }
 
     let migrated = config.migrate();
@@ -230,6 +235,22 @@ pub fn save_config(config: &AppConfig) {
                 .await;
         }
     });
+}
+
+pub async fn save_config_async(config: &AppConfig) -> anyhow::Result<()> {
+    if let Some(lock) = APP_CONFIG.get()
+        && let Ok(mut guard) = lock.write()
+    {
+        *guard = config.clone();
+    }
+    let serialized = serde_json::to_string(config)?;
+    let conn = crate::db::get_conn()?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
+        [serialized],
+    )
+    .await?;
+    Ok(())
 }
 
 pub fn parse_color(hex: &str) -> Option<slint::Color> {

@@ -1,0 +1,95 @@
+import { Theme } from "../theme.slint";
+import { PillButton } from "button.slint";
+import { LineEdit } from "std-widgets.slint";
+
+export struct HotkeyItem {
+    id: string,
+    label: string,
+    context: string,
+    binding: string,
+}
+
+export component HotkeyEditor inherits VerticalLayout {
+    in property <length> unit: 16px;
+    in property <[HotkeyItem]> items: [];
+    in property <string> conflict: "";
+    callback rebind(string, string);
+    callback reset;
+    callback close;
+
+    spacing: 0;
+    width: 100%;
+
+    for item in root.items : Rectangle {
+        height: 6 * root.unit;
+        background: transparent;
+
+        HorizontalLayout {
+            spacing: 2 * root.unit;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 0.35 * root.unit;
+                Text { text: item.label; color: Theme.text-primary; font-size: root.unit; font-weight: 500; }
+                Text { text: item.context; color: Theme.text-primary; opacity: 0.45; font-size: 0.85 * root.unit; }
+            }
+            VerticalLayout {
+                width: 16 * root.unit;
+                alignment: center;
+                HorizontalLayout {
+                    alignment: end;
+                    Rectangle {
+                        height: 2.5 * root.unit;
+                        min-width: 2.5 * root.unit;
+                        background: Theme.overlay-color;
+                        border-radius: 0.25 * root.unit;
+                        drop-shadow-blur: 0px;
+                        drop-shadow-offset-y: 3px;
+                        drop-shadow-color: #ffffff1a;
+                        HorizontalLayout {
+                            padding-left: root.unit;
+                            padding-right: root.unit;
+                            alignment: center;
+                            LineEdit {
+                                font-size: root.unit;
+                                text: item.binding;
+                                input-type: InputType.text;
+                                accepted => { root.rebind(item.id, self.text); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        height: 6 * root.unit;
+        background: transparent;
+
+        HorizontalLayout {
+            spacing: 2 * root.unit;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 0.35 * root.unit;
+                Text { text: @tr("Reset Hotkeys"); color: Theme.text-primary; font-size: root.unit; font-weight: 500; }
+                Text { text: @tr("Restore default keyboard shortcuts."); color: Theme.text-primary; opacity: 0.45; font-size: 0.85 * root.unit; }
+            }
+            VerticalLayout {
+                width: 16 * root.unit;
+                alignment: center;
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        width: 16 * root.unit;
+                        unit: root.unit;
+                        label: @tr("Reset to defaults");
+                        outlined: true;
+                        clicked => { root.reset(); }
+                    }
+                }
+            }
+        }
+    }
+}

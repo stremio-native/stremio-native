@@ -1004,6 +1004,10 @@ pub fn sync(
             }
         };
 
+        if id_changed {
+            crate::metadata_enrichment::request(ui_weak.clone(), selected_id.to_owned());
+        }
+
         if id_changed || route_opened {
             let resumed_season = meta_details
                 .library_item

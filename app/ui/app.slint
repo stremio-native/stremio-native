@@ -30,8 +30,14 @@ import { AddonsPage, AddonItem } from "pages/addons.slint";
 import { DetailsPage, StreamLink, EpisodeItem } from "pages/details.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { PlayerPage, CastDevice } from "pages/player.slint";
+import { ProfilePicker, ProfileItem } from "components/profile_picker.slint";
+import { ProfileManager } from "components/profile_manager.slint";
+import { IntegrationsManager } from "components/integrations_manager.slint";
+import { OperationsManager } from "components/operations_manager.slint";
+import { HotkeyEditor, HotkeyItem } from "components/hotkey_editor.slint";
 import { CalendarPage, CalendarRow, CalendarCell, CalendarMediaItem } from "pages/calendar.slint";
 import { SearchPage } from "pages/search.slint";
+import { DownloadsPage, DownloadItem } from "pages/downloads.slint";
 import { AppDebugMenu, DebugPageOption, DebugStateOption } from "components/app_debug_menu.slint";
 
 import { Fonts } from "imported_fonts.slint";
@@ -82,7 +88,7 @@ component GuideSectionTitle inherits Text {
     vertical-alignment: center;
 }
 
-export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, CastDevice, BoardSection, DiscoverRow, LibraryRow, AddonItem, CalendarRow, CalendarCell, CalendarMediaItem, SearchSuggestion }
+export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, CastDevice, BoardSection, DiscoverRow, LibraryRow, AddonItem, CalendarRow, CalendarCell, CalendarMediaItem, SearchSuggestion, DownloadItem, HotkeyItem }
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/images/app_icon.png");
@@ -173,6 +179,11 @@ export component MainWindow inherits Window {
     property <length> ui-unit: root.width >= 2800px ? 18px :
         (root.width >= 2200px ? 16px : (root.width >= 1600px ? 15px : 14px));
     in-out property <bool> profile-menu-open: false;
+    in-out property <bool> hotkey-editor-open: false;
+    in-out property <[HotkeyItem]> hotkey-items: [];
+    in-out property <string> hotkey-conflict: "";
+    callback hotkey-rebind(string, string);
+    callback hotkey-reset();
     in-out property <bool> shortcuts-modal-open: false;
     in-out property <bool> gamepad-modal-open: false;
     in-out property <bool> updater-banner-dismissed: false;
@@ -208,7 +219,8 @@ export component MainWindow inherits Window {
         { label: @tr("Calendar"), page: 5 },
         { label: @tr("STREMIO_TV_NAV_SEARCH" => "Search"), page: 6 },
         { label: @tr("Details"), page: 7 },
-        { label: @tr("SETTINGS_NAV_PLAYER" => "Player"), page: 8 }
+        { label: @tr("SETTINGS_NAV_PLAYER" => "Player"), page: 8 },
+        { label: @tr("DOWNLOADS_TITLE" => "Downloads"), page: 9 }
     ];
     private property <[DebugStateOption]> debug-auth-states: [
         { label: @tr("LOGIN_LABEL" => "Login"), value: "login" },
@@ -253,11 +265,14 @@ export component MainWindow inherits Window {
         { label: @tr("Add addon dialog"), value: "add-addon" }
     ];
     private property <[DebugStateOption]> debug-settings-states: [
-        { label: @tr("SETTINGS_NAV_GENERAL" => "General"), value: "general" },
-        { label: @tr("INTERFACE" => "Interface"), value: "interface" },
-        { label: @tr("SETTINGS_NAV_PLAYER" => "Player"), value: "player-settings" },
+        { label: @tr("SETTINGS_NAV_GENERAL" => "General & System"), value: "general" },
+        { label: @tr("PROFILES_TITLE" => "Account & Profiles"), value: "profiles" },
+        { label: @tr("INTEGRATIONS_TITLE" => "Integrations & Addons"), value: "integrations" },
+        { label: @tr("INTERFACE" => "Appearance & Display"), value: "interface" },
+        { label: @tr("SETTINGS_NAV_PLAYER" => "Playback & Streaming"), value: "player-settings" },
         { label: @tr("SETTINGS_NAV_STREAMING" => "Streaming"), value: "streaming" },
-        { label: @tr("SETTINGS_NAV_SHORTCUTS" => "Shortcuts"), value: "shortcuts" },
+        { label: @tr("OPERATIONS_TITLE" => "Backup, Diagnostics & Tools"), value: "operations" },
+        { label: @tr("SETTINGS_NAV_SHORTCUTS" => "Keyboard & Hotkeys"), value: "shortcuts" },
         { label: @tr("Diagnostics"), value: "diagnostics" },
         { label: @tr("Exporting"), value: "exporting" },
         { label: @tr("Onboarding Modal"), value: "onboarding-modal" },
@@ -314,7 +329,8 @@ export component MainWindow inherits Window {
         (root.debug-preview-page == 7 ? root.debug-details-states : root.debug-player-states))))))));
 
     private property <int> effective-active-tab: root.debug-preview-enabled
-        ? (root.debug-preview-page >= 0 && root.debug-preview-page <= 6 ? root.debug-preview-page : 0)
+        ? (root.debug-preview-page >= 0 && root.debug-preview-page <= 6
+            ? root.debug-preview-page : (root.debug-preview-page == 9 ? 7 : 0))
         : root.active-tab;
     private property <bool> effective-show-details: root.debug-preview-enabled
         ? root.debug-preview-page == 7
@@ -326,11 +342,11 @@ export component MainWindow inherits Window {
         ? root.debug-preview-page == -1
         : root.username == "";
     private property <bool> show-main-shell: root.debug-preview-enabled
-        ? root.debug-preview-page >= 0 && root.debug-preview-page <= 6
+        ? (root.debug-preview-page >= 0 && root.debug-preview-page <= 6) || root.debug-preview-page == 9
         : root.username != "";
 
     // Bindings / API exposed to Rust code
-    in property <int> active-tab: 0; // 0: Board, 1: Discover, 2: Library, 3: Addons, 4: Settings, 5: Calendar, 6: Search
+    in-out property <int> active-tab: 0; // 0: Board, 1: Discover, 2: Library, 3: Addons, 4: Settings, 5: Calendar, 6: Search, 7: Downloads
     in-out property <string> username: "";
     in-out property <string> avatar-letter: "U";
     in-out property <image> avatar-image;
@@ -362,6 +378,9 @@ export component MainWindow inherits Window {
     in-out property <int> discover-column-count: 6;
     in-out property <bool> discover-has-next-page: false;
     in-out property <[LibraryRow]> library-rows: [];
+    in-out property <[LibraryRow]> local-library-rows: [];
+    in-out property <string> local-library-root-path: "";
+    in-out property <string> local-library-scan-status: "";
     in-out property <int> library-column-count: 6;
     in-out property <bool> library-has-next-page: false;
     in-out property <string> library-active-type: "All";
@@ -369,6 +388,10 @@ export component MainWindow inherits Window {
     in-out property <bool> library-authenticated: false;
     in-out property <bool> library-continue-watching-mode: false;
     in-out property <[AddonItem]> addons-list: [];
+    in-out property <[AddonItem]> addons-community-list: [];
+    in-out property <bool> addons-community-available: false;
+    in-out property <bool> addons-community-adult-unlocked: false;
+    in-out property <string> addons-community-owner-pin: "";
     in-out property <string> addons-search-query: "";
     in-out property <bool> addons-has-next-page: false;
     in-out property <length> addons-scroll-y: 0px;
@@ -381,12 +404,17 @@ export component MainWindow inherits Window {
     in-out property <[StreamLink]> stream-links: [];
     in-out property <[string]> detail-stream-providers: ["All"];
     in-out property <int> detail-stream-loading-count: 0;
+    in-out property <string> detail-ranking-mode: "Smart";
+    in-out property <bool> detail-show-filtered: false;
     in-out property <int> calendar-selected-year: 0;
     in-out property <string> calendar-selected-month: "";
     in-out property <string> calendar-previous-month: "";
     in-out property <string> calendar-next-month: "";
     in-out property <[CalendarRow]> calendar-rows: [];
     in-out property <bool> calendar-loading: false;
+    in-out property <[DownloadItem]> download-items: [];
+    in-out property <bool> downloads-loading: false;
+    in-out property <string> downloads-error: "";
 
     // Filters lists & values for Discover
     in property <[string]> discover-types: [];
@@ -427,6 +455,9 @@ export component MainWindow inherits Window {
     in-out property <[string]> detail-genres: [];
     in-out property <[string]> detail-cast: [];
     in-out property <[string]> detail-directors: [];
+    in-out property <string> detail-enrichment-id: "";
+    in-out property <string> detail-enrichment-summary: "";
+    in-out property <string> detail-enrichment-attribution-url: "";
     in-out property <bool> detail-is-watched: false;
     in-out property <bool> detail-has-trailer: false;
     in-out property <string> detail-trailer-selection-id: "";
@@ -457,6 +488,8 @@ export component MainWindow inherits Window {
     callback details-manual-episode-selected(int, int);
     callback details-share-copy(string);
     callback details-share-social(string, string);
+    callback details-ranking-mode-changed(string);
+    callback details-show-filtered-changed(bool);
 
     // Player Page parameters
     in property <bool> show-player: false;
@@ -486,10 +519,13 @@ export component MainWindow inherits Window {
     in-out property <[string]> player-audio-track-languages: [];
     in-out property <[string]> player-audio-track-labels: [];
     in-out property <int> player-active-subtitle-idx: -1;
+    in-out property <int> player-active-secondary-subtitle-idx: -1;
     in-out property <int> player-active-audio-idx: 0;
     in-out property <float> player-subtitle-delay-seconds: 0.0;
     in-out property <float> player-subtitle-size-percent: 100.0;
     in-out property <float> player-subtitle-offset-percent: 100.0;
+    in-out property <float> player-secondary-subtitle-size-percent: 85.0;
+    in-out property <float> player-secondary-subtitle-offset-percent: 15.0;
     in-out property <float> player-audio-delay-seconds: 0.0;
     in-out property <bool> player-is-series: false;
     in-out property <[int]> player-seasons: [];
@@ -520,6 +556,15 @@ export component MainWindow inherits Window {
     in property <float> player-thumbnail-aspect-ratio: 1.7778;
     in property <string> player-thumbnail-time-label: "00:00";
     in-out property <string> player-error: "";
+    in-out property <string> player-status-message: "";
+    in-out property <string> player-last-capture-path: "";
+    in-out property <float> player-ab-loop-a: -1.0;
+    in-out property <float> player-ab-loop-b: -1.0;
+    in-out property <string> player-sleep-timer-label: "";
+    in-out property <int> player-hdr-mode: 0;
+    in-out property <bool> player-hdr-content: false;
+    in-out property <bool> player-hdr-passthrough-available: false;
+    in-out property <bool> player-pip-active: false;
     in-out property <string> player-video-format: "";
     in-out property <string> player-audio-format: "";
     in-out property <string> player-file-format: "";
@@ -540,18 +585,22 @@ export component MainWindow inherits Window {
     in-out property <bool> player-show-stats-menu: false;
     in-out property <bool> player-show-upscaler-menu: false;
     in-out property <bool> player-show-options-menu: false;
+    in-out property <bool> player-show-tools-menu: false;
+    in-out property <bool> player-show-streams-menu: false;
     in-out property <bool> player-show-cast-menu: false;
     in-out property <[CastDevice]> player-cast-devices: [];
     in-out property <bool> player-cast-devices-loading: false;
     in-out property <bool> player-show-playlist-drawer: false;
     in-out property <bool> player-show-context-menu: false;
     private property <int> player-last-subtitle-idx: 0;
-    private property <bool> player-menu-open: player-show-subtitles-menu
+    out property <bool> player-menu-open: player-show-subtitles-menu
         || player-show-audio-menu
         || player-show-speed-menu
         || player-show-stats-menu
         || player-show-upscaler-menu
         || player-show-options-menu
+        || player-show-tools-menu
+        || player-show-streams-menu
         || player-show-cast-menu
         || player-show-playlist-drawer
         || player-show-context-menu;
@@ -707,6 +756,24 @@ export component MainWindow inherits Window {
     in property <IconData> icon-eye-off;
     in property <IconData> icon-clapperboard;
     in-out property <bool> is-fullscreen: false;
+    in-out property <[ProfileItem]> local-profiles: [];
+    in-out property <bool> show-profile-picker: false;
+    in-out property <string> profile-picker-selected-id: "";
+    in-out property <string> profile-picker-error: "";
+    in-out property <bool> show-profile-manager: false;
+    in-out property <string> profile-manager-error: "";
+    in-out property <string> profile-manager-owner-pin: "";
+    in-out property <bool> show-integrations-manager: false;
+    in-out property <[string]> configured-integrations: [];
+    in-out property <string> integrations-status: "";
+    in-out property <bool> show-operations-manager: false;
+    in-out property <string> operations-status: "";
+    in-out property <bool> operations-restore-ready: false;
+    in-out property <string> operations-backup-path: "";
+    in-out property <string> operations-diagnostic-path: "";
+    in-out property <string> operations-region: "US";
+    in-out property <string> operations-bandwidth-mbps: "0";
+    in-out property <string> home-layout-preset: "Side Rail";
 
     // Callbacks
     callback toggle-fullscreen();
@@ -763,10 +830,14 @@ export component MainWindow inherits Window {
     callback library-watched-changed(string, bool);
     callback library-play-item(string);
     callback library-dismiss-item(string);
+    callback library-local-add-root(string);
+    callback library-local-rescan();
+    callback library-local-play(string);
 
     // Addons page callbacks
     callback install-addon(string);
     callback uninstall-addon(string);
+    callback reorder-addon(int, int);
     callback open-addon-details(string);
     callback close-addon-details();
     callback configure-addon(string);
@@ -774,6 +845,9 @@ export component MainWindow inherits Window {
     callback addon-share-social(string, string);
     callback addons-search-changed(string);
     callback addons-load-next-page();
+    callback addons-community-filters-changed(string, string, string, string);
+    callback addons-community-load-next(string, string, string, string, int);
+    callback addons-community-unlock-adult(string);
 
     // Details callbacks
     callback details-toggle-library();
@@ -794,11 +868,25 @@ export component MainWindow inherits Window {
     callback settings-clear-search-history();
     callback shutdown-server();
     callback tab-changed(int);
+    tab-changed(tab) => {
+        root.active-tab = tab;
+        if (tab == 7) {
+            root.debug-preview-page = 9;
+        } else {
+            root.debug-preview-page = tab;
+        }
+    }
     callback navigation-back();
     callback navigation-forward();
     callback calendar-previous();
     callback calendar-next();
     callback calendar-item-selected(string, string, string);
+    callback downloads-pause(string);
+    callback downloads-resume(string);
+    callback downloads-cancel(string);
+    callback downloads-play(string);
+    callback downloads-reveal(string);
+    callback downloads-refresh();
     callback onboarding-completed();
     callback play-url-magnet-from-clipboard();
 
@@ -809,15 +897,27 @@ export component MainWindow inherits Window {
     callback player-change-volume(float);
     callback player-toggle-mute();
     callback player-change-subtitle(int);
+    callback player-change-secondary-subtitle(int);
     callback player-change-audio(int);
     callback player-skip-segment();
     callback player-change-subtitle-delay(float);
     callback player-change-subtitle-size(float);
     callback player-change-subtitle-offset(float);
+    callback player-change-secondary-subtitle-size(float);
+    callback player-change-secondary-subtitle-offset(float);
     callback player-change-audio-delay(float);
     callback player-change-speed(float);
     callback player-change-video-scale(int);
     callback player-change-shader-preset(int);
+    callback player-set-ab-loop-point(int);
+    callback player-set-sleep-timer(int);
+    callback player-capture-frame();
+    callback player-reveal-last-capture();
+    callback player-cycle-hdr-mode();
+    callback player-toggle-pip();
+    callback player-retry-playback();
+    callback player-choose-another-stream();
+    callback player-return-to-details();
     callback player-seek-hover(float);
     callback player-seek-leave();
     callback player-copy-stream-link();
@@ -837,6 +937,23 @@ export component MainWindow inherits Window {
     callback player-toggle-fullscreen();
     callback player-close();
     callback player-activity();
+    callback profile-picker-selected(string, string);
+    callback profile-manager-create(string, string, string, string);
+    callback profile-manager-delete(string, string);
+    callback integration-configure(string, string, string, string);
+    callback integration-disconnect(string);
+    callback operations-create-backup(string, bool, string);
+    callback operations-preview-restore(string, string);
+    callback operations-apply-restore(string, string);
+    callback operations-create-diagnostics(string);
+    callback operations-run-speed-test(string);
+    callback operations-save-network(string, string);
+    callback operations-apply-layout(string);
+    callback operations-import-theme(string);
+    callback operations-export-theme(string);
+    callback operations-import-player-layout(string);
+    callback operations-export-player-layout(string);
+    callback operations-reset-customization();
 
     public function close-player-menus() {
         root.player-show-subtitles-menu = false;
@@ -845,6 +962,8 @@ export component MainWindow inherits Window {
         root.player-show-stats-menu = false;
         root.player-show-upscaler-menu = false;
         root.player-show-options-menu = false;
+        root.player-show-tools-menu = false;
+        root.player-show-streams-menu = false;
         root.player-show-cast-menu = false;
         root.player-show-playlist-drawer = false;
         root.player-show-context-menu = false;
@@ -894,9 +1013,10 @@ export component MainWindow inherits Window {
     }
 
     // Closing an overlay menu destroys the focus scope that was holding the
-    // keyboard, leaving nothing focused. Hand focus straight back to the global
-    // shortcut scope so a key pressed right after a menu closes still registers,
-    // even without an intervening mouse move.
+    // keyboard, leaving nothing focused. Park focus back on the global shortcut
+    // scope so arrow/Tab/Enter navigation has somewhere to land. Player hotkeys
+    // themselves are dispatched natively in `shortcuts.rs` before Slint sees the
+    // event, so they do not depend on this.
     changed player-menu-open => {
         if (!root.player-menu-open && root.effective-show-player) {
             app-shortcuts.focus();
@@ -904,52 +1024,6 @@ export component MainWindow inherits Window {
     }
 
     app-shortcuts := FocusScope {
-        property <bool> space-held: false;
-        property <bool> space-long-press: false;
-        property <float> space-restore-speed: 1.0;
-
-        key-pressed(event) => {
-            if (root.effective-show-player && !root.player-menu-open
-                && event.text == Key.Space && !event.repeat) {
-                self.space-held = true;
-                self.space-long-press = false;
-                self.space-restore-speed = root.player-playback-speed;
-                space-hold-timer.start();
-                root.player-controls-visible = true;
-                root.player-activity();
-                return accept;
-            }
-            reject
-        }
-
-        key-released(event) => {
-            if (event.text == Key.Space && self.space-held) {
-                space-hold-timer.stop();
-                self.space-held = false;
-                if (self.space-long-press) {
-                    root.player-playback-speed = self.space-restore-speed;
-                    root.player-change-speed(self.space-restore-speed);
-                } else {
-                    root.player-toggle-pause();
-                }
-                return accept;
-            }
-            reject
-        }
-
-        space-hold-timer := Timer {
-            interval: 400ms;
-            triggered => {
-                self.stop();
-                if (app-shortcuts.space-held && root.effective-show-player
-                    && !root.player-menu-open) {
-                    app-shortcuts.space-long-press = true;
-                    root.player-playback-speed = 2.0;
-                    root.player-change-speed(2.0);
-                }
-            }
-        }
-
         KeyBinding { keys: @keys("1"); enabled: !root.effective-show-player; activated => { root.tab-changed(0); } }
         KeyBinding { keys: @keys("2"); enabled: !root.effective-show-player; activated => { root.tab-changed(1); } }
         KeyBinding {
@@ -963,6 +1037,7 @@ export component MainWindow inherits Window {
         KeyBinding { keys: @keys("4"); enabled: !root.effective-show-player; activated => { root.tab-changed(5); } }
         KeyBinding { keys: @keys("5"); enabled: !root.effective-show-player; activated => { root.tab-changed(3); } }
         KeyBinding { keys: @keys("6"); enabled: !root.effective-show-player; activated => { root.tab-changed(4); } }
+        KeyBinding { keys: @keys("7"); enabled: !root.effective-show-player; activated => { root.tab-changed(7); } }
         KeyBinding { keys: @keys("0"); enabled: !root.effective-show-player; activated => { root.tab-changed(6); } }
         KeyBinding { keys: @keys(Backspace); enabled: !root.effective-show-player; activated => { root.navigation-back(); } }
         KeyBinding { keys: @keys(Control + Backspace); enabled: !root.effective-show-player; activated => { root.navigation-forward(); } }
@@ -978,129 +1053,14 @@ export component MainWindow inherits Window {
             enabled: !root.effective-show-player;
             activated => { root.gamepad-modal-open = !root.gamepad-modal-open; }
         }
-        KeyBinding { keys: @keys(F); activated => { root.toggle-fullscreen(); } }
-
-        KeyBinding {
-            keys: @keys(K);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => { root.player-toggle-pause(); root.player-activity(); }
-        }
-        KeyBinding {
-            keys: @keys(LeftArrow);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => { root.player-seek-relative(-root.player-seek-step-seconds); root.player-activity(); }
-        }
-        KeyBinding {
-            keys: @keys(Shift + LeftArrow);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => { root.player-seek-relative(-root.player-short-seek-step-seconds); root.player-activity(); }
-        }
-        KeyBinding {
-            keys: @keys(RightArrow);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => { root.player-seek-relative(root.player-seek-step-seconds); root.player-activity(); }
-        }
-        KeyBinding {
-            keys: @keys(Shift + RightArrow);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => { root.player-seek-relative(root.player-short-seek-step-seconds); root.player-activity(); }
-        }
-        KeyBinding {
-            keys: @keys(UpArrow);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                root.player-volume = min(2.0, root.player-volume + 0.05);
-                root.player-change-volume(root.player-volume);
-                root.player-activity();
-            }
-        }
-        KeyBinding {
-            keys: @keys(DownArrow);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                root.player-volume = max(0.0, root.player-volume - 0.05);
-                root.player-change-volume(root.player-volume);
-                root.player-activity();
-            }
-        }
-        KeyBinding { keys: @keys(M); enabled: root.effective-show-player && !root.player-menu-open; activated => { root.player-toggle-mute(); root.player-activity(); } }
-        KeyBinding { keys: @keys("-"); enabled: root.effective-show-player && !root.player-menu-open; activated => { root.adjust-player-subtitle-size(-1); } }
-        KeyBinding { keys: @keys("="); enabled: root.effective-show-player && !root.player-menu-open; activated => { root.adjust-player-subtitle-size(1); } }
-        KeyBinding {
-            keys: @keys(G);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                root.player-subtitle-delay-seconds -= 0.25;
-                root.player-change-subtitle-delay(root.player-subtitle-delay-seconds);
-                root.player-activity();
-            }
-        }
-        KeyBinding {
-            keys: @keys(H);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                root.player-subtitle-delay-seconds += 0.25;
-                root.player-change-subtitle-delay(root.player-subtitle-delay-seconds);
-                root.player-activity();
-            }
-        }
-        KeyBinding {
-            keys: @keys("[");
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                root.player-playback-speed = max(0.25, root.player-playback-speed - 0.25);
-                root.player-change-speed(root.player-playback-speed);
-                root.player-activity();
-            }
-        }
-        KeyBinding {
-            keys: @keys("]");
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                root.player-playback-speed = min(2.0, root.player-playback-speed + 0.25);
-                root.player-change-speed(root.player-playback-speed);
-                root.player-activity();
-            }
-        }
-        KeyBinding {
-            keys: @keys(C);
-            enabled: root.effective-show-player && !root.player-menu-open;
-            activated => {
-                if (root.player-active-subtitle-idx >= 0) {
-                    root.player-last-subtitle-idx = root.player-active-subtitle-idx;
-                    root.player-change-subtitle(-1);
-                } else if (root.player-subtitles-tracks.length > 0) {
-                    root.player-change-subtitle(root.player-last-subtitle-idx);
-                }
-                root.player-activity();
-            }
-        }
-        KeyBinding { keys: @keys(S); enabled: root.effective-show-player; activated => { if (root.player-subtitles-tracks.length > 0) { root.toggle-player-menu("subtitles"); } } }
-        KeyBinding { keys: @keys(A); enabled: root.effective-show-player; activated => { if (root.player-audio-tracks.length > 0) { root.toggle-player-menu("audio"); } } }
-        KeyBinding { keys: @keys(I); enabled: root.effective-show-player && root.player-is-series; activated => { root.toggle-player-menu("info"); } }
-        KeyBinding { keys: @keys(R); enabled: root.effective-show-player; activated => { root.toggle-player-menu("speed"); } }
-        KeyBinding { keys: @keys(D); enabled: root.effective-show-player; activated => { root.toggle-player-menu("stats"); } }
-        KeyBinding {
-            keys: @keys(Shift + N);
-            enabled: root.effective-show-player && root.player-is-series && root.player-has-next-episode;
-            activated => { root.close-player-menus(); root.player-next-episode(); }
-        }
         KeyBinding {
             keys: @keys(Escape);
-            enabled: root.effective-show-player
-                || root.shortcuts-modal-open
-                || root.gamepad-modal-open;
+            enabled: !root.effective-show-player
+                && (root.shortcuts-modal-open || root.gamepad-modal-open);
             activated => {
-                if (root.shortcuts-modal-open || root.gamepad-modal-open) {
-                    root.shortcuts-modal-open = false;
-                    root.gamepad-modal-open = false;
-                    app-shortcuts.focus();
-                } else if (root.player-menu-open) {
-                    root.close-player-menus();
-                    root.player-activity();
-                } else {
-                    root.player-close();
-                }
+                root.shortcuts-modal-open = false;
+                root.gamepad-modal-open = false;
+                app-shortcuts.focus();
             }
         }
     }
@@ -1184,19 +1144,27 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Center Search pill (starts next to logo, left-ish aligned)
-                    VerticalLayout {
+                    // Search bar in top navbar
+                    HorizontalLayout {
                         alignment: center;
+                        padding-top: 1 * root.ui-unit;
+                        padding-bottom: 1 * root.ui-unit;
+                        padding-left: 2 * root.ui-unit;
+                        padding-right: 2 * root.ui-unit;
                         
                         search-input := SearchBox {
-                            width: 30 * root.ui-unit;
-                            height: 3.25 * root.ui-unit;
+                            width: 28 * root.ui-unit;
+                            height: 3.5 * root.ui-unit;
                             unit: root.ui-unit;
                             text <=> root.search-query;
                             suggestions: root.search-suggestions;
                             edited(value) => {
                                 global-search-edited(value);
-                                if (root.effective-active-tab == 1) {
+                                if (root.effective-active-tab == 1
+                                    || root.effective-active-tab == 8
+                                    || root.effective-active-tab == 9
+                                    || root.effective-active-tab == 10
+                                    || root.effective-active-tab == 11) {
                                     discover-search-changed(value);
                                 } else if (root.effective-active-tab == 2) {
                                     library-search-changed(value);
@@ -1522,7 +1490,8 @@ export component MainWindow inherits Window {
 
                 Sidebar {
                     unit: root.ui-unit;
-                    visible: !root.effective-show-details;
+                    visible: !root.effective-show-details
+                        && (root.home-layout-preset == "Side Rail" || root.home-layout-preset == "Classic Home");
                     active-tab: root.effective-active-tab;
                     server-status: server-status;
                     username: username;
@@ -1592,7 +1561,11 @@ export component MainWindow inherits Window {
                         poster-requested(url) => { request-poster(url); }
                     }
 
-                    if (root.effective-active-tab == 1) : DiscoverPage {
+                    if (root.effective-active-tab == 1
+                        || root.effective-active-tab == 8
+                        || root.effective-active-tab == 9
+                        || root.effective-active-tab == 10
+                        || root.effective-active-tab == 11) : DiscoverPage {
                         width: parent.width;
                         height: parent.height;
                         unit: root.ui-unit;
@@ -1681,6 +1654,9 @@ export component MainWindow inherits Window {
                         rows: root.debug-preview-enabled && root.debug-preview-page == 2
                             && (root.debug-preview-state == "empty" || root.debug-preview-state == "loading")
                             ? [] : library-rows;
+                        local-rows: local-library-rows;
+                        local-root-path <=> local-library-root-path;
+                        local-scan-status: local-library-scan-status;
                         column-count: library-column-count;
                         has-next-page: library-has-next-page;
                         loading: root.debug-preview-enabled && root.debug-preview-page == 2
@@ -1706,6 +1682,9 @@ export component MainWindow inherits Window {
                         watched-changed(id, watched) => { library-watched-changed(id, watched); }
                         play-item(id) => { library-play-item(id); }
                         dismiss-item(id) => { library-dismiss-item(id); }
+                        local-add-root(path) => { library-local-add-root(path); }
+                        local-rescan => { library-local-rescan(); }
+                        local-play(id) => { library-local-play(id); }
                         poster-requested(url) => { request-poster(url); }
                         scroll-y <=> library-scroll-y;
                     }
@@ -1717,6 +1696,10 @@ export component MainWindow inherits Window {
                         addons: root.debug-preview-enabled && root.debug-preview-page == 3
                             && (root.debug-preview-state == "empty" || root.debug-preview-state == "loading")
                             ? [] : addons-list;
+                        community-addons: addons-community-list;
+                        community-available: addons-community-available;
+                        community-adult-unlocked <=> addons-community-adult-unlocked;
+                        community-owner-pin <=> addons-community-owner-pin;
                         has-next-page: addons-has-next-page;
                         scroll-y <=> addons-scroll-y;
                         search-query: addons-search-query;
@@ -1745,6 +1728,9 @@ export component MainWindow inherits Window {
                             && root.debug-preview-state == "add-addon";
                         install-addon(url) => { install-addon(url); }
                         uninstall-addon(url) => { uninstall-addon(url); }
+                        reorder-addon(from-index, to-index) => {
+                            reorder-addon(from-index, to-index);
+                        }
                         open-addon-details(url) => { open-addon-details(url); }
                         close-addon-details => { close-addon-details(); }
                         configure-addon(url) => { configure-addon(url); }
@@ -1752,6 +1738,13 @@ export component MainWindow inherits Window {
                         share-social(platform, url) => { addon-share-social(platform, url); }
                         search-changed(query) => { addons-search-changed(query); }
                         load-next-page => { addons-load-next-page(); }
+                        community-filters-changed(media-type, sort, language, query) => {
+                            addons-community-filters-changed(media-type, sort, language, query);
+                        }
+                        community-load-next(media-type, sort, language, query, page) => {
+                            addons-community-load-next(media-type, sort, language, query, page);
+                        }
+                        community-unlock-adult(pin) => { addons-community-unlock-adult(pin); }
                     }
 
                     if (root.effective-active-tab == 4) : SettingsPage {
@@ -1842,6 +1835,38 @@ export component MainWindow inherits Window {
                         streaming-transcode-profile: settings-streaming-transcode-profile;
                         refresh-icon: refresh-icon;
                         folder-icon: folder-icon;
+
+                        local-profiles: root.local-profiles;
+                        active-profile-id: root.profile-picker-selected-id;
+                        profile-error-message: root.profile-manager-error != "" ? root.profile-manager-error : root.profile-picker-error;
+                        profile-owner-pin: root.profile-manager-owner-pin;
+                        configured-integrations: root.configured-integrations;
+                        integrations-status: root.integrations-status;
+                        operations-status: root.operations-status;
+                        operations-restore-ready: root.operations-restore-ready;
+                        operations-backup-path: root.operations-backup-path;
+                        operations-diagnostic-path: root.operations-diagnostic-path;
+                        operations-region: root.operations-region;
+                        operations-bandwidth-mbps: root.operations-bandwidth-mbps;
+                        operations-layout-preset: root.home-layout-preset;
+
+                        profile-picker-selected(id, pin) => { root.profile-picker-selected(id, pin); }
+                        profile-manager-create(name, role, pin, owner-pin) => { root.profile-manager-create(name, role, pin, owner-pin); }
+                        profile-manager-delete(id, owner-pin) => { root.profile-manager-delete(id, owner-pin); }
+                        integration-configure(prov, sec, endp, chat) => { root.integration-configure(prov, sec, endp, chat); }
+                        integration-disconnect(prov) => { root.integration-disconnect(prov); }
+                        operations-create-backup(path, secrets, pass) => { root.operations-create-backup(path, secrets, pass); }
+                        operations-preview-restore(path, pass) => { root.operations-preview-restore(path, pass); }
+                        operations-apply-restore(path, pass) => { root.operations-apply-restore(path, pass); }
+                        operations-create-diagnostics(path) => { root.operations-create-diagnostics(path); }
+                        operations-run-speed-test(url) => { root.operations-run-speed-test(url); }
+                        operations-save-network(reg, bw) => { root.operations-save-network(reg, bw); }
+                        operations-apply-layout(preset) => { root.operations-apply-layout(preset); }
+                        operations-import-theme(path) => { root.operations-import-theme(path); }
+                        operations-export-theme(path) => { root.operations-export-theme(path); }
+                        operations-import-player-layout(path) => { root.operations-import-player-layout(path); }
+                        operations-export-player-layout(path) => { root.operations-export-player-layout(path); }
+                        operations-reset-customization => { root.operations-reset-customization(); }
 
                         apply-cache-settings(val) => { apply-cache-settings(val); }
                         change-interface-language(lang) => { settings-change-interface-language(lang); }
@@ -1943,6 +1968,21 @@ export component MainWindow inherits Window {
                         catalog-visible(index) => { search-catalog-visible(index); }
                         poster-requested(url) => { request-poster(url); }
                     }
+
+                    if (root.effective-active-tab == 7) : DownloadsPage {
+                        width: parent.width;
+                        height: parent.height;
+                        unit: root.ui-unit;
+                        items: root.download-items;
+                        loading: root.downloads-loading;
+                        error: root.downloads-error;
+                        pause(id) => { root.downloads-pause(id); }
+                        resume(id) => { root.downloads-resume(id); }
+                        cancel(id) => { root.downloads-cancel(id); }
+                        play(id) => { root.downloads-play(id); }
+                        reveal(id) => { root.downloads-reveal(id); }
+                        retry => { root.downloads-refresh(); }
+                    }
                 }
             }
         }
@@ -2002,12 +2042,17 @@ export component MainWindow inherits Window {
                     || root.debug-preview-state == "movie-no-streams"
                     || root.debug-preview-state == "movie-filter")
                 ? ["Denis Villeneuve"] : detail-directors;
+            enrichment-summary: detail-enrichment-summary;
+            enrichment-attribution-url: detail-enrichment-attribution-url;
+            open-attribution(url) => { root.open-external-url(url); }
             streams: root.debug-preview-enabled && root.debug-preview-page == 7
                 && (root.debug-preview-state == "movie-no-streams"
                     || root.debug-preview-state == "series-no-streams"
                     || root.debug-preview-state == "details-loading")
                 ? [] : stream-links;
             stream-providers: detail-stream-providers;
+            ranking-mode <=> root.detail-ranking-mode;
+            show-filtered <=> root.detail-show-filtered;
             stream-loading-count: root.debug-preview-enabled && root.debug-preview-page == 7
                 ? (root.debug-preview-state == "series-stream-loading" ? 2 : 0)
                 : detail-stream-loading-count;
@@ -2087,6 +2132,8 @@ export component MainWindow inherits Window {
             open-addons => { root.tab-changed(3); }
             share-copy(url) => { details-share-copy(url); }
             share-social(platform, url) => { details-share-social(platform, url); }
+            ranking-mode-changed(mode) => { details-ranking-mode-changed(mode); }
+            show-filtered-changed(show) => { details-show-filtered-changed(show); }
             play-stream(selection-id) => { play-stream(selection-id); }
             toggle-fullscreen => { root.player-toggle-fullscreen(); }
             close => {
@@ -2142,10 +2189,13 @@ export component MainWindow inherits Window {
             audio-track-languages: player-audio-track-languages;
             audio-track-labels: player-audio-track-labels;
             active-subtitle-idx: player-active-subtitle-idx;
+            active-secondary-subtitle-idx: player-active-secondary-subtitle-idx;
             active-audio-idx: player-active-audio-idx;
             subtitle-delay-seconds: player-subtitle-delay-seconds;
             subtitle-size-percent: player-subtitle-size-percent;
             subtitle-offset-percent: player-subtitle-offset-percent;
+            secondary-subtitle-size-percent: player-secondary-subtitle-size-percent;
+            secondary-subtitle-offset-percent: player-secondary-subtitle-offset-percent;
             audio-delay-seconds: player-audio-delay-seconds;
             is-series: root.debug-preview-enabled && root.debug-preview-page == 8
                 ? true : player-is-series;
@@ -2172,6 +2222,15 @@ export component MainWindow inherits Window {
                     ? "The stream stopped unexpectedly. Select another stream and try again."
                     : "")
                 : player-error;
+            status-message: player-status-message;
+            last-capture-path: player-last-capture-path;
+            ab-loop-a: player-ab-loop-a;
+            ab-loop-b: player-ab-loop-b;
+            sleep-timer-label: player-sleep-timer-label;
+            hdr-mode: player-hdr-mode;
+            hdr-content: player-hdr-content;
+            hdr-passthrough-available: player-hdr-passthrough-available;
+            pip-active: player-pip-active;
             video-format: player-video-format;
             audio-format: player-audio-format;
             file-format: player-file-format;
@@ -2193,6 +2252,9 @@ export component MainWindow inherits Window {
             show-stats-menu <=> root.player-show-stats-menu;
             show-upscaler-menu <=> root.player-show-upscaler-menu;
             show-options-menu <=> root.player-show-options-menu;
+            show-tools-menu <=> root.player-show-tools-menu;
+            show-streams-menu <=> root.player-show-streams-menu;
+            available-streams: root.stream-links;
             show-cast-menu <=> root.player-show-cast-menu;
             cast-devices: root.player-cast-devices;
             cast-devices-loading: root.player-cast-devices-loading;
@@ -2232,14 +2294,27 @@ export component MainWindow inherits Window {
             change-volume(val) => { player-change-volume(val); }
             toggle-mute => { player-toggle-mute(); }
             change-subtitle(idx) => { player-change-subtitle(idx); }
+            change-secondary-subtitle(idx) => { player-change-secondary-subtitle(idx); }
             change-audio(idx) => { player-change-audio(idx); }
             change-subtitle-delay(value) => { player-change-subtitle-delay(value); }
             change-subtitle-size(value) => { player-change-subtitle-size(value); }
             change-subtitle-offset(value) => { player-change-subtitle-offset(value); }
+            change-secondary-subtitle-size(value) => { player-change-secondary-subtitle-size(value); }
+            change-secondary-subtitle-offset(value) => { player-change-secondary-subtitle-offset(value); }
             change-audio-delay(value) => { player-change-audio-delay(value); }
             change-speed(val) => { player-change-speed(val); }
             change-video-scale(mode) => { player-change-video-scale(mode); }
             change-shader-preset(idx) => { player-change-shader-preset(idx); }
+            set-ab-loop-point(action) => { player-set-ab-loop-point(action); }
+            set-sleep-timer(value) => { player-set-sleep-timer(value); }
+            capture-frame => { player-capture-frame(); }
+            reveal-last-capture => { player-reveal-last-capture(); }
+            cycle-hdr-mode => { player-cycle-hdr-mode(); }
+            toggle-pip => { player-toggle-pip(); }
+            retry-playback => { player-retry-playback(); }
+            choose-another-stream => { player-choose-another-stream(); }
+            return-to-details => { player-return-to-details(); }
+            switch-stream(selection-id) => { root.play-stream(selection-id); }
             skip-segment => { player-skip-segment(); }
             copy-stream-link => { player-copy-stream-link(); }
             copy-magnet-link => { player-copy-magnet-link(); }
@@ -2259,15 +2334,31 @@ export component MainWindow inherits Window {
             close => { player-close(); }
             activity => {
                 player-activity();
-                // The overlay's sliders and menus pull keyboard focus when used,
-                // and they live outside `app-shortcuts`, so once focus lands
-                // there the global player shortcuts go dead. Reclaim it on any
-                // interaction when no menu needs the keyboard. The `has-focus`
-                // guard keeps this to one call per theft, not one per mouse-move.
+                // The overlay's sliders and menus pull keyboard focus when used
+                // and live outside `app-shortcuts`, which leaves in-UI key
+                // navigation stranded on a control the user has moved on from.
+                // Reclaim focus on any interaction when no menu needs the
+                // keyboard. The `has-focus` guard keeps this to one call per
+                // theft, not one per mouse-move.
                 if (root.effective-show-player && !root.player-menu-open
                     && !app-shortcuts.has-focus) {
                     app-shortcuts.focus();
                 }
+            }
+        }
+
+        if (root.hotkey-editor-open) : HotkeyEditor {
+            width: parent.width;
+            height: parent.height;
+            z: 5000;
+            unit: root.ui-unit;
+            items: root.hotkey-items;
+            conflict: root.hotkey-conflict;
+            rebind(action, binding) => { root.hotkey-rebind(action, binding); }
+            reset => { root.hotkey-reset(); }
+            close => {
+                root.hotkey-editor-open = false;
+                root.hotkey-conflict = "";
             }
         }
 
@@ -2288,6 +2379,79 @@ export component MainWindow inherits Window {
             action-requested(id, url) => { root.event-action(id, url); }
         }
 
+        if (root.show-profile-picker) : ProfilePicker {
+            width: 100%;
+            height: 100%;
+            z: 2600;
+            profiles: root.local-profiles;
+            selected-id <=> root.profile-picker-selected-id;
+            error-message: root.profile-picker-error;
+            selected(id, pin) => { root.profile-picker-selected(id, pin); }
+        }
+
+        if (root.show-profile-manager) : ProfileManager {
+            width: 100%;
+            height: 100%;
+            z: 2700;
+            profiles: root.local-profiles;
+            active-id: root.profile-picker-selected-id;
+            owner-pin <=> root.profile-manager-owner-pin;
+            error-message: root.profile-manager-error;
+            create(name, role, pin, owner-pin) => { root.profile-manager-create(name, role, pin, owner-pin); }
+            delete(id, owner-pin) => { root.profile-manager-delete(id, owner-pin); }
+            close => {
+                root.show-profile-manager = false;
+                root.profile-manager-owner-pin = "";
+                root.profile-manager-error = "";
+            }
+        }
+
+        if (root.show-integrations-manager) : IntegrationsManager {
+            width: 100%;
+            height: 100%;
+            z: 2700;
+            configured: root.configured-integrations;
+            status: root.integrations-status;
+            configure(provider, secret, endpoint, chat-id) => {
+                root.integration-configure(provider, secret, endpoint, chat-id);
+            }
+            disconnect(provider) => { root.integration-disconnect(provider); }
+            close => {
+                root.show-integrations-manager = false;
+                root.integrations-status = "";
+            }
+        }
+
+        if (root.show-operations-manager) : OperationsManager {
+            width: 100%;
+            height: 100%;
+            z: 2700;
+            backup-path <=> root.operations-backup-path;
+            diagnostic-path <=> root.operations-diagnostic-path;
+            region <=> root.operations-region;
+            bandwidth-mbps <=> root.operations-bandwidth-mbps;
+            layout-preset <=> root.home-layout-preset;
+            status: root.operations-status;
+            restore-ready: root.operations-restore-ready;
+            create-backup(path, secrets, passphrase) => { root.operations-create-backup(path, secrets, passphrase); }
+            preview-restore(path, passphrase) => { root.operations-preview-restore(path, passphrase); }
+            apply-restore(path, passphrase) => { root.operations-apply-restore(path, passphrase); }
+            create-diagnostics(path) => { root.operations-create-diagnostics(path); }
+            run-speed-test(endpoint) => { root.operations-run-speed-test(endpoint); }
+            save-network(region, bandwidth) => { root.operations-save-network(region, bandwidth); }
+            apply-layout(preset) => { root.operations-apply-layout(preset); }
+            import-theme(path) => { root.operations-import-theme(path); }
+            export-theme(path) => { root.operations-export-theme(path); }
+            import-player-layout(path) => { root.operations-import-player-layout(path); }
+            export-player-layout(path) => { root.operations-export-player-layout(path); }
+            reset-customization => { root.operations-reset-customization(); }
+            close => {
+                root.show-operations-manager = false;
+                root.operations-status = "";
+                root.operations-restore-ready = false;
+            }
+        }
+
         shortcuts-dialog := ModalDialog {
             width: 100%;
             height: 100%;
@@ -2305,7 +2469,6 @@ export component MainWindow inherits Window {
             ScrollView {
                 viewport-width: self.width;
                 horizontal-scrollbar-policy: always-off;
-                mouse-drag-pan-enabled: true;
 
                 HorizontalLayout {
                     width: parent.width;
@@ -2590,47 +2753,48 @@ export component MainWindow inherits Window {
             }
         }
 
-        if (root.debug-preview-enabled) : AppDebugMenu {
-            x: root.ui-unit;
-            y: parent.height - self.height - root.ui-unit;
-            unit: root.ui-unit;
-            pages: root.debug-pages;
-            states: root.debug-state-options;
-            selected-page: root.debug-preview-page;
-            selected-state: root.debug-preview-state;
-            open <=> root.debug-menu-open;
-            page-selected(page) => {
-                root.profile-menu-open = false;
-                root.debug-preview-page = page;
-                root.debug-preview-state = page == -1 ? "login"
-                    : (page == 0 ? "loaded"
-                    : (page == 1 ? "catalog"
-                    : (page == 2 ? "loaded"
-                    : (page == 3 ? "loaded"
-                    : (page == 4 ? "general"
-                    : (page == 5 ? "loaded"
-                    : (page == 6 ? "results"
-                    : (page == 7 ? "series-episodes" : "paused"))))))));
+    }
+
+    if (root.debug-preview-enabled) : AppDebugMenu {
+        x: root.debug-menu-open ? root.ui-unit : (root.effective-show-player ? root.ui-unit : (Theme.vertical-nav-bar-size - self.width) / 2);
+        y: root.effective-show-player ? 4.5 * root.ui-unit : parent.height - self.height - root.ui-unit;
+        unit: root.ui-unit;
+        pages: root.debug-pages;
+        states: root.debug-state-options;
+        selected-page: root.debug-preview-page;
+        selected-state: root.debug-preview-state;
+        open <=> root.debug-menu-open;
+        page-selected(page) => {
+            root.profile-menu-open = false;
+            root.debug-preview-page = page;
+            root.debug-preview-state = page == -1 ? "login"
+                : (page == 0 ? "loaded"
+                : (page == 1 ? "catalog"
+                : (page == 2 ? "loaded"
+                : (page == 3 ? "loaded"
+                : (page == 4 ? "general"
+                : (page == 5 ? "loaded"
+                : (page == 6 ? "results"
+                : (page == 7 ? "series-episodes" : "paused"))))))));
+        }
+        state-selected(state) => {
+            root.profile-menu-open = root.debug-preview-page == 0 && state == "profile-menu";
+            root.onboarding-dialog-open = state == "onboarding-modal";
+            root.update-dialog-open = state == "update-dialog";
+            if (state == "update-dialog") {
+                root.update-dialog-version = "5.0.0";
+                root.update-dialog-notes = @markdown("* **GPU 4K Upscaler Shaders**: Integrated Anime4K (HQ) & AMD FSR spatial upscaler presets.\n* **ThumbFast Seek Bar Preview**: Hover over seek bar for real-time video thumbnail frames.\n* **High-Performance Rust Engine**: libmpv 60fps rendering, hardware acceleration (D3D11VA).\n* **Discord Rich Presence & Seeding**: Live status broadcast on Discord.");
             }
-            state-selected(state) => {
-                root.profile-menu-open = root.debug-preview-page == 0 && state == "profile-menu";
-                root.onboarding-dialog-open = state == "onboarding-modal";
-                root.update-dialog-open = state == "update-dialog";
-                if (state == "update-dialog") {
-                    root.update-dialog-version = "5.0.0";
-                    root.update-dialog-notes = @markdown("* **GPU 4K Upscaler Shaders**: Integrated Anime4K (HQ) & AMD FSR spatial upscaler presets.\n* **ThumbFast Seek Bar Preview**: Hover over seek bar for real-time video thumbnail frames.\n* **High-Performance Rust Engine**: libmpv 60fps rendering, hardware acceleration (D3D11VA).\n* **Discord Rich Presence & Seeding**: Live status broadcast on Discord.");
-                }
-                root.debug-preview-state = state;
-                if (root.debug-preview-page == 8) {
-                    root.player-controls-visible = state != "controls-hidden";
-                    root.player-show-subtitles-menu = state == "subtitles";
-                    root.player-show-audio-menu = state == "audio";
-                    root.player-show-speed-menu = state == "speed";
-                    root.player-show-stats-menu = state == "stats";
-                    root.player-show-options-menu = state == "options";
-                    root.player-show-context-menu = state == "context-menu";
-                    root.player-show-playlist-drawer = state == "episodes";
-                }
+            root.debug-preview-state = state;
+            if (root.debug-preview-page == 8) {
+                root.player-controls-visible = state != "controls-hidden";
+                root.player-show-subtitles-menu = state == "subtitles";
+                root.player-show-audio-menu = state == "audio";
+                root.player-show-speed-menu = state == "speed";
+                root.player-show-stats-menu = state == "stats";
+                root.player-show-options-menu = state == "options";
+                root.player-show-context-menu = state == "context-menu";
+                root.player-show-playlist-drawer = state == "episodes";
             }
         }
     }

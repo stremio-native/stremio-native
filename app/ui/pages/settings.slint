@@ -7,12 +7,18 @@ import { ToggleSwitch } from "../components/toggle.slint";
 import { Slider } from "../components/slider.slint";
 import { ColorInput, ColorPicker } from "../components/color_input.slint";
 import { ModalDialog } from "../components/overlays.slint";
+import { ProfileItem } from "../components/profile_picker.slint";
+import { ProfileManager } from "../components/profile_manager.slint";
+import { IntegrationsManager } from "../components/integrations_manager.slint";
+import { OperationsManager } from "../components/operations_manager.slint";
+import { HotkeyEditor, HotkeyItem } from "../components/hotkey_editor.slint";
+
 
 component SettingsSection inherits VerticalLayout {
     in property <length> unit: 16px;
     in property <string> title;
 
-    width: 35 * root.unit;
+    width: 50 * root.unit;
     padding-top: 3 * root.unit;
     padding-bottom: 3 * root.unit;
     spacing: 0px;
@@ -59,7 +65,7 @@ component SettingsLink inherits Rectangle {
     }
 }
 
-component SettingsOption inherits Rectangle {
+export component SettingsOption inherits Rectangle {
     in property <length> unit: 16px;
     in property <string> label;
     in property <string> description: "";
@@ -112,6 +118,8 @@ export component SettingsPage inherits Rectangle {
     in property <[string]> interface-language-options: [];
     in-out property <bool> interface-language-open: false;
     in-out property <string> subtitles-language: "English";
+    in property <[string]> subtitles-language-options: [];
+    in-out property <bool> subtitles-language-open: false;
     in-out property <string> torrent-profile: "Default";
     in-out property <bool> hardware-acceleration: true;
     in-out property <bool> thumbnail-previews: true;
@@ -178,6 +186,16 @@ export component SettingsPage inherits Rectangle {
     private property <bool> color-dialog-open: false;
     private property <int> color-dialog-kind: 0;
     private property <color> color-dialog-value: #ffffffff;
+    private property <bool> subtitles-font-open: false;
+    private property <bool> subtitles-size-open: false;
+    private property <bool> subtitles-offset-open: false;
+    private property <bool> audio-language-open: false;
+    private property <bool> seek-duration-open: false;
+    private property <bool> seek-short-duration-open: false;
+    private property <bool> next-video-popup-duration-open: false;
+    private property <bool> external-player-open: false;
+    private property <bool> torrent-cache-size-open: false;
+    private property <bool> torrent-profile-open: false;
 
     callback open-external-url(string);
     callback apply-cache-settings(float);
@@ -231,22 +249,86 @@ export component SettingsPage inherits Rectangle {
     callback change-streaming-https-endpoint(string);
     callback change-streaming-transcode-profile(string);
 
+    // Profiles
+    in-out property <[ProfileItem]> local-profiles: [];
+    in-out property <string> active-profile-id: "";
+    in-out property <string> profile-error-message: "";
+    in-out property <string> profile-owner-pin: "";
+
+    // Integrations
+    in-out property <[string]> configured-integrations: [];
+    in-out property <string> integrations-status: "";
+
+    // Operations & Customization
+    in-out property <string> operations-status: "";
+    in-out property <bool> operations-restore-ready: false;
+    in-out property <string> operations-backup-path: "";
+    in-out property <string> operations-restore-path: "";
+    in-out property <string> operations-passphrase: "";
+    in-out property <bool> operations-include-secrets: false;
+    in-out property <string> operations-diagnostic-path: "";
+    in-out property <string> operations-speed-endpoint: "https://speed.cloudflare.com/__down?bytes=10000000";
+    in-out property <string> operations-region: "US";
+    in-out property <string> operations-bandwidth-mbps: "0";
+    in-out property <string> operations-layout-preset: "Side Rail";
+    in-out property <string> operations-theme-path: "";
+    in-out property <string> operations-player-layout-path: "";
+
+    // Hotkeys
+    in-out property <[HotkeyItem]> hotkey-items: [];
+    in-out property <string> hotkey-conflict: "";
+
+    // New Callbacks
+    callback profile-picker-selected(string, string);
+    callback profile-manager-create(string, string, string, string);
+    callback profile-manager-delete(string, string);
+    callback integration-configure(string, string, string, string);
+    callback integration-disconnect(string);
+    callback operations-create-backup(string, bool, string);
+    callback operations-preview-restore(string, string);
+    callback operations-apply-restore(string, string);
+    callback operations-create-diagnostics(string);
+    callback operations-run-speed-test(string);
+    callback operations-save-network(string, string);
+    callback operations-apply-layout(string);
+    callback operations-import-theme(string);
+    callback operations-export-theme(string);
+    callback operations-import-player-layout(string);
+    callback operations-export-player-layout(string);
+    callback operations-reset-customization();
+    callback hotkey-rebind(string, string);
+    callback hotkey-reset();
+
     in property <length> unit: Theme.root-font-size;
     in-out property <int> active-category: 0;
     background: transparent;
 
+    private property <length> profiles-pos: profiles-sec.y;
+    private property <length> integrations-pos: integrations-sec.y;
+    private property <length> interface-pos: interface-sec.y;
+    private property <length> player-pos: player-sec.y;
+    private property <length> streaming-pos: streaming-sec.y;
+    private property <length> operations-pos: operations-sec.y;
+    private property <length> shortcuts-pos: shortcuts-sec.y;
+
     function update-active-category(offset: length) {
-        root.active-category = (offset < interface-sec.y - 10px) ? 0 :
-            ((offset < player-sec.y - 10px) ? 1 :
-            ((offset < streaming-sec.y - 10px) ? 2 :
-            ((offset < shortcuts-sec.y - 10px) ? 3 : 4)));
+        if (root.profiles-pos == 0px) {
+            return;
+        }
+        root.active-category = (offset < root.profiles-pos - 10px) ? 0 :
+            ((offset < root.integrations-pos - 10px) ? 1 :
+            ((offset < root.interface-pos - 10px) ? 2 :
+            ((offset < root.player-pos - 10px) ? 3 :
+            ((offset < root.streaming-pos - 10px) ? 4 :
+            ((offset < root.operations-pos - 10px) ? 5 :
+            ((offset < root.shortcuts-pos - 10px) ? 6 : 7))))));
     }
 
     HorizontalLayout {
         spacing: 0px;
 
         VerticalLayout {
-            width: 18 * root.unit;
+            width: 20 * root.unit;
             padding-top: 3 * root.unit;
             padding-bottom: 3 * root.unit;
             padding-left: 1.5 * root.unit;
@@ -254,10 +336,13 @@ export component SettingsPage inherits Rectangle {
             spacing: 0.5 * root.unit;
 
             MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_GENERAL" => "General"); selected: root.active-category == 0; clicked => { scroll.viewport-y = 0px; root.active-category = 0; } }
-            MenuButton { unit: root.unit; label: @tr("INTERFACE" => "Interface"); selected: root.active-category == 1; clicked => { scroll.viewport-y = -interface-sec.y; root.active-category = 1; } }
-            MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_PLAYER" => "Player"); selected: root.active-category == 2; clicked => { scroll.viewport-y = -player-sec.y; root.active-category = 2; } }
-            MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_STREAMING" => "Streaming"); selected: root.active-category == 3; clicked => { scroll.viewport-y = -streaming-sec.y; root.active-category = 3; } }
-            MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_SHORTCUTS" => "Shortcuts"); selected: root.active-category == 4; clicked => { scroll.viewport-y = -shortcuts-sec.y; root.active-category = 4; } }
+            MenuButton { unit: root.unit; label: @tr("PROFILES_TITLE" => "Account & Profiles"); selected: root.active-category == 1; clicked => { scroll.viewport-y = -profiles-sec.y; root.active-category = 1; } }
+            MenuButton { unit: root.unit; label: @tr("INTEGRATIONS_TITLE" => "Integrations & Addons"); selected: root.active-category == 2; clicked => { scroll.viewport-y = -integrations-sec.y; root.active-category = 2; } }
+            MenuButton { unit: root.unit; label: @tr("INTERFACE" => "Interface"); selected: root.active-category == 3; clicked => { scroll.viewport-y = -interface-sec.y; root.active-category = 3; } }
+            MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_PLAYER" => "Player"); selected: root.active-category == 4; clicked => { scroll.viewport-y = -player-sec.y; root.active-category = 4; } }
+            MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_STREAMING" => "Streaming"); selected: root.active-category == 5; clicked => { scroll.viewport-y = -streaming-sec.y; root.active-category = 5; } }
+            MenuButton { unit: root.unit; label: @tr("OPERATIONS_TITLE" => "Backup & Diagnostics"); selected: root.active-category == 6; clicked => { scroll.viewport-y = -operations-sec.y; root.active-category = 6; } }
+            MenuButton { unit: root.unit; label: @tr("SETTINGS_NAV_SHORTCUTS" => "Shortcuts"); selected: root.active-category == 7; clicked => { scroll.viewport-y = -shortcuts-sec.y; root.active-category = 7; } }
             Rectangle { vertical-stretch: 1; }
             VerticalLayout {
                 spacing: 0.5 * root.unit;
@@ -387,7 +472,7 @@ export component SettingsPage inherits Rectangle {
                             unit: root.unit;
                             label: root.trakt-authenticated
                                 ? @tr("LOG_OUT" => "Log out")
-                                : @tr("SETTINGS_TRAKT_AUTHENTICATE" => "Authenticate Trakt");
+                                : @tr("SETTINGS_TRAKT_AUTHENTICATE" => "Authenticate");
                             outlined: true;
                             enabled: root.authenticated;
                             clicked => { root.toggle-trakt(); }
@@ -477,7 +562,7 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsLink {
                         unit: root.unit;
-                        label: @tr("WEBSITE_SUPPORT" => "Support");
+                        label: @tr("SETTINGS_SUPPORT" => "Contact support");
                         clicked => { root.open-external-url("https://stremio.zendesk.com/hc/en-us"); }
                     }
                     SettingsLink {
@@ -497,8 +582,36 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsLink {
                         unit: root.unit;
-                        label: @tr("WEBSITE_DELETE_ACCOUNT" => "Delete Account");
+                        label: @tr("SETTINGS_ACC_DELETE" => "Request account deletion");
                         clicked => { root.open-external-url("https://stremio.zendesk.com/hc/en-us/articles/360021428911-How-to-delete-my-account"); }
+                    }
+                }
+
+                profiles-sec := SettingsSection {
+                    unit: root.unit;
+                    title: @tr("PROFILES_TITLE" => "Account & Profiles");
+                    ProfileManager {
+                        width: 100%;
+                        profiles: root.local-profiles;
+                        active-id: root.active-profile-id;
+                        owner-pin <=> root.profile-owner-pin;
+                        error-message: root.profile-error-message;
+                        create(name, role, pin, owner-pin) => { root.profile-manager-create(name, role, pin, owner-pin); }
+                        delete(id, owner-pin) => { root.profile-manager-delete(id, owner-pin); }
+                    }
+                }
+
+                integrations-sec := SettingsSection {
+                    unit: root.unit;
+                    title: @tr("INTEGRATIONS_TITLE" => "Integrations & Addons");
+                    IntegrationsManager {
+                        width: 100%;
+                        configured: root.configured-integrations;
+                        status: root.integrations-status;
+                        configure(provider, secret, endpoint, chat-id) => {
+                            root.integration-configure(provider, secret, endpoint, chat-id);
+                        }
+                        disconnect(provider) => { root.integration-disconnect(provider); }
                     }
                 }
 
@@ -507,7 +620,7 @@ export component SettingsPage inherits Rectangle {
                     title: @tr("INTERFACE" => "Interface");
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SETTINGS_INTERFACE_LANGUAGE" => "Interface Language");
+                        label: @tr("SETTINGS_UI_LANGUAGE" => "UI Language");
                         SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
@@ -530,12 +643,12 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("Hide spoilers");
+                        label: @tr("SETTINGS_BLUR_UNWATCHED_IMAGE" => "Blur unwatched episodes image");
                         ToggleSwitch { unit: root.unit; checked: root.hide-spoilers; toggled => { root.change-hide-spoilers(self.checked); } }
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("Quit when closing the window");
+                        label: @tr("SETTINGS_QUIT_ON_CLOSE" => "Quit on close");
                         ToggleSwitch { unit: root.unit; checked: root.quit-on-close; toggled => { root.change-quit-on-close(self.checked); } }
                     }
                     SettingsOption {
@@ -553,12 +666,19 @@ export component SettingsPage inherits Rectangle {
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_SUBTITLES_LANGUAGE" => "Default Subtitles Language");
-                        NativeTextField {
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text: root.subtitles-language;
-                            placeholder-text: @tr("English");
-                            accepted => { root.change-subtitles-language(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.subtitles-language;
+                            options: root.subtitles-language-options.length > 0 ? root.subtitles-language-options : root.interface-language-options;
+                            open: root.subtitles-language-open;
+                            toggle => { root.subtitles-language-open = !root.subtitles-language-open; }
+                            selected(value) => {
+                                root.subtitles-language-open = false;
+                                root.subtitles-language = value;
+                                root.change-subtitles-language(value);
+                            }
                         }
                     }
                     SettingsOption {
@@ -569,24 +689,37 @@ export component SettingsPage inherits Rectangle {
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_SUBTITLES_FONT" => "Subtitles font");
-                        NativeTextField {
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text: root.subtitles-font;
-                            placeholder-text: "Roboto";
-                            accepted => { root.change-subtitles-font(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.subtitles-font != "" ? root.subtitles-font : "Roboto";
+                            options: ["PlusJakartaSans", "Roboto", "Arial", "Helvetica", "Times New Roman", "Verdana", "Courier", "Lucida Console", "sans-serif", "serif", "monospace"];
+                            open: root.subtitles-font-open;
+                            toggle => { root.subtitles-font-open = !root.subtitles-font-open; }
+                            selected(value) => {
+                                root.subtitles-font-open = false;
+                                root.subtitles-font = value;
+                                root.change-subtitles-font(value);
+                            }
                         }
                     }
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_SUBTITLES_SIZE" => "Default Subtitles Size");
-                        description: @tr("Percentage from 50 to 200.");
-                        NativeTextField {
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text: root.subtitles-size;
-                            placeholder-text: "100";
-                            accepted => { root.change-subtitles-size(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.subtitles-size != "" ? (root.subtitles-size + (root.subtitles-size == "75" || root.subtitles-size == "100" || root.subtitles-size == "125" || root.subtitles-size == "150" || root.subtitles-size == "175" || root.subtitles-size == "200" || root.subtitles-size == "250" ? "%" : "")) : "100%";
+                            options: ["75%", "100%", "125%", "150%", "175%", "200%", "250%"];
+                            open: root.subtitles-size-open;
+                            toggle => { root.subtitles-size-open = !root.subtitles-size-open; }
+                            selected(value) => {
+                                root.subtitles-size-open = false;
+                                root.subtitles-size = value;
+                                root.change-subtitles-size(value);
+                            }
                         }
                     }
                     SettingsOption {
@@ -639,24 +772,37 @@ export component SettingsPage inherits Rectangle {
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("PLAYER_SUBTITLES_VERTICAL_POSITION" => "Vertical Position");
-                        description: @tr("Percentage from the bottom edge.");
-                        NativeTextField {
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text: root.subtitles-offset;
-                            placeholder-text: "5";
-                            accepted => { root.change-subtitles-offset(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.subtitles-offset != "" ? (root.subtitles-offset + (root.subtitles-offset == "0" || root.subtitles-offset == "5" || root.subtitles-offset == "10" || root.subtitles-offset == "15" || root.subtitles-offset == "20" || root.subtitles-offset == "25" || root.subtitles-offset == "30" ? "%" : "")) : "5%";
+                            options: ["0%", "5%", "10%", "15%", "20%", "25%", "30%"];
+                            open: root.subtitles-offset-open;
+                            toggle => { root.subtitles-offset-open = !root.subtitles-offset-open; }
+                            selected(value) => {
+                                root.subtitles-offset-open = false;
+                                root.subtitles-offset = value;
+                                root.change-subtitles-offset(value);
+                            }
                         }
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SETTINGS_DEFAULT_AUDIO_TRACK" => "Default audio track");
-                        NativeTextField {
+                        label: @tr("SETTINGS_DEFAULT_AUDIO_TRACK" => "Default Audio Track");
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text: root.audio-language;
-                            placeholder-text: @tr("English");
-                            accepted => { root.change-audio-language(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.audio-language != "" ? root.audio-language : "English";
+                            options: root.subtitles-language-options.length > 0 ? root.subtitles-language-options : root.interface-language-options;
+                            open: root.audio-language-open;
+                            toggle => { root.audio-language-open = !root.audio-language-open; }
+                            selected(value) => {
+                                root.audio-language-open = false;
+                                root.audio-language = value;
+                                root.change-audio-language(value);
+                            }
                         }
                     }
                     SettingsOption {
@@ -672,7 +818,7 @@ export component SettingsPage inherits Rectangle {
                     // Advanced Settings
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SETTINGS_BINGE" => "Auto-play next episode");
+                        label: @tr("AUTO_PLAY" => "Auto-Play Next Episode");
                         ToggleSwitch { unit: root.unit; checked: root.binge-watching; toggled => { root.change-binge-watching(self.checked); } }
                     }
                     SettingsOption {
@@ -682,50 +828,74 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SEEK_TIME_DURATION" => "Seek Time Duration");
-                        description: @tr("Seconds skipped by the forward and back shortcuts.");
-                        NativeTextField {
+                        label: @tr("SETTINGS_SEEK_KEY" => "Arrow keys seek time");
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text <=> root.seek-duration;
-                            placeholder-text: "10";
-                            accepted => { root.change-seek-duration(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.seek-duration != "" ? (root.seek-duration + (root.seek-duration == "3" || root.seek-duration == "5" || root.seek-duration == "10" || root.seek-duration == "15" || root.seek-duration == "20" || root.seek-duration == "30" ? " sec" : "")) : "10 sec";
+                            options: ["3 sec", "5 sec", "10 sec", "15 sec", "20 sec", "30 sec"];
+                            open: root.seek-duration-open;
+                            toggle => { root.seek-duration-open = !root.seek-duration-open; }
+                            selected(value) => {
+                                root.seek-duration-open = false;
+                                root.seek-duration = value;
+                                root.change-seek-duration(value);
+                            }
                         }
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SETTINGS_SEEK_KEY_SHIFT" => "Shift + seek step");
-                        description: @tr("Seconds skipped while holding Shift.");
-                        NativeTextField {
+                        label: @tr("SETTINGS_SEEK_KEY_SHIFT" => "Arrow keys seek time when Shift key is held");
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text <=> root.seek-short-duration;
-                            placeholder-text: "3";
-                            accepted => { root.change-seek-short-duration(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.seek-short-duration != "" ? (root.seek-short-duration + (root.seek-short-duration == "3" || root.seek-short-duration == "5" || root.seek-short-duration == "10" || root.seek-short-duration == "15" || root.seek-short-duration == "20" || root.seek-short-duration == "30" ? " sec" : "")) : "3 sec";
+                            options: ["3 sec", "5 sec", "10 sec", "15 sec", "20 sec", "30 sec"];
+                            open: root.seek-short-duration-open;
+                            toggle => { root.seek-short-duration-open = !root.seek-short-duration-open; }
+                            selected(value) => {
+                                root.seek-short-duration-open = false;
+                                root.seek-short-duration = value;
+                                root.change-seek-short-duration(value);
+                            }
                         }
                     }
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_NEXT_VIDEO_POPUP_DURATION" => "Next video popup duration");
-                        description: @tr("Duration in seconds; use 0 to disable.");
-                        NativeTextField {
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text <=> root.next-video-popup-duration;
-                            placeholder-text: "35";
-                            accepted => { root.change-next-video-popup-duration(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.next-video-popup-duration == "0" || root.next-video-popup-duration == "Disabled" ? "Disabled" : (root.next-video-popup-duration + (root.next-video-popup-duration == "5" || root.next-video-popup-duration == "10" || root.next-video-popup-duration == "15" || root.next-video-popup-duration == "20" || root.next-video-popup-duration == "25" || root.next-video-popup-duration == "30" || root.next-video-popup-duration == "35" || root.next-video-popup-duration == "40" || root.next-video-popup-duration == "45" || root.next-video-popup-duration == "50" || root.next-video-popup-duration == "55" || root.next-video-popup-duration == "60" ? " sec" : ""));
+                            options: ["Disabled", "5 sec", "10 sec", "15 sec", "20 sec", "25 sec", "30 sec", "35 sec", "40 sec", "45 sec", "50 sec", "55 sec", "60 sec"];
+                            open: root.next-video-popup-duration-open;
+                            toggle => { root.next-video-popup-duration-open = !root.next-video-popup-duration-open; }
+                            selected(value) => {
+                                root.next-video-popup-duration-open = false;
+                                root.next-video-popup-duration = value;
+                                root.change-next-video-popup-duration(value);
+                            }
                         }
                     }
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_PLAY_IN_EXTERNAL_PLAYER" => "Play in external player");
-                        description: @tr("Leave empty to use the built-in player.");
-                        NativeTextField {
+                        SelectField {
                             width: 16 * root.unit;
                             unit: root.unit;
-                            text <=> root.external-player;
-                            placeholder-text: @tr("Built-in player");
-                            accepted => { root.change-external-player(self.text); }
+                            field-width: 16 * root.unit;
+                            value: root.external-player != "" ? root.external-player : "Disabled";
+                            options: ["Disabled", "VLC", "MPV", "MPC-HC", "IINA", "Just Player", "MX Player"];
+                            open: root.external-player-open;
+                            toggle => { root.external-player-open = !root.external-player-open; }
+                            selected(value) => {
+                                root.external-player-open = false;
+                                root.external-player = value;
+                                root.change-external-player(value);
+                            }
                         }
                     }
                     SettingsOption {
@@ -735,7 +905,7 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SETTINGS_ASS_SUBTITLES_STYLING" => "Use embedded ASS subtitle styling");
+                        label: @tr("SETTINGS_ASS_SUBTITLES_STYLING" => "Style ASS subtitles");
                         ToggleSwitch {
                             unit: root.unit;
                             checked: root.ass-subtitles-styling;
@@ -803,162 +973,42 @@ export component SettingsPage inherits Rectangle {
                 streaming-sec := SettingsSection {
                     unit: root.unit;
                     title: @tr("SETTINGS_NAV_STREAMING" => "Streaming");
-                    Text {
-                        height: 2.5 * root.unit;
-                        text: @tr("Streaming server URLs");
-                        color: Theme.text-secondary;
-                        font-size: root.unit;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                    for server in root.streaming-server-urls : Rectangle {
-                        height: 3.5 * root.unit;
-                        border-radius: Theme.border-radius;
-                        background: Theme.overlay;
-
-                        HorizontalLayout {
-                            padding-left: root.unit;
-                            spacing: root.unit;
-                            Text {
-                                horizontal-stretch: 1;
-                                text: server;
-                                color: Theme.text-primary;
-                                font-size: 0.9 * root.unit;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            IconAction {
-                                width: 3.5 * root.unit;
-                                height: 3.5 * root.unit;
-                                unit: root.unit;
-                                icon-source: @image-url("../assets/images/icons/delete.svg");
-                                accessible-name: @tr("Delete server URL");
-                                clicked => { root.delete-streaming-server-url(server); }
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        height: 3.5 * root.unit;
-                        spacing: root.unit;
-                        NativeTextField {
-                            horizontal-stretch: 1;
-                            unit: root.unit;
-                            text <=> root.new-streaming-server-url;
-                            placeholder-text: "https://example.com/";
-                            accepted => {
-                                if (self.text != "") {
-                                    root.add-streaming-server-url(self.text);
-                                    root.new-streaming-server-url = "";
-                                }
-                            }
-                        }
-                        PillButton {
-                            width: 9 * root.unit;
-                            unit: root.unit;
-                            label: @tr("Add URL");
-                            enabled: root.new-streaming-server-url != "";
-                            clicked => {
-                                root.add-streaming-server-url(root.new-streaming-server-url);
-                                root.new-streaming-server-url = "";
-                            }
-                        }
-                    }
-                    SettingsOption {
-                        unit: root.unit;
-                        label: @tr("STREMIO_TV_SETTINGS_SERVER_URL" => "Streaming server URL");
-                        description: root.server-url == "" ? @tr("SETTINGS_SERVER_UNAVAILABLE" => "Streaming server is not available.") : root.server-url;
-                        Text {
-                            width: 16 * root.unit;
-                            text: root.server-url == "" ? @tr("MOBILE_SERVER_OFFLINE" => "Offline") : @tr("MOBILE_SERVER_ONLINE" => "Online");
-                            color: root.server-url == "" ? Theme.text-secondary : Theme.success;
-                            font-size: root.unit;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                    }
-                    if (root.streaming-remote-url != "") : SettingsOption {
-                        unit: root.unit;
-                        label: @tr("Remote access URL");
-                        description: root.streaming-remote-url;
-                        PillButton {
-                            width: 16 * root.unit;
-                            unit: root.unit;
-                            label: @tr("SETTINGS_COPY_REMOTE_URL" => "Copy URL");
-                            outlined: true;
-                            clicked => { root.copy-remote-url(root.streaming-remote-url); }
-                        }
-                    }
-                    SettingsOption {
-                        unit: root.unit;
-                        label: @tr("SETTINGS_HTTPS_ENDPOINT" => "HTTPS endpoint");
-                        NativeTextField {
-                            width: 16 * root.unit;
-                            unit: root.unit;
-                            text <=> root.streaming-https-endpoint;
-                            placeholder-text: @tr("Disabled");
-                            accepted => { root.change-streaming-https-endpoint(self.text); }
-                        }
-                    }
-                    SettingsOption {
-                        unit: root.unit;
-                        label: @tr("SETTINGS_TRANSCODE_PROFILE" => "Transcoding profile");
-                        NativeTextField {
-                            width: 16 * root.unit;
-                            unit: root.unit;
-                            text <=> root.streaming-transcode-profile;
-                            placeholder-text: @tr("Disabled");
-                            accepted => { root.change-streaming-transcode-profile(self.text); }
-                        }
-                    }
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_SERVER_CACHE_SIZE" => "Cache size");
                         description: @tr("Limit the disk space available for torrent buffering.");
-                        VerticalLayout {
+                        SelectField {
                             width: 16 * root.unit;
-                            spacing: 0.35 * root.unit;
-                            Text {
-                                text: root.torrent-cache-size == "No Caching"
-                                    ? @tr("STREMIO_TV_SETTINGS_NO_CACHING" => "No caching")
-                                    : (root.torrent-cache-size == "Infinite" ? @tr("Infinite") : root.torrent-cache-size);
-                                color: Theme.accent;
-                                font-size: 0.9 * root.unit;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                            }
-                            Slider {
-                                minimum: 0;
-                                maximum: 50;
-                                value: 2;
-                                changed(value) => { root.apply-cache-settings(value); }
+                            unit: root.unit;
+                            value: root.torrent-cache-size;
+                            options: ["No Caching", "2.0 GiB", "5.0 GiB", "10.0 GiB", "Infinite"];
+                            open <=> root.torrent-cache-size-open;
+                            selected(val) => {
+                                root.torrent-cache-size = val;
+                                root.apply-cache-settings(
+                                    val == "No Caching" ? 0.0 :
+                                    (val == "2.0 GiB" ? 2.0 :
+                                    (val == "5.0 GiB" ? 5.0 :
+                                    (val == "10.0 GiB" ? 10.0 : 50.0)))
+                                );
                             }
                         }
                     }
                     SettingsOption {
                         unit: root.unit;
                         label: @tr("SETTINGS_SERVER_TORRENT_PROFILE" => "Torrent profile");
-                        HorizontalLayout {
+                        SelectField {
                             width: 16 * root.unit;
-                            spacing: 0.5 * root.unit;
-                            for profile in ["Default", "Fast", "Ultra Fast"] : PillButton {
-                                horizontal-stretch: 1;
-                                height: 3.5 * root.unit;
-                                unit: root.unit;
-                                label: profile == "Default" ? @tr("TORRENT_PROFILE_DEFAULT" => "Default") : (profile == "Fast" ? @tr("TORRENT_PROFILE_FAST" => "Fast") : @tr("TORRENT_PROFILE_ULTRA_FAST" => "Ultra Fast"));
-                                label-font-size: 0.8 * root.unit;
-                                label-font-weight: 600;
-                                primary: root.torrent-profile == profile;
-                                accent-color: Theme.accent;
-                                surface-color: Theme.overlay;
-                                clicked => {
-                                    root.torrent-profile = profile;
-                                    root.change-torrent-profile(
-                                        profile == "Ultra Fast" ? "ultrafast" :
-                                        (profile == "Fast" ? "fast" : "default")
-                                    );
-                                }
+                            unit: root.unit;
+                            value: root.torrent-profile;
+                            options: ["Default", "Fast", "Ultra Fast"];
+                            open <=> root.torrent-profile-open;
+                            selected(val) => {
+                                root.torrent-profile = val;
+                                root.change-torrent-profile(
+                                    val == "Ultra Fast" ? "ultrafast" :
+                                    (val == "Fast" ? "fast" : "default")
+                                );
                             }
                         }
                     }
@@ -971,50 +1021,218 @@ export component SettingsPage inherits Rectangle {
                         description: @tr("Upload downloaded pieces while streaming.");
                         ToggleSwitch { unit: root.unit; checked: root.streaming-seeding; toggled => { root.change-seeding-enabled(self.checked); } }
                     }
-                    PillButton {
-                        width: 18 * root.unit;
-                        unit: root.unit;
-                        label: @tr("Shutdown streaming server");
-                        outlined: true;
-                        clicked => { root.shutdown-server(); }
+                }
+
+                operations-sec := SettingsSection {
+                    unit: root.unit;
+                    title: @tr("OPERATIONS_TITLE" => "Backup & Diagnostics");
+                    OperationsManager {
+                        width: 100%;
+                        height: 640px;
+                        backup-path <=> root.operations-backup-path;
+                        diagnostic-path <=> root.operations-diagnostic-path;
+                        region <=> root.operations-region;
+                        bandwidth-mbps <=> root.operations-bandwidth-mbps;
+                        layout-preset <=> root.operations-layout-preset;
+                        status: root.operations-status;
+                        restore-ready: root.operations-restore-ready;
+                        create-backup(path, secrets, passphrase) => { root.operations-create-backup(path, secrets, passphrase); }
+                        preview-restore(path, passphrase) => { root.operations-preview-restore(path, passphrase); }
+                        apply-restore(path, passphrase) => { root.operations-apply-restore(path, passphrase); }
+                        create-diagnostics(path) => { root.operations-create-diagnostics(path); }
+                        run-speed-test(endpoint) => { root.operations-run-speed-test(endpoint); }
+                        save-network(region, bandwidth) => { root.operations-save-network(region, bandwidth); }
+                        apply-layout(preset) => { root.operations-apply-layout(preset); }
+                        import-theme(path) => { root.operations-import-theme(path); }
+                        export-theme(path) => { root.operations-export-theme(path); }
+                        import-player-layout(path) => { root.operations-import-player-layout(path); }
+                        export-player-layout(path) => { root.operations-export-player-layout(path); }
+                        reset-customization => { root.operations-reset-customization(); }
                     }
                 }
 
                 shortcuts-sec := SettingsSection {
                     unit: root.unit;
                     title: @tr("SETTINGS_NAV_SHORTCUTS" => "Shortcuts");
-                    for shortcut in [
-                        { label: @tr("SETTINGS_SHORTCUT_NAVIGATE_MENUS" => "Navigate menus"), value: "1 – 6" },
-                        { label: @tr("SETTINGS_SHORTCUT_GO_TO_SEARCH" => "Go to Search"), value: "0" },
-                        { label: @tr("SETTINGS_SHORTCUT_NAVIGATE_HISTORY" => "Navigate history"), value: "Backspace / Ctrl + Backspace" },
-                        { label: @tr("SETTINGS_SHORTCUT_FULLSCREEN" => "Fullscreen"), value: "F" },
-                        { label: @tr("SETTINGS_SHORTCUT_SHORTCUTS" => "Show shortcuts"), value: "Ctrl + /" },
-                        { label: @tr("GAMEPAD_ACTION_GUIDE" => "Gamepad guide"), value: "Ctrl + G" },
-                        { label: @tr("SETTINGS_SHORTCUT_PLAY_PAUSE" => "Play / Pause"), value: "Space" },
-                        { label: @tr("SETTINGS_SHORTCUT_SEEK_FORWARD" => "Seek forward"), value: "→ / Shift + →" },
-                        { label: @tr("SETTINGS_SHORTCUT_SEEK_BACKWARD" => "Seek backward"), value: "← / Shift + ←" },
-                        { label: @tr("SETTINGS_SHORTCUT_VOLUME" => "Volume"), value: "↑ / ↓" },
-                        { label: @tr("SETTINGS_SHORTCUT_MUTE" => "Mute"), value: "M" },
-                        { label: @tr("SETTINGS_SHORTCUT_SUBTITLES_SIZE" => "Subtitle size"), value: "- / =" },
-                        { label: @tr("SETTINGS_SHORTCUT_SUBTITLES_DELAY" => "Subtitle delay"), value: "G / H" },
-                        { label: @tr("SETTINGS_SHORTCUT_PLAYBACK_SPEED" => "Playback speed"), value: "[ / ]" },
-                        { label: @tr("SETTINGS_SHORTCUT_TOGGLE_SUBTITLES" => "Toggle subtitles"), value: "C" },
-                        { label: @tr("SETTINGS_SHORTCUT_MENU_SUBTITLES" => "Subtitles menu"), value: "S" },
-                        { label: @tr("SETTINGS_SHORTCUT_MENU_AUDIO" => "Audio menu"), value: "A" },
-                        { label: @tr("SETTINGS_SHORTCUT_MENU_INFO" => "Info menu"), value: "I" },
-                        { label: @tr("SETTINGS_SHORTCUT_MENU_PLAYBACK_SPEED" => "Playback speed menu"), value: "R" },
-                        { label: @tr("SETTINGS_SHORTCUT_MENU_STATISTICS" => "Statistics menu"), value: "D" },
-                        { label: @tr("SETTINGS_SHORTCUT_PLAY_NEXT" => "Play next"), value: "Shift + N" },
-                        { label: @tr("SETTINGS_SHORTCUT_EXIT_BACK" => "Exit / Back"), value: "Esc" },
-                    ] : SettingsOption {
-                        unit: root.unit;
-                        label: shortcut.label;
+                    if (root.hotkey-items.length > 0) : HotkeyEditor {
+                        width: 100%;
+                        height: 480px;
+                        items: root.hotkey-items;
+                        conflict: root.hotkey-conflict;
+                        rebind(id, binding) => { root.hotkey-rebind(id, binding); }
+                        reset => { root.hotkey-reset(); }
+                    }
+                    if (root.hotkey-items.length == 0) : VerticalLayout {
+                        spacing: 0.5 * root.unit;
+
+                        // ── Navigation group ──
                         Text {
-                            text: shortcut.value;
+                            text: @tr("Navigation");
                             color: Theme.text-primary;
-                            opacity: 0.65;
+                            opacity: 0.6;
                             font-size: root.unit;
-                            horizontal-alignment: center;
+                        }
+                        for shortcut in [
+                            { label: @tr("SETTINGS_SHORTCUT_NAVIGATE_MENUS" => "Navigate Between Menus"), value: "1 – 6" },
+                            { label: @tr("SETTINGS_SHORTCUT_GO_TO_SEARCH" => "Go to Search"), value: "0" },
+                            { label: @tr("SETTINGS_SHORTCUT_NAVIGATE_HISTORY" => "Navigate History"), value: "Backspace" },
+                            { label: @tr("SETTINGS_SHORTCUT_FULLSCREEN" => "Toggle Fullscreen"), value: "F" },
+                            { label: @tr("SETTINGS_SHORTCUT_SHORTCUTS" => "Show Shortcuts"), value: "Ctrl + /" },
+                            { label: @tr("GAMEPAD_ACTION_GUIDE" => "Gamepad Guide"), value: "Ctrl + G" },
+                        ] : Rectangle {
+                            height: 3.5 * root.unit;
+                            background: transparent;
+
+                            HorizontalLayout {
+                                spacing: root.unit;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: shortcut.label;
+                                    color: Theme.text-primary;
+                                    font-size: root.unit;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                // Keycap badge
+                                Rectangle {
+                                    height: 2.5 * root.unit;
+                                    min-width: 2.5 * root.unit;
+                                    background: Theme.overlay-color;
+                                    border-radius: 0.25 * root.unit;
+                                    drop-shadow-blur: 0px;
+                                    drop-shadow-offset-y: 3px;
+                                    drop-shadow-color: #ffffff1a;
+                                    HorizontalLayout {
+                                        padding-left: root.unit;
+                                        padding-right: root.unit;
+                                        alignment: center;
+                                        Text {
+                                            text: shortcut.value;
+                                            color: Theme.text-primary;
+                                            font-size: root.unit;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Spacer between groups
+                        Rectangle { height: 1.5 * root.unit; background: transparent; }
+
+                        // ── Player group ──
+                        Text {
+                            text: @tr("Player");
+                            color: Theme.text-primary;
+                            opacity: 0.6;
+                            font-size: root.unit;
+                        }
+                        for shortcut in [
+                            { label: @tr("SETTINGS_SHORTCUT_PLAY_PAUSE" => "Play / Pause"), value: "Space" },
+                            { label: @tr("SETTINGS_SHORTCUT_SEEK_FORWARD" => "Seek Forward"), value: "→" },
+                            { label: @tr("SETTINGS_SHORTCUT_SEEK_BACKWARD" => "Seek Backward"), value: "←" },
+                            { label: @tr("SETTINGS_SHORTCUT_VOLUME" => "Adjust Volume"), value: "↑  ↓" },
+                            { label: @tr("SETTINGS_SHORTCUT_MUTE" => "Toggle Mute"), value: "M" },
+                            { label: @tr("SETTINGS_SHORTCUT_SUBTITLES_SIZE" => "Adjust Subtitles Size"), value: "−  =" },
+                            { label: @tr("SETTINGS_SHORTCUT_SUBTITLES_DELAY" => "Adjust Subtitles Delay"), value: "G  H" },
+                            { label: @tr("SETTINGS_SHORTCUT_PLAYBACK_SPEED" => "Adjust Playback Speed"), value: "[  ]" },
+                            { label: @tr("SETTINGS_SHORTCUT_PLAY_NEXT" => "Play Next"), value: "Shift + N" },
+                            { label: @tr("SETTINGS_SHORTCUT_EXIT_BACK" => "Exit Fullscreen / Go Back"), value: "Esc" },
+                        ] : Rectangle {
+                            height: 3.5 * root.unit;
+                            background: transparent;
+
+                            HorizontalLayout {
+                                spacing: root.unit;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: shortcut.label;
+                                    color: Theme.text-primary;
+                                    font-size: root.unit;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                Rectangle {
+                                    height: 2.5 * root.unit;
+                                    min-width: 2.5 * root.unit;
+                                    background: Theme.overlay-color;
+                                    border-radius: 0.25 * root.unit;
+                                    drop-shadow-blur: 0px;
+                                    drop-shadow-offset-y: 3px;
+                                    drop-shadow-color: #ffffff1a;
+                                    HorizontalLayout {
+                                        padding-left: root.unit;
+                                        padding-right: root.unit;
+                                        alignment: center;
+                                        Text {
+                                            text: shortcut.value;
+                                            color: Theme.text-primary;
+                                            font-size: root.unit;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Spacer between groups
+                        Rectangle { height: 1.5 * root.unit; background: transparent; }
+
+                        // ── Player Menus group ──
+                        Text {
+                            text: @tr("Player Menus");
+                            color: Theme.text-primary;
+                            opacity: 0.6;
+                            font-size: root.unit;
+                        }
+                        for shortcut in [
+                            { label: @tr("SETTINGS_SHORTCUT_TOGGLE_SUBTITLES" => "Toggle Subtitles"), value: "C" },
+                            { label: @tr("SETTINGS_SHORTCUT_MENU_SUBTITLES" => "Toggle Subtitles Menu"), value: "S" },
+                            { label: @tr("SETTINGS_SHORTCUT_MENU_AUDIO" => "Toggle Audio Menu"), value: "A" },
+                            { label: @tr("SETTINGS_SHORTCUT_MENU_INFO" => "Toggle Info Menu"), value: "I" },
+                            { label: @tr("SETTINGS_SHORTCUT_MENU_PLAYBACK_SPEED" => "Toggle Playback Speed Menu"), value: "R" },
+                            { label: @tr("SETTINGS_SHORTCUT_MENU_STATISTICS" => "Toggle Statistics Menu"), value: "D" },
+                        ] : Rectangle {
+                            height: 3.5 * root.unit;
+                            background: transparent;
+
+                            HorizontalLayout {
+                                spacing: root.unit;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: shortcut.label;
+                                    color: Theme.text-primary;
+                                    font-size: root.unit;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                Rectangle {
+                                    height: 2.5 * root.unit;
+                                    min-width: 2.5 * root.unit;
+                                    background: Theme.overlay-color;
+                                    border-radius: 0.25 * root.unit;
+                                    drop-shadow-blur: 0px;
+                                    drop-shadow-offset-y: 3px;
+                                    drop-shadow-color: #ffffff1a;
+                                    HorizontalLayout {
+                                        padding-left: root.unit;
+                                        padding-right: root.unit;
+                                        alignment: center;
+                                        Text {
+                                            text: shortcut.value;
+                                            color: Theme.text-primary;
+                                            font-size: root.unit;
+                                            font-weight: 500;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1028,9 +1246,10 @@ export component SettingsPage inherits Rectangle {
         z: 2000;
         unit: root.unit;
         open: root.color-dialog-open;
+        background: transparent;
         title: @tr("Choose color");
         dialog-width: 32 * root.unit;
-        dialog-height: 30 * root.unit;
+        dialog-height: 34 * root.unit;
         actions: [
             { id: "cancel", label: @tr("BUTTON_CANCEL" => "Cancel"), icon: @image-url("../assets/images/icons/close.svg"), has-icon: false, enabled: true, primary: false },
             { id: "save", label: @tr("Save"), icon: @image-url("../assets/images/icons/checkmark.svg"), has-icon: false, enabled: true, primary: true },
@@ -1053,8 +1272,6 @@ export component SettingsPage inherits Rectangle {
         }
 
         ColorPicker {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
             unit: root.unit;
             value: root.color-dialog-value;
             input(value) => { root.color-dialog-value = value; }

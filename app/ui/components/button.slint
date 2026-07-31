@@ -24,8 +24,9 @@ export component ButtonSurface inherits Rectangle {
     callback pointer-cancelled;
     callback context-requested(length, length);
 
+    in property <length> focus-outline-size: Theme.focus-outline-size;
     opacity: root.enabled ? 1 : 0.5;
-    border-width: root.has-focus ? Theme.focus-outline-size : 0px;
+    border-width: root.has-focus ? root.focus-outline-size : 0px;
     border-color: Theme.surface-light;
     background: transparent;
     accessible-role: button;
@@ -116,7 +117,7 @@ export component PillButton inherits ButtonSurface {
     in property <IconData> icon;
     in property <image> icon-source;
     in property <bool> show-icon: false;
-    in property <bool> use-svg-icon: false;
+    in property <bool> use-svg-icon: root.icon-source.width > 0 || root.icon.glyph == "";
     in property <length> icon-size: 1.5 * root.unit;
     in property <length> label-font-size: 1.05 * root.unit;
     in property <int> label-font-weight: 700;
@@ -204,9 +205,14 @@ export component MenuButton inherits ButtonSurface {
     in property <string> label;
     in property <image> icon-source;
     in property <bool> show-icon: false;
+    in property <bool> show-trailing-icon: false;
+    in property <image> trailing-icon-source;
     in property <bool> selected: false;
     in property <length> icon-size: 1.5 * root.unit;
+    in property <length> trailing-icon-size: root.icon-size;
+    in property <float> trailing-icon-opacity: 0.6;
     in property <length> label-font-size: 1.1 * root.unit;
+    in property <int> label-font-weight: 500;
     in property <length> horizontal-padding: 2 * root.unit;
     in property <brush> selected-color: Theme.overlay-color;
     in property <brush> hover-color: Theme.overlay-color;
@@ -223,6 +229,8 @@ export component MenuButton inherits ButtonSurface {
     animate background, opacity { duration: Theme.motion-fast; }
 
     HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
         padding-left: root.horizontal-padding;
         padding-right: root.horizontal-padding;
         spacing: 1.25 * root.unit;
@@ -247,9 +255,26 @@ export component MenuButton inherits ButtonSurface {
             text: root.label;
             color: Theme.primary-foreground;
             font-size: root.label-font-size;
-            font-weight: root.selected ? 600 : 500;
+            font-weight: root.label-font-weight;
             vertical-alignment: center;
             overflow: elide;
+        }
+        if (root.show-trailing-icon) : Rectangle {
+            width: root.trailing-icon-size;
+            background: transparent;
+
+            Image {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: root.trailing-icon-size;
+                height: root.trailing-icon-size;
+                source: root.trailing-icon-source;
+                colorize: Theme.primary-foreground;
+                image-fit: contain;
+                opacity: root.selected || root.has-hover || root.has-focus
+                    ? 1
+                    : root.trailing-icon-opacity;
+            }
         }
     }
 }

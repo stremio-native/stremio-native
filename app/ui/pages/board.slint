@@ -102,7 +102,6 @@ export component BoardPage inherits Rectangle {
     if (root.loading && root.sections.length == 0) : ListView {
         x: root.unit;
         width: max(0px, root.width - 2 * root.unit);
-        mouse-drag-pan-enabled: true;
         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
 
         for _catalog in [0, 1, 2] : MetaRowPlaceholder {
@@ -127,7 +126,6 @@ export component BoardPage inherits Rectangle {
     if (root.sections.length > 0) : ListView {
         x: root.unit;
         width: max(0px, root.width - 2 * root.unit);
-        mouse-drag-pan-enabled: true;
         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
 
         for section in root.sections : Rectangle {

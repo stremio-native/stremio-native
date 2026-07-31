@@ -33,21 +33,29 @@ export struct AddonItem {
 component AddonCard inherits Rectangle {
     in property <length> unit: 16px;
     in property <AddonItem> addon;
+    in property <bool> draggable: false;
+    in property <bool> drag-active: false;
     callback install;
     callback uninstall;
     callback details;
     callback configure;
     callback share;
+    callback drag-started(length);
+    callback drag-moved(length);
+    callback drag-finished;
 
     property <length> card-padding: 1.5 * root.unit;
     property <length> logo-size: 8 * root.unit;
     property <length> actions-width: 17 * root.unit;
+    property <length> drag-gutter: root.draggable ? 2 * root.unit : 0px;
 
     height: 11 * root.unit;
     border-radius: 0.75 * root.unit;
     border-width: 0.15 * root.unit;
-    border-color: card-area.has-hover ? Theme.overlay : transparent;
+    border-color: root.drag-active ? Theme.accent
+        : (card-area.has-hover ? Theme.overlay : transparent);
     background: Theme.overlay;
+    opacity: root.drag-active ? 0.78 : 1;
 
     card-area := TouchArea {
         mouse-cursor: pointer;
@@ -55,7 +63,7 @@ component AddonCard inherits Rectangle {
     }
 
     Rectangle {
-        x: root.card-padding;
+        x: root.card-padding + root.drag-gutter;
         y: root.card-padding;
         width: root.logo-size;
         height: root.logo-size;
@@ -86,7 +94,7 @@ component AddonCard inherits Rectangle {
     // right. Explicit anchors avoid the content-sized Slint layout that used
     // to leave the buttons stranded near the middle of wide windows.
     VerticalLayout {
-        x: root.card-padding + root.logo-size + 1.5 * root.unit;
+        x: root.card-padding + root.drag-gutter + root.logo-size + 1.5 * root.unit;
         y: root.card-padding;
         width: max(0px, root.width - self.x - root.actions-width - 3 * root.unit);
         height: root.height - 2 * root.card-padding;
@@ -204,16 +212,60 @@ component AddonCard inherits Rectangle {
             clicked => { root.share(); }
         }
     }
+
+    if (root.draggable) : drag-handle := TouchArea {
+        x: 0.25 * root.unit;
+        y: (root.height - 4 * root.unit) / 2;
+        width: 2 * root.unit;
+        height: 4 * root.unit;
+        mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+        accessible-role: button;
+        accessible-label: @tr("Reorder addon");
+
+        Image {
+            x: 0.35 * root.unit;
+            y: 1.2 * root.unit;
+            width: 1.3 * root.unit;
+            height: 1.6 * root.unit;
+            source: @image-url("../assets/images/icons/drag-handle.svg");
+            colorize: Theme.text-primary;
+            opacity: root.drag-active || parent.has-hover ? 0.9 : 0.4;
+            image-fit: contain;
+        }
+
+        pointer-event(event) => {
+            let pointer-y = self.absolute-position.y + self.mouse-y;
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.drag-started(pointer-y);
+            } else if (event.kind == PointerEventKind.move && self.pressed) {
+                root.drag-moved(pointer-y);
+            } else if (event.kind == PointerEventKind.cancel
+                    || (event.button == PointerEventButton.left
+                        && event.kind == PointerEventKind.up)) {
+                root.drag-finished();
+            }
+        }
+    }
 }
 
 export component AddonsPage inherits Rectangle {
     width: 1280px;
     height: 720px;
     in property <[AddonItem]> addons: [];
+    in property <[AddonItem]> community-addons: [];
+    in property <bool> community-available: false;
+    in-out property <string> community-sort: "Trending";
+    in-out property <string> community-language: "All languages";
+    in-out property <bool> community-sort-open: false;
+    in-out property <bool> community-language-open: false;
+    in-out property <bool> community-adult-unlocked: false;
+    in-out property <string> community-owner-pin: "";
+    in-out property <int> community-page: 0;
     in property <bool> loading: false;
     in property <bool> has-next-page: false;
     callback install-addon(string);
     callback uninstall-addon(string);
+    callback reorder-addon(int, int);
     callback open-addon-details(string);
     callback close-addon-details;
     callback configure-addon(string);
@@ -221,6 +273,9 @@ export component AddonsPage inherits Rectangle {
     callback share-social(string, string);
     callback search-changed(string);
     callback load-next-page;
+    callback community-filters-changed(string, string, string, string);
+    callback community-load-next(string, string, string, string, int);
+    callback community-unlock-adult(string);
 
     in-out property <bool> details-open: false;
     in property <AddonItem> details-addon;
@@ -242,7 +297,16 @@ export component AddonsPage inherits Rectangle {
     private property <string> share-url: "";
     private property <string> share-title: "";
     private property <bool> pagination-latched: false;
+    private property <int> drag-source-index: -1;
+    private property <int> drag-target-index: -1;
+    private property <bool> addon-reorder-enabled:
+        root.active-filter == "Installed"
+            && root.active-type == "All"
+            && root.search-query == "";
     private property <int> pagination-content-length: root.addons.length;
+    private property <[AddonItem]> visible-addons:
+        root.active-filter == "Community" && root.community-available
+            ? root.community-addons : root.addons;
     changed pagination-content-length => { root.pagination-latched = false; }
     changed has-next-page => {
         if (root.has-next-page) {
@@ -254,7 +318,12 @@ export component AddonsPage inherits Rectangle {
                 && root.has-next-page
                 && !root.pagination-latched) {
             root.pagination-latched = true;
-            root.load-next-page();
+            if (root.community-available) {
+                root.community-page += 1;
+                root.community-load-next(root.active-type, root.community-sort, root.community-language, root.search-query, root.community-page);
+            } else {
+                root.load-next-page();
+            }
         }
     }
     function check-pagination(remaining: length) {
@@ -263,6 +332,27 @@ export component AddonsPage inherits Rectangle {
         } else {
             root.pagination-latched = false;
         }
+    }
+
+    function update-addon-drag(pointer-y: length, list-y: length, viewport-y: length) {
+        let candidate = floor(
+            (pointer-y - list-y - viewport-y) / (12.5 * root.unit)
+        );
+        if (candidate >= 0
+                && candidate < root.addons.length
+                && root.addons[candidate].is-installed) {
+            root.drag-target-index = candidate;
+        }
+    }
+
+    function finish-addon-drag() {
+        if (root.drag-source-index >= 0
+                && root.drag-target-index >= 0
+                && root.drag-source-index != root.drag-target-index) {
+            root.reorder-addon(root.drag-source-index, root.drag-target-index);
+        }
+        root.drag-source-index = -1;
+        root.drag-target-index = -1;
     }
 
     background: transparent;
@@ -293,6 +383,10 @@ export component AddonsPage inherits Rectangle {
                     selected(value) => {
                         root.active-filter = value;
                         root.filter-open = false;
+                        if (value == "Community") {
+                            root.community-page = 0;
+                            root.community-filters-changed(root.active-type, root.community-sort, root.community-language, root.search-query);
+                        }
                     }
                 }
 
@@ -309,6 +403,40 @@ export component AddonsPage inherits Rectangle {
                     selected(value) => {
                         root.active-type = value;
                         root.type-open = false;
+                        if (root.active-filter == "Community") {
+                            root.community-page = 0;
+                            root.community-filters-changed(value, root.community-sort, root.community-language, root.search-query);
+                        }
+                    }
+                }
+
+                if (root.active-filter == "Community") : SelectField {
+                    unit: root.unit;
+                    field-width: 10 * root.unit;
+                    value: root.community-sort;
+                    options: ["Trending", "Rating"];
+                    open: root.community-sort-open;
+                    toggle => { root.community-sort-open = !root.community-sort-open; }
+                    selected(value) => {
+                        root.community-sort = value;
+                        root.community-page = 0;
+                        root.community-sort-open = false;
+                        root.community-filters-changed(root.active-type, value, root.community-language, root.search-query);
+                    }
+                }
+
+                if (root.active-filter == "Community") : SelectField {
+                    unit: root.unit;
+                    field-width: 12 * root.unit;
+                    value: root.community-language;
+                    options: ["All languages", "English", "Portuguese", "Arabic", "Spanish", "French", "German"];
+                    open: root.community-language-open;
+                    toggle => { root.community-language-open = !root.community-language-open; }
+                    selected(value) => {
+                        root.community-language = value;
+                        root.community-page = 0;
+                        root.community-language-open = false;
+                        root.community-filters-changed(root.active-type, root.community-sort, value, root.search-query);
                     }
                 }
 
@@ -337,7 +465,44 @@ export component AddonsPage inherits Rectangle {
                     unit: root.unit;
                     title: @tr("Search addons");
                     text <=> root.search-query;
-                    edited => { root.search-changed(root.search-query); }
+                    edited => {
+                        root.search-changed(root.search-query);
+                        if (root.active-filter == "Community") {
+                            root.community-page = 0;
+                            root.community-filters-changed(root.active-type, root.community-sort, root.community-language, root.search-query);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (root.active-filter == "Community" && !root.community-adult-unlocked) : Rectangle {
+            height: 4 * root.unit;
+            background: Theme.overlay-color;
+            HorizontalLayout {
+                padding-left: 1.5 * root.unit;
+                padding-right: 1.5 * root.unit;
+                spacing: root.unit;
+                Text {
+                    horizontal-stretch: 1;
+                    text: @tr("Adult addons are hidden. An Owner PIN is required to reveal them for this session.");
+                    color: Theme.text-secondary;
+                    font-size: 0.9 * root.unit;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                NativeTextField {
+                    width: 10 * root.unit;
+                    unit: root.unit;
+                    text <=> root.community-owner-pin;
+                    placeholder-text: @tr("Owner PIN");
+                }
+                PillButton {
+                    width: 7 * root.unit;
+                    unit: root.unit;
+                    label: @tr("Reveal");
+                    outlined: true;
+                    clicked => { root.community-unlock-adult(root.community-owner-pin); }
                 }
             }
         }
@@ -361,7 +526,7 @@ export component AddonsPage inherits Rectangle {
             }
         }
 
-        if (!root.loading && root.addons.length == 0) : EmptyState {
+        if (!root.loading && root.visible-addons.length == 0) : EmptyState {
             vertical-stretch: 1;
             unit: root.unit;
             icon-source: @image-url("../assets/images/icons/addons.svg");
@@ -369,11 +534,10 @@ export component AddonsPage inherits Rectangle {
             message: @tr("Try another filter or install an addon by manifest URL.");
         }
 
-        if (!root.loading && root.addons.length > 0) : addons-scroll := ListView {
+        if (!root.loading && root.visible-addons.length > 0) : addons-scroll := ListView {
             vertical-stretch: 1;
             viewport-y <=> root.scroll-y;
-            mouse-drag-pan-enabled: true;
-            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
             changed viewport-y => {
                 root.check-pagination(self.viewport-height + self.viewport-y - self.height);
             }
@@ -381,7 +545,7 @@ export component AddonsPage inherits Rectangle {
                 root.check-pagination(self.viewport-height + self.viewport-y - self.height);
             }
 
-            for item[item-index] in root.addons : Rectangle {
+            for item[item-index] in root.visible-addons : Rectangle {
                 private property <bool> matches-filter:
                     ((root.active-filter == "Installed") == item.is-installed)
                         && (root.active-type == "All"
@@ -395,7 +559,7 @@ export component AddonsPage inherits Rectangle {
                 background: transparent;
 
                 init => {
-                    if (item-index == root.addons.length - 1) {
+                    if (item-index == root.visible-addons.length - 1) {
                         root.request-next-page();
                     }
                 }
@@ -407,22 +571,53 @@ export component AddonsPage inherits Rectangle {
                     height: 11 * root.unit;
                     unit: root.unit;
                     addon: item;
+                    draggable: root.addon-reorder-enabled && item.is-installed;
+                    drag-active: root.drag-source-index == item-index;
                     install => { root.install-addon(item.transport-url); }
                     uninstall => { root.uninstall-addon(item.transport-url); }
                     details => { root.open-addon-details(item.transport-url); }
                     configure => { root.configure-addon(item.transport-url); }
+                    drag-started(pointer-y) => {
+                        root.drag-source-index = item-index;
+                        root.drag-target-index = item-index;
+                        root.update-addon-drag(
+                            pointer-y,
+                            addons-scroll.absolute-position.y,
+                            addons-scroll.viewport-y,
+                        );
+                    }
+                    drag-moved(pointer-y) => {
+                        root.update-addon-drag(
+                            pointer-y,
+                            addons-scroll.absolute-position.y,
+                            addons-scroll.viewport-y,
+                        );
+                    }
+                    drag-finished => { root.finish-addon-drag(); }
                     share => {
                         root.share-url = item.transport-url;
                         root.share-title = item.name;
                         root.share-modal-open = true;
                     }
                 }
+
+                if (root.drag-source-index >= 0
+                        && root.drag-target-index == item-index
+                        && root.drag-source-index != item-index) : Rectangle {
+                    x: 1.5 * root.unit;
+                    y: root.drag-target-index < root.drag-source-index
+                        ? 0px : parent.height - 0.2 * root.unit;
+                    width: parent.width - 3 * root.unit;
+                    height: 0.2 * root.unit;
+                    border-radius: self.height / 2;
+                    background: Theme.accent;
+                }
             }
         }
     }
 
     if (root.add-modal-open) : Rectangle {
-        background: #00000066;
+        background: transparent;
         z: 200;
         TouchArea { clicked => { } }
 
@@ -489,7 +684,7 @@ export component AddonsPage inherits Rectangle {
     }
 
     if (root.details-open) : Rectangle {
-        background: #00000099;
+        background: transparent;
         z: 220;
 
         TouchArea { clicked => { root.close-addon-details(); } }
@@ -642,7 +837,6 @@ export component AddonsPage inherits Rectangle {
 
                     ScrollView {
                         vertical-stretch: 1;
-                        mouse-drag-pan-enabled: true;
                         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                         Text {
                             width: parent.width;

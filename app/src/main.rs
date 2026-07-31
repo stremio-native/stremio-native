@@ -6,6 +6,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 slint::include_modules!();
 
 use std::{
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -35,19 +36,33 @@ use stremio_core::{
 
 use core_env::DesktopEnv;
 
+pub mod backup;
+pub mod community_addons;
 mod config;
+pub mod customization;
 pub mod db;
 mod deep_link;
+pub mod diagnostics;
+pub mod downloads;
 mod gpu_prewarm;
 pub mod image_cache;
+pub mod integrations;
+pub mod local_library;
+pub mod localization;
 mod media_session;
+pub mod metadata_enrichment;
 mod models;
 mod mpv_integration;
+pub mod network_tools;
 mod paths;
 mod performance;
 mod playback;
+mod player_features;
 #[cfg(feature = "plugins")]
 mod plugins;
+pub mod profiles;
+pub mod runtime_host;
+pub mod secure_settings;
 mod shaders;
 mod shortcuts;
 mod single_instance;
@@ -55,6 +70,7 @@ mod taskbar_media;
 mod thumbnail_preview;
 mod tray;
 mod window_events;
+mod window_hooks;
 mod window_style;
 
 // Modular sub-files
@@ -240,6 +256,7 @@ struct AppSession {
     command_task: tokio::task::JoinHandle<()>,
     tray: Option<AppTray>,
     updater: updater::UpdaterHandle,
+    download_ui_task: tokio::task::JoinHandle<()>,
 }
 
 impl AppSession {
@@ -250,6 +267,7 @@ impl AppSession {
         // icon without re-entering Slint's property system.
         drop(self.tray.take());
         self.command_task.abort();
+        self.download_ui_task.abort();
         let playback_result = match self.native_playback.take() {
             Some(playback) => playback.shutdown(),
             None => Ok(()),
@@ -318,16 +336,79 @@ async fn finish_startup(
     let ui_weak = ui.as_weak();
 
     db::init_db(paths::get().database()).await?;
+    let credential_store: Arc<dyn credential_store::CredentialStore> =
+        Arc::new(credential_store::PlatformCredentialStore::default());
+    core_env::install_credential_store(credential_store.clone());
+    secure_settings::install(credential_store.clone());
+    integrations::install(credential_store.clone());
+    let download_manager = Arc::new(downloads::DownloadManager::new(credential_store, 2));
+    let active_profile_id = profiles::active_profile_id()
+        .await
+        .context("could not load the active local profile")?;
+    let local_profiles = profiles::list_profiles()
+        .await
+        .context("could not load local profiles")?;
+    let active_profile_id = select_startup_profile(&ui, local_profiles, active_profile_id).await?;
+    core_env::set_active_profile_scope(active_profile_id.as_str());
     config::init_config().await;
-    let config = config::load_config();
+    let mut config = config::load_config();
+    download_manager.set_bandwidth_limit(
+        (config.download_bandwidth_limit_bps > 0).then_some(config.download_bandwidth_limit_bps),
+    );
+    let legacy_tidb_key = (!config.tidb_api_key.is_empty()).then(|| config.tidb_api_key.clone());
+    secure_settings::activate_profile(active_profile_id.as_str(), legacy_tidb_key)
+        .await
+        .context("could not load the profile credential settings")?;
+    if !config.tidb_api_key.is_empty() {
+        config.tidb_api_key.clear();
+        config::save_config_async(&config)
+            .await
+            .context("could not remove a migrated provider key from local storage")?;
+    }
     apply_theme(&ui, &config);
     ui.set_settings_hardware_acceleration(config.hardware_acceleration);
     ui.set_settings_thumbnail_previews(config.thumbnail_previews_enabled);
-    ui.set_settings_tidb_api_key(config.tidb_api_key.clone().into());
+    ui.set_settings_tidb_api_key(if secure_settings::has_tidb_api_key() {
+        "••••••••••••".into()
+    } else {
+        "".into()
+    });
     ui.set_settings_tidb_show_intro(config.tidb_show_intro);
     ui.set_settings_tidb_show_recap(config.tidb_show_recap);
     ui.set_settings_tidb_show_credits(config.tidb_show_credits);
     ui.set_settings_tidb_show_preview(config.tidb_show_preview);
+    ui.set_operations_region(config.region.clone().into());
+    ui.set_operations_bandwidth_mbps(
+        if config.download_bandwidth_limit_bps == 0 {
+            "0".to_owned()
+        } else {
+            format!(
+                "{:.1}",
+                config.download_bandwidth_limit_bps as f64 * 8.0 / 1_000_000.0
+            )
+        }
+        .into(),
+    );
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    ui.set_operations_backup_path(
+        paths::get()
+            .root()
+            .join("backups")
+            .join(format!("stremio-native-{timestamp}.zip"))
+            .to_string_lossy()
+            .into_owned()
+            .into(),
+    );
+    ui.set_operations_diagnostic_path(
+        paths::get()
+            .root()
+            .join("diagnostics")
+            .join(format!("diagnostics-{timestamp}.zip"))
+            .to_string_lossy()
+            .into_owned()
+            .into(),
+    );
+    load_profile_customization(&ui, &active_profile_id).await;
     if let Ok(active_tab) = Tab::try_from(config.active_tab) {
         navigation.dispatch_and_project(&ui, NavigationIntent::SelectTab(active_tab));
     }
@@ -450,6 +531,24 @@ async fn finish_startup(
                 navigation_tab.dispatch_and_project(&ui, NavigationIntent::SelectTab(selected_tab));
                 ui.set_loading(false);
                 sync_tab_from_model(selected_tab, &rt, &ui, &ui_weak_tab, &navigation_tab);
+                match selected_tab {
+                    Tab::Movies => ui.invoke_discover_type_changed("movie".into()),
+                    Tab::Shows => ui.invoke_discover_type_changed("series".into()),
+                    Tab::Anime => ui.invoke_discover_type_changed("anime".into()),
+                    Tab::Kids => {
+                        ui.invoke_discover_type_changed("movie".into());
+                        let weak = ui_weak_tab.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = weak.upgrade() {
+                                    ui.invoke_discover_genre_changed("Family".into());
+                                }
+                            });
+                        });
+                    }
+                    _ => {}
+                }
             }
             if selected_tab == Tab::Calendar {
                 let loading = models::calendar::ensure_loaded(&rt);
@@ -462,6 +561,24 @@ async fn finish_startup(
 
     let discord_rpc = Arc::new(discord::DiscordRpc::new());
     let playback_selections = Arc::new(playback::PlaybackSelections::default());
+    if let Ok(Some(mode)) = profiles::setting(&active_profile_id, "stream-ranking-mode").await {
+        let ranking_mode = match mode.as_str() {
+            "Quality" => stream_ranking::RankingMode::Quality,
+            "Smallest" => stream_ranking::RankingMode::Smallest,
+            "Seeders" => stream_ranking::RankingMode::Seeders,
+            "Original" => stream_ranking::RankingMode::Original,
+            _ => stream_ranking::RankingMode::Smart,
+        };
+        playback_selections.set_ranking_mode(ranking_mode);
+        ui.set_detail_ranking_mode(mode.into());
+    }
+    if matches!(
+        profiles::setting(&active_profile_id, "stream-show-filtered").await,
+        Ok(Some(value)) if value == "true"
+    ) {
+        playback_selections.set_show_filtered(true);
+        ui.set_detail_show_filtered(true);
+    }
     let hardware_decoding = runtime
         .model()
         .ok()
@@ -514,10 +631,45 @@ async fn finish_startup(
         &runtime,
         &playback_selections,
         &native_playback_bridge,
-        ui_weak.clone(),
         &config,
         navigation.clone(),
+        download_manager.clone(),
     );
+    downloads::setup_ui_callbacks(
+        &ui,
+        download_manager.clone(),
+        native_playback_bridge.clone(),
+        navigation.clone(),
+    );
+    local_library::setup(&ui, native_playback_bridge.clone(), navigation.clone());
+    setup_live_profile_switch(
+        &ui,
+        runtime.clone(),
+        native_playback_bridge.clone(),
+        playback_selections.clone(),
+        navigation.clone(),
+        download_manager.clone(),
+    );
+    setup_profile_management(&ui);
+    setup_integration_management(&ui);
+    setup_operations(&ui, download_manager.clone());
+    let mut download_progress = download_manager.subscribe();
+    let download_ui_weak = ui.as_weak();
+    let download_ui_task = tokio::spawn(async move {
+        while download_progress.changed().await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            downloads::project_active_profile(download_ui_weak.clone()).await;
+        }
+    });
+    {
+        let download_manager = download_manager.clone();
+        let profile_id = active_profile_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = download_manager.resume_profile(profile_id.as_str()).await {
+                tracing::warn!(%error, "could not resume persisted downloads");
+            }
+        });
+    }
     window_events::install(&ui, runtime.clone());
 
     // Plugin system (lazy: only starts if plugins directory has .lua files)
@@ -558,7 +710,1120 @@ async fn finish_startup(
         command_task,
         tray,
         updater,
+        download_ui_task,
     })
+}
+
+fn setup_live_profile_switch(
+    ui: &MainWindow,
+    runtime: Arc<Runtime<DesktopEnv, AppModel>>,
+    playback: Option<mpv_integration::NativePlaybackBridge>,
+    playback_selections: Arc<playback::PlaybackSelections>,
+    navigation: NavigationController,
+    download_manager: Arc<downloads::DownloadManager>,
+) {
+    let limiter = Arc::new(profiles::PinAttemptLimiter::default());
+    let pending_confirmation = Arc::new(std::sync::Mutex::new(None::<String>));
+    let ui_weak = ui.as_weak();
+    ui.on_profile_picker_selected(move |profile_id, pin| {
+        let Ok(target_id) = profiles::ProfileId::parse(profile_id.to_string()) else {
+            return;
+        };
+        let target_id_string = target_id.as_str().to_owned();
+        if navigation.is_player_visible() {
+            let mut pending = pending_confirmation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pending.as_deref() != Some(target_id.as_str()) {
+                *pending = Some(target_id_string);
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_profile_picker_error(
+                        "Playback will stop. Select this profile again to confirm.".into(),
+                    );
+                }
+                return;
+            }
+            *pending = None;
+        }
+        let runtime = runtime.clone();
+        let playback = playback.clone();
+        let playback_selections = playback_selections.clone();
+        let navigation = navigation.clone();
+        let download_manager = download_manager.clone();
+        let limiter = limiter.clone();
+        let ui_weak = ui_weak.clone();
+        let pin = pin.to_string();
+        tokio::spawn(async move {
+            let result = async {
+                let previous_id = profiles::active_profile_id().await?;
+                if previous_id == target_id {
+                    return Ok::<_, anyhow::Error>((previous_id, None, false));
+                }
+                let profiles = profiles::list_profiles().await?;
+                let target = profiles
+                    .iter()
+                    .find(|profile| profile.id == target_id)
+                    .ok_or(profiles::ProfileError::NotFound)?;
+                if target.has_pin {
+                    profiles::verify_pin(&target_id, &pin, &limiter).await?;
+                }
+                let target_core_profile = core_env::load_profile_scope(target_id.as_str())
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                    .unwrap_or_default();
+                profiles::set_active_profile(&target_id).await?;
+                core_env::set_active_profile_scope(target_id.as_str());
+                if let Err(error) =
+                    secure_settings::activate_profile(target_id.as_str(), None).await
+                {
+                    core_env::set_active_profile_scope(previous_id.as_str());
+                    profiles::set_active_profile(&previous_id).await?;
+                    let _ = secure_settings::activate_profile(previous_id.as_str(), None).await;
+                    return Err(anyhow::anyhow!(error.to_string()));
+                }
+                if let Err(error) = download_manager.pause_profile(previous_id.as_str()).await {
+                    tracing::warn!(%error, "could not pause every previous-profile download");
+                }
+                let token = target_core_profile.auth_key().cloned();
+                Ok((previous_id, token, true))
+            }
+            .await;
+            match result {
+                Ok((_previous_id, _token, false)) => {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_show_profile_picker(false);
+                            ui.set_show_profile_manager(false);
+                            ui.set_show_integrations_manager(false);
+                            ui.set_show_operations_manager(false);
+                            ui.set_profile_manager_owner_pin("".into());
+                            ui.set_profile_picker_error("".into());
+                        }
+                    });
+                }
+                Ok((_previous_id, token, true)) => {
+                    let weak = ui_weak.clone();
+                    let runtime_for_ui = runtime.clone();
+                    let download_manager_for_ui = download_manager.clone();
+                    let target_id_for_ui = target_id.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            if let Some(playback) = playback.as_ref() {
+                                playback.stop_for_profile_switch();
+                            }
+                            playback_selections.clear();
+                            metadata_enrichment::clear();
+                            ui.set_stream_links(Default::default());
+                            ui.set_detail_stream_providers(slint::ModelRc::new(
+                                slint::VecModel::from(vec!["All".into()]),
+                            ));
+                            ui.set_show_profile_picker(false);
+                            ui.set_profile_picker_error("".into());
+                            ui.set_show_details(false);
+                            ui.set_show_player(false);
+                            ui.set_search_query("".into());
+                            ui.set_detail_enrichment_id("".into());
+                            ui.set_detail_enrichment_summary("".into());
+                            ui.set_detail_enrichment_attribution_url("".into());
+                            ui.set_addons_community_adult_unlocked(false);
+                            ui.set_addons_community_owner_pin("".into());
+                            navigation
+                                .dispatch_and_project(&ui, NavigationIntent::SelectTab(Tab::Board));
+                            runtime_for_ui.dispatch(stremio_core::runtime::RuntimeAction {
+                                field: None,
+                                action: match token {
+                                    Some(token) => stremio_core::runtime::msg::Action::Ctx(
+                                        stremio_core::runtime::msg::ActionCtx::PullUserFromAPI {
+                                            token: Some(token),
+                                        },
+                                    ),
+                                    None => stremio_core::runtime::msg::Action::Ctx(
+                                        stremio_core::runtime::msg::ActionCtx::Logout,
+                                    ),
+                                },
+                            });
+                            callbacks::trigger_initial_load(&runtime_for_ui);
+                            let download_ui_weak = ui.as_weak();
+                            let integration_ui_weak = ui.as_weak();
+                            tokio::spawn(async move {
+                                let _ = download_manager_for_ui
+                                    .resume_profile(target_id_for_ui.as_str())
+                                    .await;
+                                downloads::project_active_profile(download_ui_weak).await;
+                                refresh_integration_projection(
+                                    integration_ui_weak.clone(),
+                                    &target_id_for_ui,
+                                    None,
+                                )
+                                .await;
+                                load_profile_customization_weak(
+                                    integration_ui_weak,
+                                    &target_id_for_ui,
+                                )
+                                .await;
+                            });
+                        }
+                    });
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_profile_picker_error(message.into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+}
+
+fn setup_profile_management(ui: &MainWindow) {
+    let limiter = Arc::new(profiles::PinAttemptLimiter::default());
+    let ui_weak = ui.as_weak();
+    ui.on_profile_manager_create({
+        let limiter = limiter.clone();
+        let ui_weak = ui_weak.clone();
+        move |name, role, profile_pin, owner_pin| {
+            let limiter = limiter.clone();
+            let ui_weak = ui_weak.clone();
+            let name = name.to_string();
+            let profile_pin = profile_pin.to_string();
+            let owner_pin = owner_pin.to_string();
+            let role = match role.as_str() {
+                "Owner" => profiles::ProfileRole::Owner,
+                "Kids" => profiles::ProfileRole::Kids,
+                _ => profiles::ProfileRole::Standard,
+            };
+            tokio::spawn(async move {
+                let result: Result<(), profiles::ProfileError> = async {
+                    profiles::authorize_owner_pin(&owner_pin, &limiter).await?;
+                    let profile = profiles::create_profile(&name, role, None).await?;
+                    if !profile_pin.is_empty()
+                        && let Err(error) = profiles::set_pin(&profile.id, &profile_pin).await
+                    {
+                        let _ = profiles::delete_profile(&profile.id).await;
+                        return Err(error);
+                    }
+                    Ok::<_, profiles::ProfileError>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        refresh_profile_projection(ui_weak, Some("Profile created".to_owned()))
+                            .await
+                    }
+                    Err(error) => set_profile_manager_error(ui_weak, error.to_string()),
+                }
+            });
+        }
+    });
+    ui.on_profile_manager_delete({
+        let limiter = limiter.clone();
+        let ui_weak = ui_weak.clone();
+        move |profile_id, owner_pin| {
+            let limiter = limiter.clone();
+            let ui_weak = ui_weak.clone();
+            let profile_id = profile_id.to_string();
+            let owner_pin = owner_pin.to_string();
+            tokio::spawn(async move {
+                let result: Result<(), profiles::ProfileError> = async {
+                    profiles::authorize_owner_pin(&owner_pin, &limiter).await?;
+                    let profile_id = profiles::ProfileId::parse(profile_id)?;
+                    if profiles::active_profile_id().await? == profile_id {
+                        return Err(profiles::ProfileError::ActiveProfile);
+                    }
+                    let all_profiles = profiles::list_profiles().await?;
+                    let target = all_profiles
+                        .iter()
+                        .find(|profile| profile.id == profile_id)
+                        .ok_or(profiles::ProfileError::NotFound)?;
+                    if target.role == profiles::ProfileRole::Owner
+                        && all_profiles
+                            .iter()
+                            .filter(|profile| profile.role == profiles::ProfileRole::Owner)
+                            .count()
+                            <= 1
+                    {
+                        return Err(profiles::ProfileError::LastOwner);
+                    }
+                    core_env::delete_profile_credential(profile_id.as_str())
+                        .await
+                        .map_err(|error| profiles::ProfileError::Database(error.to_string()))?;
+                    secure_settings::delete_profile_credentials(profile_id.as_str())
+                        .await
+                        .map_err(|error| profiles::ProfileError::Database(error.to_string()))?;
+                    integrations::delete_profile_credentials(profile_id.as_str())
+                        .await
+                        .map_err(|error| profiles::ProfileError::Database(error.to_string()))?;
+                    profiles::delete_profile(&profile_id).await
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        refresh_profile_projection(ui_weak, Some("Profile deleted".to_owned()))
+                            .await
+                    }
+                    Err(error) => set_profile_manager_error(ui_weak, error.to_string()),
+                }
+            });
+        }
+    });
+}
+
+fn setup_integration_management(ui: &MainWindow) {
+    let ui_weak = ui.as_weak();
+    ui.on_integration_configure({
+        let ui_weak = ui_weak.clone();
+        move |provider, secret, endpoint, chat_id| {
+            let ui_weak = ui_weak.clone();
+            let provider = provider.to_string();
+            let secret = secret.to_string();
+            let endpoint = endpoint.to_string();
+            let chat_id = chat_id.to_string();
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    let status = match provider.as_str() {
+                        "Real-Debrid" => format_debrid_status(
+                            integrations::configure_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::RealDebrid,
+                                &secret,
+                            )
+                            .await?,
+                        ),
+                        "AllDebrid" => format_debrid_status(
+                            integrations::configure_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::AllDebrid,
+                                &secret,
+                            )
+                            .await?,
+                        ),
+                        "Premiumize" => format_debrid_status(
+                            integrations::configure_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::Premiumize,
+                                &secret,
+                            )
+                            .await?,
+                        ),
+                        "Debrid-Link" => format_debrid_status(
+                            integrations::configure_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::DebridLink,
+                                &secret,
+                            )
+                            .await?,
+                        ),
+                        "TorBox" => format_debrid_status(
+                            integrations::configure_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::TorBox,
+                                &secret,
+                            )
+                            .await?,
+                        ),
+                        "TMDB" | "OMDb" | "Fanart.tv" | "RPDB" => {
+                            integrations::configure_metadata_provider(
+                                profile.as_str(),
+                                metadata_provider_kind(&provider)
+                                    .expect("matched metadata provider"),
+                                &secret,
+                            )
+                            .await?;
+                            format!("{provider} connected and tested")
+                        }
+                        "Webhook" | "Telegram" => {
+                            let kind = if provider == "Telegram" {
+                                integrations::NotificationKind::Telegram
+                            } else {
+                                integrations::NotificationKind::Webhook
+                            };
+                            let endpoint = if provider == "Telegram" && endpoint.trim().is_empty() {
+                                "https://api.telegram.org"
+                            } else {
+                                endpoint.as_str()
+                            };
+                            integrations::configure_notification(
+                                profile.as_str(),
+                                kind,
+                                endpoint,
+                                (!secret.is_empty()).then_some(secret.as_str()),
+                                (!chat_id.is_empty()).then_some(chat_id.as_str()),
+                            )
+                            .await?;
+                            integrations::send_notification(
+                                profile.as_str(),
+                                kind,
+                                "Stremio Native notification test succeeded.",
+                            )
+                            .await?;
+                            format!("{provider} connected and tested")
+                        }
+                        _ => return Err(anyhow::anyhow!("unknown integration provider")),
+                    };
+                    Ok::<_, anyhow::Error>((profile, status))
+                }
+                .await;
+                match result {
+                    Ok((profile, status)) => {
+                        refresh_integration_projection(ui_weak, &profile, Some(status)).await;
+                    }
+                    Err(error) => set_integrations_status(ui_weak, error.to_string()),
+                }
+            });
+        }
+    });
+    ui.on_integration_disconnect({
+        let ui_weak = ui_weak.clone();
+        move |provider| {
+            let ui_weak = ui_weak.clone();
+            let provider = provider.to_string();
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    match provider.as_str() {
+                        "Real-Debrid" => {
+                            integrations::disconnect_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::RealDebrid,
+                            )
+                            .await?
+                        }
+                        "AllDebrid" => {
+                            integrations::disconnect_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::AllDebrid,
+                            )
+                            .await?
+                        }
+                        "Premiumize" => {
+                            integrations::disconnect_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::Premiumize,
+                            )
+                            .await?
+                        }
+                        "Debrid-Link" => {
+                            integrations::disconnect_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::DebridLink,
+                            )
+                            .await?
+                        }
+                        "TorBox" => {
+                            integrations::disconnect_debrid(
+                                profile.as_str(),
+                                debrid::ProviderKind::TorBox,
+                            )
+                            .await?
+                        }
+                        "TMDB" | "OMDb" | "Fanart.tv" | "RPDB" => {
+                            integrations::disconnect_metadata_provider(
+                                profile.as_str(),
+                                metadata_provider_kind(&provider).expect("matched provider"),
+                            )
+                            .await?;
+                        }
+                        "Webhook" => {
+                            integrations::disconnect_notification(
+                                profile.as_str(),
+                                integrations::NotificationKind::Webhook,
+                            )
+                            .await?
+                        }
+                        "Telegram" => {
+                            integrations::disconnect_notification(
+                                profile.as_str(),
+                                integrations::NotificationKind::Telegram,
+                            )
+                            .await?
+                        }
+                        _ => return Err(anyhow::anyhow!("unknown integration provider")),
+                    }
+                    Ok::<_, anyhow::Error>(profile)
+                }
+                .await;
+                match result {
+                    Ok(profile) => {
+                        refresh_integration_projection(
+                            ui_weak,
+                            &profile,
+                            Some(format!("{provider} disconnected")),
+                        )
+                        .await
+                    }
+                    Err(error) => set_integrations_status(ui_weak, error.to_string()),
+                }
+            });
+        }
+    });
+    let startup_weak = ui_weak;
+    tokio::spawn(async move {
+        if let Ok(profile) = profiles::active_profile_id().await {
+            refresh_integration_projection(startup_weak, &profile, None).await;
+        }
+    });
+}
+
+fn metadata_provider_kind(name: &str) -> Option<media_integrations::ProviderKind> {
+    match name {
+        "TMDB" => Some(media_integrations::ProviderKind::Tmdb),
+        "OMDb" => Some(media_integrations::ProviderKind::Omdb),
+        "Fanart.tv" => Some(media_integrations::ProviderKind::Fanart),
+        "RPDB" => Some(media_integrations::ProviderKind::Rpdb),
+        _ => None,
+    }
+}
+
+fn format_debrid_status(status: debrid::AccountStatus) -> String {
+    let account = status.username.unwrap_or_else(|| "account".to_owned());
+    match status.expires_at {
+        Some(expires) => format!("Connected {account} · expires {}", expires),
+        None if status.premium => format!("Connected {account} · premium active"),
+        None => format!("Connected {account}"),
+    }
+}
+
+async fn refresh_integration_projection(
+    ui_weak: slint::Weak<MainWindow>,
+    profile: &profiles::ProfileId,
+    status: Option<String>,
+) {
+    let names = integrations::configured_integration_names(profile.as_str()).await;
+    let _ = slint::invoke_from_event_loop(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        match names {
+            Ok(names) => {
+                ui.set_configured_integrations(slint::ModelRc::new(slint::VecModel::from(
+                    names.into_iter().map(Into::into).collect::<Vec<_>>(),
+                )));
+                ui.set_integrations_status(status.unwrap_or_default().into());
+            }
+            Err(error) => ui.set_integrations_status(error.to_string().into()),
+        }
+    });
+}
+
+fn set_integrations_status(ui_weak: slint::Weak<MainWindow>, message: String) {
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_integrations_status(message.into());
+        }
+    });
+}
+
+fn setup_operations(ui: &MainWindow, downloads: Arc<downloads::DownloadManager>) {
+    let restore_confirmation = Arc::new(std::sync::Mutex::new(None::<(PathBuf, String)>));
+    let ui_weak = ui.as_weak();
+    ui.on_operations_create_backup({
+        let ui_weak = ui_weak.clone();
+        move |path, include_secrets, passphrase| {
+            let ui_weak = ui_weak.clone();
+            let path = PathBuf::from(path.as_str());
+            let passphrase = passphrase.to_string();
+            tokio::spawn(async move {
+                let result: anyhow::Result<backup::BackupManifestV1> = async {
+                    let secrets = if include_secrets {
+                        let entries = integrations::exportable_secrets()
+                            .await?
+                            .into_iter()
+                            .map(|(credential_ref, kind, value)| backup::SecretExportEntry {
+                                credential_ref,
+                                kind,
+                                value,
+                            })
+                            .collect();
+                        Some(backup::SecretExport {
+                            passphrase,
+                            entries,
+                        })
+                    } else {
+                        None
+                    };
+                    Ok(backup::create_backup(&path, secrets).await?)
+                }
+                .await;
+                match result {
+                    Ok(manifest) => set_operations_status(
+                        ui_weak,
+                        format!(
+                            "Backup created · {} tables · secrets: {}",
+                            manifest.table_rows.len(),
+                            manifest.includes_secrets
+                        ),
+                        false,
+                    ),
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_preview_restore({
+        let confirmation = restore_confirmation.clone();
+        let ui_weak = ui_weak.clone();
+        move |path, passphrase| {
+            let path = PathBuf::from(path.as_str());
+            let passphrase = passphrase.to_string();
+            let confirmation = confirmation.clone();
+            let ui_weak = ui_weak.clone();
+            tokio::spawn(async move {
+                let path_for_read = path.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    backup::preview_restore(&path_for_read).and_then(|preview| {
+                        if preview.manifest.includes_secrets {
+                            backup::read_secret_export(&path_for_read, &passphrase)?;
+                        }
+                        Ok(preview)
+                    })
+                })
+                .await
+                .unwrap_or(Err(backup::BackupError::Filesystem));
+                match result {
+                    Ok(preview) => {
+                        *confirmation
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+                            path,
+                            preview.manifest.payload_checksum.clone(),
+                        ));
+                        set_operations_status(
+                            ui_weak,
+                            format!(
+                                "Validated restore preview · {} profiles · {} downloads · {} local items",
+                                preview.profile_count, preview.download_count, preview.local_media_count
+                            ),
+                            true,
+                        );
+                    }
+                    Err(error) => {
+                        *confirmation
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                        set_operations_status(ui_weak, error.to_string(), false);
+                    }
+                }
+            });
+        }
+    });
+    ui.on_operations_apply_restore({
+        let confirmation = restore_confirmation;
+        let ui_weak = ui_weak.clone();
+        move |path, passphrase| {
+            let path = PathBuf::from(path.as_str());
+            let passphrase = passphrase.to_string();
+            let expected = confirmation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            let ui_weak = ui_weak.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let preview = backup::preview_restore(&path)?;
+                    if expected.as_ref() != Some(&(path.clone(), preview.manifest.payload_checksum.clone())) {
+                        return Err(anyhow::anyhow!("restore confirmation expired; preview the archive again"));
+                    }
+                    let secrets = if preview.manifest.includes_secrets {
+                        Some(backup::read_secret_export(&path, &passphrase)?)
+                    } else {
+                        None
+                    };
+                    let safety = paths::get()
+                        .root()
+                        .join("backups")
+                        .join(format!("pre-restore-{}.zip", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
+                    backup::create_backup(&safety, None).await?;
+                    let restored = backup::restore(&path).await?;
+                    if let Some(secrets) = secrets {
+                        integrations::restore_secrets(secrets).await?;
+                    }
+                    Ok::<_, anyhow::Error>(restored)
+                }
+                .await;
+                match result {
+                    Ok(preview) => {
+                        refresh_profile_projection(ui_weak.clone(), None).await;
+                        set_operations_status(
+                            ui_weak,
+                            format!("Restore applied for {} profiles. Restart the app to rebuild every runtime.", preview.profile_count),
+                            false,
+                        );
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_create_diagnostics({
+        let ui_weak = ui_weak.clone();
+        move |path| {
+            let ui_weak = ui_weak.clone();
+            let path = PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                match diagnostics::create_redacted_zip(&path).await {
+                    Ok(path) => set_operations_status(
+                        ui_weak,
+                        format!("Redacted diagnostics created at {}", path.display()),
+                        false,
+                    ),
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_run_speed_test({
+        let ui_weak = ui_weak.clone();
+        move |endpoint| {
+            let ui_weak = ui_weak.clone();
+            let disclosure = network_tools::SpeedTestDisclosure::accept(endpoint.as_str());
+            tokio::spawn(async move {
+                let result = match disclosure {
+                    Ok(disclosure) => network_tools::run_speed_test(disclosure).await,
+                    Err(error) => Err(error),
+                };
+                match result {
+                    Ok(result) => set_operations_status(
+                        ui_weak,
+                        format!(
+                            "Speed test: {:.1} Mbps ({} bytes)",
+                            result.bits_per_second / 1_000_000.0,
+                            result.bytes_received
+                        ),
+                        false,
+                    ),
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_save_network({
+        let downloads = downloads.clone();
+        let ui_weak = ui_weak.clone();
+        move |region, bandwidth| {
+            let Ok(mbps) = bandwidth.as_str().trim().parse::<f64>() else {
+                set_operations_status(
+                    ui_weak.clone(),
+                    "Bandwidth must be a non-negative number".to_owned(),
+                    false,
+                );
+                return;
+            };
+            if !mbps.is_finite() || mbps < 0.0 {
+                set_operations_status(
+                    ui_weak.clone(),
+                    "Bandwidth must be a non-negative number".to_owned(),
+                    false,
+                );
+                return;
+            }
+            let mut config = config::load_config();
+            config.region = region.as_str().trim().to_ascii_uppercase();
+            config.download_bandwidth_limit_bps = (mbps * 1_000_000.0 / 8.0) as u64;
+            downloads.set_bandwidth_limit(
+                (config.download_bandwidth_limit_bps > 0)
+                    .then_some(config.download_bandwidth_limit_bps),
+            );
+            config::save_config(&config);
+            set_operations_status(
+                ui_weak.clone(),
+                "Network and region settings saved".to_owned(),
+                false,
+            );
+        }
+    });
+    ui.on_operations_apply_layout({
+        let ui_weak = ui_weak.clone();
+        move |preset| {
+            let ui_weak = ui_weak.clone();
+            let preset = preset.to_string();
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    profiles::set_setting(&profile, "home-layout-preset", &preset).await
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        let weak = ui_weak.clone();
+                        let preset_for_ui = preset.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.set_home_layout_preset(preset_for_ui.into());
+                            }
+                        });
+                        set_operations_status(ui_weak, format!("{preset} layout applied"), false);
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    install_customization_callbacks(ui, ui_weak);
+}
+
+fn set_operations_status(ui_weak: slint::Weak<MainWindow>, message: String, restore_ready: bool) {
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_operations_status(message.into());
+            ui.set_operations_restore_ready(restore_ready);
+        }
+    });
+}
+
+fn install_customization_callbacks(ui: &MainWindow, ui_weak: slint::Weak<MainWindow>) {
+    ui.on_operations_import_theme({
+        let ui_weak = ui_weak.clone();
+        move |path| {
+            let ui_weak = ui_weak.clone();
+            let path = PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    let managed = paths::get().root().join("themes").join(profile.as_str());
+                    let manifest = customization::import_theme_manifest(&path, &managed)?;
+                    profiles::set_setting(
+                        &profile,
+                        "theme-manifest-v1",
+                        &serde_json::to_string(&manifest)?,
+                    )
+                    .await?;
+                    Ok::<_, anyhow::Error>(manifest)
+                }
+                .await;
+                match result {
+                    Ok(manifest) => {
+                        let weak = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = weak.upgrade() {
+                                apply_theme_manifest(&ui, &manifest);
+                            }
+                        });
+                        set_operations_status(
+                            ui_weak,
+                            "Theme imported and applied".to_owned(),
+                            false,
+                        );
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_export_theme({
+        let ui_weak = ui_weak.clone();
+        move |path| {
+            let ui_weak = ui_weak.clone();
+            let path = PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    let preset = profiles::setting(&profile, "home-layout-preset")
+                        .await?
+                        .unwrap_or_else(|| "Side Rail".to_owned());
+                    let manifest = profiles::setting(&profile, "theme-manifest-v1")
+                        .await?
+                        .and_then(|value| serde_json::from_str(&value).ok())
+                        .unwrap_or_else(|| customization::default_theme(layout_preset(&preset)));
+                    customization::export_theme_manifest(&path, &manifest)?;
+                    Ok::<_, anyhow::Error>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        set_operations_status(ui_weak, "Theme manifest exported".to_owned(), false)
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_import_player_layout({
+        let ui_weak = ui_weak.clone();
+        move |path| {
+            let ui_weak = ui_weak.clone();
+            let path = PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    let layout = customization::import_player_layout(&path)?;
+                    profiles::set_setting(
+                        &profile,
+                        "player-layout-v1",
+                        &serde_json::to_string(&layout)?,
+                    )
+                    .await?;
+                    Ok::<_, anyhow::Error>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        set_operations_status(ui_weak, "Player layout imported".to_owned(), false)
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_export_player_layout({
+        let ui_weak = ui_weak.clone();
+        move |path| {
+            let ui_weak = ui_weak.clone();
+            let path = PathBuf::from(path.as_str());
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    let layout = profiles::setting(&profile, "player-layout-v1")
+                        .await?
+                        .and_then(|value| serde_json::from_str(&value).ok())
+                        .unwrap_or_else(customization::default_player_layout);
+                    customization::export_player_layout(&path, &layout)?;
+                    Ok::<_, anyhow::Error>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        set_operations_status(ui_weak, "Player layout exported".to_owned(), false)
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+    ui.on_operations_reset_customization({
+        let ui_weak = ui_weak.clone();
+        move || {
+            let ui_weak = ui_weak.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let profile = profiles::active_profile_id().await?;
+                    profiles::delete_setting(&profile, "theme-manifest-v1").await?;
+                    profiles::delete_setting(&profile, "player-layout-v1").await?;
+                    profiles::delete_setting(&profile, "home-layout-preset").await?;
+                    Ok::<_, profiles::ProfileError>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        let weak = ui_weak.clone();
+                        let config = config::load_config();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = weak.upgrade() {
+                                apply_theme(&ui, &config);
+                                ui.set_home_layout_preset("Side Rail".into());
+                            }
+                        });
+                        set_operations_status(
+                            ui_weak,
+                            "Customization reset safely".to_owned(),
+                            false,
+                        );
+                    }
+                    Err(error) => set_operations_status(ui_weak, error.to_string(), false),
+                }
+            });
+        }
+    });
+}
+
+async fn load_profile_customization(ui: &MainWindow, profile: &profiles::ProfileId) {
+    let preset = profiles::setting(profile, "home-layout-preset")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "Side Rail".to_owned());
+    ui.set_home_layout_preset(preset.into());
+    if let Ok(Some(value)) = profiles::setting(profile, "theme-manifest-v1").await
+        && let Ok(manifest) = serde_json::from_str::<customization::ThemeManifestV1>(&value)
+        && manifest.validate().is_ok()
+    {
+        apply_theme_manifest(ui, &manifest);
+    }
+}
+
+async fn load_profile_customization_weak(
+    ui_weak: slint::Weak<MainWindow>,
+    profile: &profiles::ProfileId,
+) {
+    let preset = profiles::setting(profile, "home-layout-preset")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "Side Rail".to_owned());
+    let manifest = profiles::setting(profile, "theme-manifest-v1")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| serde_json::from_str::<customization::ThemeManifestV1>(&value).ok())
+        .filter(|manifest| manifest.validate().is_ok());
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            if let Some(manifest) = manifest {
+                apply_theme_manifest(&ui, &manifest);
+            } else {
+                apply_theme(&ui, &config::load_config());
+                ui.set_home_layout_preset(preset.into());
+            }
+        }
+    });
+}
+
+fn layout_preset(value: &str) -> customization::HomeLayoutPreset {
+    match value {
+        "Top Bar" => customization::HomeLayoutPreset::TopBar,
+        "Minimal" => customization::HomeLayoutPreset::Minimal,
+        "Classic Home" => customization::HomeLayoutPreset::Classic,
+        _ => customization::HomeLayoutPreset::SideRail,
+    }
+}
+
+fn apply_theme_manifest(ui: &MainWindow, manifest: &customization::ThemeManifestV1) {
+    if manifest.validate().is_err() {
+        return;
+    }
+    let theme = ui.global::<Theme>();
+    if let Some(color) = config::parse_color(&manifest.colors.background) {
+        theme.set_background(color);
+    }
+    if let Some(color) = config::parse_color(&manifest.colors.surface) {
+        theme.set_card_background(color);
+        theme.set_modal_background(color);
+    }
+    if let Some(color) = config::parse_color(&manifest.colors.text) {
+        theme.set_text_primary(color);
+        theme.set_primary_foreground(color);
+    }
+    if let Some(color) = config::parse_color(&manifest.colors.accent) {
+        theme.set_accent(color);
+        theme.set_primary_accent(color);
+    }
+    if let Some(color) = config::parse_color(&manifest.colors.focus) {
+        theme.set_focus(color);
+    }
+    theme.set_root_font_size(16.0 * manifest.density);
+    ui.set_home_layout_preset(
+        match manifest.layout {
+            customization::HomeLayoutPreset::SideRail => "Side Rail",
+            customization::HomeLayoutPreset::TopBar => "Top Bar",
+            customization::HomeLayoutPreset::Minimal => "Minimal",
+            customization::HomeLayoutPreset::Classic => "Classic Home",
+        }
+        .into(),
+    );
+}
+
+async fn refresh_profile_projection(ui_weak: slint::Weak<MainWindow>, status: Option<String>) {
+    let profiles = profiles::list_profiles().await;
+    let _ = slint::invoke_from_event_loop(move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        match profiles {
+            Ok(profiles) => {
+                ui.set_local_profiles(slint::ModelRc::new(slint::VecModel::from(profile_items(
+                    &profiles,
+                ))));
+                ui.set_profile_manager_error(status.unwrap_or_default().into());
+            }
+            Err(error) => ui.set_profile_manager_error(error.to_string().into()),
+        }
+    });
+}
+
+fn set_profile_manager_error(ui_weak: slint::Weak<MainWindow>, message: String) {
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_profile_manager_error(message.into());
+        }
+    });
+}
+
+async fn select_startup_profile(
+    ui: &MainWindow,
+    profiles: Vec<profiles::LocalProfile>,
+    active_profile: profiles::ProfileId,
+) -> anyhow::Result<profiles::ProfileId> {
+    let initial_preflight = preflight_profile(&active_profile).await;
+    let items = profile_items(&profiles);
+    ui.set_local_profiles(slint::ModelRc::new(slint::VecModel::from(items)));
+    ui.set_profile_picker_selected_id(active_profile.as_str().into());
+    if profiles.len() <= 1 && initial_preflight.is_ok() {
+        return Ok(active_profile);
+    }
+
+    ui.set_profile_picker_error(
+        initial_preflight
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_show_profile_picker(true);
+
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    ui.on_profile_picker_selected(move |profile_id, pin| {
+        let _ = sender.send((profile_id.to_string(), pin.to_string()));
+    });
+    let limiter = profiles::PinAttemptLimiter::default();
+    while let Some((profile_id, pin)) = receiver.recv().await {
+        let Some(profile) = profiles
+            .iter()
+            .find(|profile| profile.id.as_str() == profile_id)
+        else {
+            ui.set_profile_picker_error("That profile no longer exists".into());
+            continue;
+        };
+        if profile.has_pin
+            && let Err(error) = profiles::verify_pin(&profile.id, &pin, &limiter).await
+        {
+            ui.set_profile_picker_error(error.to_string().into());
+            continue;
+        }
+        match preflight_profile(&profile.id).await {
+            Ok(()) => {
+                profiles::set_active_profile(&profile.id)
+                    .await
+                    .context("could not persist the active local profile")?;
+                ui.set_profile_picker_error("".into());
+                ui.set_show_profile_picker(false);
+                return Ok(profile.id.clone());
+            }
+            Err(error) => {
+                core_env::set_active_profile_scope(active_profile.as_str());
+                ui.set_profile_picker_error(
+                    format!("{error}. Retry or select another profile.").into(),
+                );
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "profile picker closed before a profile was selected"
+    ))
+}
+
+fn profile_items(profiles: &[profiles::LocalProfile]) -> Vec<ProfileItem> {
+    profiles
+        .iter()
+        .map(|profile| ProfileItem {
+            id: profile.id.as_str().into(),
+            name: profile.name.as_str().into(),
+            avatar: profile.avatar.as_deref().unwrap_or_default().into(),
+            role: match profile.role {
+                profiles::ProfileRole::Owner => "Owner",
+                profiles::ProfileRole::Standard => "Standard",
+                profiles::ProfileRole::Kids => "Kids",
+            }
+            .into(),
+            has_pin: profile.has_pin,
+        })
+        .collect()
+}
+
+async fn preflight_profile(profile_id: &profiles::ProfileId) -> anyhow::Result<()> {
+    core_env::set_active_profile_scope(profile_id.as_str());
+    DesktopEnv::get_storage::<stremio_core::types::profile::Profile>(PROFILE_STORAGE_KEY)
+        .await
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 struct StartupStorage {
@@ -692,7 +1957,7 @@ fn sync_tab_from_model(
                 models::board::sync(ui, &continue_watching, &board, &addons, ui_weak, runtime);
             }
         }
-        Tab::Discover => {
+        Tab::Discover | Tab::Movies | Tab::Shows | Tab::Anime | Tab::Kids => {
             crate::models::discover::clear_sync_state();
             if let Some(discover) = runtime.model().ok().map(|model| model.discover.clone()) {
                 models::discover::sync(ui, &discover, ui_weak, runtime, navigation);
@@ -761,5 +2026,6 @@ fn sync_tab_from_model(
                 );
             }
         }
+        Tab::Downloads => {}
     }
 }

@@ -823,10 +823,22 @@ pub fn setup(
         }
     });
     ui.on_settings_change_tidb_api_key({
+        let ui_weak = ui.as_weak();
         move |value| {
-            let mut cfg = crate::config::load_config();
-            cfg.tidb_api_key = value.to_string();
-            crate::config::save_config(&cfg);
+            if value.as_str() == "••••••••••••" {
+                return;
+            }
+            let value = value.to_string();
+            let ui_weak = ui_weak.clone();
+            tokio::spawn(async move {
+                if let Err(error) = crate::secure_settings::set_tidb_api_key(&value).await {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_error_message(error.to_string().into());
+                        }
+                    });
+                }
+            });
         }
     });
     ui.on_settings_change_tidb_show_intro({

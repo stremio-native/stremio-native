@@ -40,6 +40,26 @@ pub struct SubtitleTrack {
     pub codec: Option<String>,
     pub selected: bool,
     pub external: bool,
+    /// `external-filename` from MPV's track list: the URL an external track was
+    /// added from. It is the only handle back to the add-on that supplied it.
+    pub source_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Chapter {
+    pub index: usize,
+    pub title: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HdrMode {
+    #[default]
+    Auto,
+    Passthrough,
+    ToneMap,
+    Disabled,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,6 +80,15 @@ pub struct PlaybackState {
     pub subtitle_tracks: Arc<[SubtitleTrack]>,
     pub active_audio_track: Option<String>,
     pub active_subtitle_track: Option<String>,
+    pub active_secondary_subtitle_track: Option<String>,
+    pub chapters: Arc<[Chapter]>,
+    pub ab_loop_a: Option<f64>,
+    pub ab_loop_b: Option<f64>,
+    pub hdr_mode: HdrMode,
+    pub hdr_content: bool,
+    pub hdr_passthrough_available: bool,
+    pub video_primaries: Option<String>,
+    pub video_transfer: Option<String>,
     pub filename: Option<String>,
     pub file_size: Option<u64>,
     pub file_format: Option<String>,
@@ -87,6 +116,15 @@ impl Default for PlaybackState {
             subtitle_tracks: Arc::from([]),
             active_audio_track: None,
             active_subtitle_track: None,
+            active_secondary_subtitle_track: None,
+            chapters: Arc::from([]),
+            ab_loop_a: None,
+            ab_loop_b: None,
+            hdr_mode: HdrMode::Auto,
+            hdr_content: false,
+            hdr_passthrough_available: true,
+            video_primaries: None,
+            video_transfer: None,
             filename: None,
             file_size: None,
             file_format: None,
@@ -123,6 +161,22 @@ pub enum PlaybackEvent {
         request_id: u64,
         message: String,
     },
+    FrameCaptured {
+        request_id: u64,
+        path: PathBuf,
+    },
+    FrameCaptureFailed {
+        request_id: u64,
+        path: PathBuf,
+        message: String,
+    },
+    ChaptersUpdated(Arc<[Chapter]>),
+    HdrStateChanged {
+        requested: HdrMode,
+        applied: HdrMode,
+        content_hdr: bool,
+        passthrough_available: bool,
+    },
     Warning(String),
     Error(String),
     Shutdown,
@@ -130,7 +184,10 @@ pub enum PlaybackEvent {
 
 #[derive(Clone, Debug)]
 pub enum PlaybackCommand {
-    Load { url: String, start_at: Option<f64> },
+    Load {
+        url: String,
+        start_at: Option<f64>,
+    },
     Stop,
     SetPaused(bool),
     TogglePaused,
@@ -142,14 +199,34 @@ pub enum PlaybackCommand {
     SetVideoScale(u8),
     SetAudioTrack(Option<String>),
     SetSubtitleTrack(Option<String>),
+    SetSecondarySubtitleTrack(Option<String>),
     SetAudioLanguage(String),
     SetSubtitleLanguage(String),
-    AddSubtitle { url: String, title: Option<String> },
+    AddSubtitle {
+        url: String,
+        title: Option<String>,
+        language: Option<String>,
+    },
     SetSubtitleDelay(i64),
     SetSubtitleScale(f64),
     SetSubtitlePosition(f64),
+    SetSecondarySubtitleScale(f64),
+    SetSecondarySubtitlePosition(f64),
     SetAudioDelay(i64),
-    ConfigureVideoShaders { request_id: u64, paths: Vec<String> },
+    SetAbLoop {
+        a: Option<f64>,
+        b: Option<f64>,
+    },
+    CaptureFrame {
+        request_id: u64,
+        path: PathBuf,
+        include_subtitles: bool,
+    },
+    SetHdrMode(HdrMode),
+    ConfigureVideoShaders {
+        request_id: u64,
+        paths: Vec<String>,
+    },
     ScriptMessage(Vec<String>),
     Shutdown,
 }
@@ -229,6 +306,8 @@ impl PlaybackRuntime {
         client.set_option("vd-lavc-dr", "no")?;
         client.set_option("hwdec", hardware_decoding_option(config.hardware_decoding))?;
         client.initialize()?;
+        let (_, _, hdr_result) = apply_hdr_mode(&client, HdrMode::Auto);
+        hdr_result?;
         observe_properties(&client)?;
 
         let (sender, receiver) = mpsc::sync_channel(128);
@@ -317,6 +396,10 @@ fn observe_properties(client: &MpvClient) -> Result<(), MpvError> {
         (17, "audio-codec-name", FORMAT_STRING),
         (18, "hwdec-current", FORMAT_STRING),
         (19, "cache-buffering-state", FORMAT_INT64),
+        (20, "secondary-sid", FORMAT_STRING),
+        (21, "chapter-list", FORMAT_NODE),
+        (22, "video-params/primaries", FORMAT_STRING),
+        (23, "video-params/gamma", FORMAT_STRING),
     ];
     for (id, name, format) in properties {
         client.observe(id, name, format)?;
@@ -414,19 +497,27 @@ fn handle_command(
     let fatal_error = matches!(&command, PlaybackCommand::Load { .. });
     let result = match command {
         PlaybackCommand::Load { url, start_at } => {
+            let hdr_mode = state.hdr_mode;
+            let hdr_passthrough_available = state.hdr_passthrough_available;
             *state = PlaybackState {
                 loading: true,
                 paused: false,
+                hdr_mode,
+                hdr_passthrough_available,
                 ..PlaybackState::default()
             };
             sink(PlaybackEvent::State(Arc::new(state.clone())));
-            match start_at.filter(|time| time.is_finite() && *time > 0.0) {
-                Some(start_at) => {
-                    let options = format!("start={start_at:.3}");
-                    client.command(&["loadfile", &url, "replace", "-1", &options])
-                }
-                None => client.command(&["loadfile", &url, "replace"]),
-            }
+            set_optional_double(client, "ab-loop-a", None)
+                .and_then(|()| set_optional_double(client, "ab-loop-b", None))
+                .and_then(
+                    |()| match start_at.filter(|time| time.is_finite() && *time > 0.0) {
+                        Some(start_at) => {
+                            let options = format!("start={start_at:.3}");
+                            client.command(&["loadfile", &url, "replace", "-1", &options])
+                        }
+                        None => client.command(&["loadfile", &url, "replace"]),
+                    },
+                )
         }
         PlaybackCommand::Stop => {
             client.abort_async_command(ADD_SUBTITLE_COMMAND_REPLY_ID);
@@ -461,15 +552,36 @@ fn handle_command(
             client.set_string("aid", track.as_deref().unwrap_or("no"))
         }
         PlaybackCommand::SetSubtitleTrack(track) => {
-            client.set_string("sid", track.as_deref().unwrap_or("no"))
+            if track.as_ref() == state.active_secondary_subtitle_track.as_ref() {
+                client
+                    .set_string("secondary-sid", "no")
+                    .and_then(|()| client.set_string("sid", track.as_deref().unwrap_or("no")))
+            } else {
+                client.set_string("sid", track.as_deref().unwrap_or("no"))
+            }
+        }
+        PlaybackCommand::SetSecondarySubtitleTrack(track) => {
+            if track.as_ref() == state.active_subtitle_track.as_ref() && track.is_some() {
+                sink(PlaybackEvent::Warning(
+                    "The primary and secondary subtitle tracks must be different".to_owned(),
+                ));
+                Ok(())
+            } else {
+                client.set_string("secondary-sid", track.as_deref().unwrap_or("no"))
+            }
         }
         PlaybackCommand::SetAudioLanguage(language) => client.set_string("alang", &language),
         PlaybackCommand::SetSubtitleLanguage(language) => client.set_string("slang", &language),
-        PlaybackCommand::AddSubtitle { url, title } => {
+        PlaybackCommand::AddSubtitle {
+            url,
+            title,
+            language,
+        } => {
             let title = title.unwrap_or_default();
+            let language = language.unwrap_or_default();
             client.command_async(
                 ADD_SUBTITLE_COMMAND_REPLY_ID,
-                &["sub-add", &url, "auto", &title],
+                &["sub-add", &url, "auto", &title, &language],
             )
         }
         PlaybackCommand::SetSubtitleDelay(milliseconds) => {
@@ -481,8 +593,62 @@ fn handle_command(
         PlaybackCommand::SetSubtitlePosition(position) => {
             client.set_double("sub-pos", position.clamp(0.0, 100.0))
         }
+        PlaybackCommand::SetSecondarySubtitleScale(scale) => {
+            client.set_double("secondary-sub-scale", scale.clamp(0.25, 4.0))
+        }
+        PlaybackCommand::SetSecondarySubtitlePosition(position) => {
+            client.set_double("secondary-sub-pos", position.clamp(0.0, 100.0))
+        }
         PlaybackCommand::SetAudioDelay(milliseconds) => {
             client.set_double("audio-delay", milliseconds as f64 / 1_000.0)
+        }
+        PlaybackCommand::SetAbLoop { a, b } => {
+            if let Err(message) = validate_ab_loop(a, b) {
+                sink(PlaybackEvent::Warning(message.to_owned()));
+                Ok(())
+            } else {
+                set_optional_double(client, "ab-loop-a", a).and_then(|()| {
+                    set_optional_double(client, "ab-loop-b", b).map(|()| {
+                        state.ab_loop_a = a;
+                        state.ab_loop_b = b;
+                        sink(PlaybackEvent::State(Arc::new(state.clone())));
+                    })
+                })
+            }
+        }
+        PlaybackCommand::CaptureFrame {
+            request_id,
+            path,
+            include_subtitles,
+        } => {
+            let path_string = path.to_string_lossy();
+            let flags = if include_subtitles {
+                "subtitles"
+            } else {
+                "video"
+            };
+            match client.command(&["screenshot-to-file", &path_string, flags]) {
+                Ok(()) => sink(PlaybackEvent::FrameCaptured { request_id, path }),
+                Err(error) => sink(PlaybackEvent::FrameCaptureFailed {
+                    request_id,
+                    path,
+                    message: error.to_string(),
+                }),
+            }
+            Ok(())
+        }
+        PlaybackCommand::SetHdrMode(requested) => {
+            let (applied, passthrough_available, result) = apply_hdr_mode(client, requested);
+            state.hdr_mode = applied;
+            state.hdr_passthrough_available = passthrough_available;
+            sink(PlaybackEvent::HdrStateChanged {
+                requested,
+                applied,
+                content_hdr: state.hdr_content,
+                passthrough_available,
+            });
+            sink(PlaybackEvent::State(Arc::new(state.clone())));
+            result
         }
         PlaybackCommand::ConfigureVideoShaders { request_id, paths } => {
             match client.set_string_list("glsl-shaders", &paths) {
@@ -517,6 +683,62 @@ fn handle_command(
         });
     }
     true
+}
+
+fn validate_ab_loop(a: Option<f64>, b: Option<f64>) -> Result<(), &'static str> {
+    if a.is_some_and(|value| !value.is_finite() || value < 0.0)
+        || b.is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err("A/B loop points must be finite, non-negative timestamps");
+    }
+    if let (Some(a), Some(b)) = (a, b)
+        && b - a < 0.25
+    {
+        return Err("Loop point B must be at least 250 ms after point A");
+    }
+    Ok(())
+}
+
+fn set_optional_double(
+    client: &MpvClient,
+    property: &str,
+    value: Option<f64>,
+) -> Result<(), MpvError> {
+    match value {
+        Some(value) => client.set_double(property, value),
+        None => client.set_string(property, "no"),
+    }
+}
+
+fn apply_hdr_mode(client: &MpvClient, requested: HdrMode) -> (HdrMode, bool, Result<(), MpvError>) {
+    let result = configure_hdr_mode(client, requested);
+    if result.is_ok() {
+        return (requested, true, result);
+    }
+    if matches!(requested, HdrMode::Auto | HdrMode::Passthrough) {
+        return (
+            HdrMode::ToneMap,
+            false,
+            configure_hdr_mode(client, HdrMode::ToneMap),
+        );
+    }
+    (requested, false, result)
+}
+
+fn configure_hdr_mode(client: &MpvClient, mode: HdrMode) -> Result<(), MpvError> {
+    let (target_hint, tone_mapping, compute_peak) = hdr_properties(mode);
+    client
+        .set_flag("target-colorspace-hint", target_hint)
+        .and_then(|()| client.set_string("tone-mapping", tone_mapping))
+        .and_then(|()| client.set_flag("hdr-compute-peak", compute_peak))
+}
+
+fn hdr_properties(mode: HdrMode) -> (bool, &'static str, bool) {
+    match mode {
+        HdrMode::Auto | HdrMode::Passthrough => (true, "auto", true),
+        HdrMode::ToneMap => (false, "auto", true),
+        HdrMode::Disabled => (false, "clip", false),
+    }
 }
 
 fn drain_events(
@@ -556,7 +778,19 @@ fn drain_events(
                 sink(PlaybackEvent::State(Arc::new(state.clone())));
             }
             EVENT_PROPERTY_CHANGE => {
-                update_property(event, state);
+                let update = update_property(event, state);
+                match update {
+                    PropertyUpdate::Chapters => {
+                        sink(PlaybackEvent::ChaptersUpdated(state.chapters.clone()));
+                    }
+                    PropertyUpdate::Hdr => sink(PlaybackEvent::HdrStateChanged {
+                        requested: state.hdr_mode,
+                        applied: state.hdr_mode,
+                        content_hdr: state.hdr_content,
+                        passthrough_available: state.hdr_passthrough_available,
+                    }),
+                    PropertyUpdate::StateOnly => {}
+                }
                 sink(PlaybackEvent::State(Arc::new(state.clone())));
             }
             EVENT_CLIENT_MESSAGE if !event.data.is_null() => {
@@ -616,21 +850,36 @@ fn handle_end_file(
     sink(PlaybackEvent::Ended { reason, error });
 }
 
-fn update_property(event: &MpvEvent, state: &mut PlaybackState) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PropertyUpdate {
+    StateOnly,
+    Chapters,
+    Hdr,
+}
+
+fn update_property(event: &MpvEvent, state: &mut PlaybackState) -> PropertyUpdate {
     if event.data.is_null() {
-        return;
+        return PropertyUpdate::StateOnly;
     }
     // SAFETY: PROPERTY_CHANGE data has this layout for the event lifetime.
     let property = unsafe { &*(event.data as *const MpvEventProperty) };
     if property.name.is_null() || property.format == FORMAT_NONE {
-        return;
+        return PropertyUpdate::StateOnly;
     }
     // SAFETY: MPV property names are null-terminated strings.
     let name = unsafe { CStr::from_ptr(property.name) }.to_string_lossy();
     match name.as_ref() {
         "pause" => state.paused = property_flag(property).unwrap_or(state.paused),
         "time-pos" => state.time = property_double(property).unwrap_or(state.time).max(0.0),
-        "duration" => state.duration = property_double(property).unwrap_or(state.duration).max(0.0),
+        "duration" => {
+            state.duration = property_double(property).unwrap_or(state.duration).max(0.0);
+            if !state.chapters.is_empty() {
+                let mut chapters = state.chapters.to_vec();
+                normalize_chapter_ends(&mut chapters, state.duration);
+                state.chapters = chapters.into();
+                return PropertyUpdate::Chapters;
+            }
+        }
         "demuxer-cache-time" => {
             state.buffered_until = property_double(property)
                 .unwrap_or(state.buffered_until)
@@ -644,8 +893,9 @@ fn update_property(event: &MpvEvent, state: &mut PlaybackState) {
         }
         "mute" => state.muted = property_flag(property).unwrap_or(state.muted),
         "speed" => state.speed = property_double(property).unwrap_or(state.speed),
-        "aid" => state.active_audio_track = property_string(property),
-        "sid" => state.active_subtitle_track = property_string(property),
+        "aid" => state.active_audio_track = property_track_id(property),
+        "sid" => state.active_subtitle_track = property_track_id(property),
+        "secondary-sid" => state.active_secondary_subtitle_track = property_track_id(property),
         "filename" => state.filename = property_string(property),
         "file-size" => {
             state.file_size = property_int64(property).and_then(|size| u64::try_from(size).ok())
@@ -660,6 +910,24 @@ fn update_property(event: &MpvEvent, state: &mut PlaybackState) {
                 .unwrap_or(state.cache_buffering_percent)
                 .clamp(0.0, 100.0)
         }
+        "chapter-list" => {
+            if let Some(node) = property_node(property) {
+                let mut chapters = parse_chapters(node);
+                normalize_chapter_ends(&mut chapters, state.duration);
+                state.chapters = chapters.into();
+                return PropertyUpdate::Chapters;
+            }
+        }
+        "video-params/primaries" => {
+            state.video_primaries = property_string(property);
+            update_hdr_content(state);
+            return PropertyUpdate::Hdr;
+        }
+        "video-params/gamma" => {
+            state.video_transfer = property_string(property);
+            update_hdr_content(state);
+            return PropertyUpdate::Hdr;
+        }
         "track-list" => {
             if let Some(node) = property_node(property) {
                 let (audio, subtitles) = parse_tracks(node);
@@ -669,6 +937,24 @@ fn update_property(event: &MpvEvent, state: &mut PlaybackState) {
         }
         _ => {}
     }
+    PropertyUpdate::StateOnly
+}
+
+fn property_track_id(property: &MpvEventProperty) -> Option<String> {
+    property_string(property).filter(|value| value != "no" && value != "auto")
+}
+
+fn update_hdr_content(state: &mut PlaybackState) {
+    let wide_primaries = state.video_primaries.as_deref().is_some_and(|value| {
+        value.eq_ignore_ascii_case("bt.2020") || value.eq_ignore_ascii_case("bt.2020-ncl")
+    });
+    let hdr_transfer = state.video_transfer.as_deref().is_some_and(|value| {
+        value.eq_ignore_ascii_case("pq")
+            || value.eq_ignore_ascii_case("smpte2084")
+            || value.eq_ignore_ascii_case("hlg")
+            || value.eq_ignore_ascii_case("arib-std-b67")
+    });
+    state.hdr_content = wide_primaries && hdr_transfer;
 }
 
 fn property_flag(property: &MpvEventProperty) -> Option<bool> {
@@ -775,6 +1061,7 @@ fn parse_tracks(node: &MpvNode) -> (Vec<AudioTrack>, Vec<SubtitleTrack>) {
         let mut codec = None;
         let mut selected = false;
         let mut external = false;
+        let mut source_url = None;
         for index in 0..len {
             // SAFETY: MPV guarantees both map arrays contain `num` entries.
             let key = unsafe { *keys.add(index) };
@@ -798,6 +1085,7 @@ fn parse_tracks(node: &MpvNode) -> (Vec<AudioTrack>, Vec<SubtitleTrack>) {
                 b"codec" => codec = node_string(value),
                 b"selected" => selected = node_flag(value).unwrap_or(false),
                 b"external" => external = node_flag(value).unwrap_or(false),
+                b"external-filename" => source_url = node_string(value),
                 _ => {}
             }
         }
@@ -818,11 +1106,80 @@ fn parse_tracks(node: &MpvNode) -> (Vec<AudioTrack>, Vec<SubtitleTrack>) {
                 codec,
                 selected,
                 external,
+                source_url,
             }),
             _ => {}
         }
     }
     (audio, subtitles)
+}
+
+fn parse_chapters(node: &MpvNode) -> Vec<Chapter> {
+    let Some(entries) = node_list(node, FORMAT_NODE_ARRAY) else {
+        return Vec::new();
+    };
+    let mut chapters = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(map) = node_map(entry) else {
+            continue;
+        };
+        let Some(values) = (!map.values.is_null()).then_some(map.values) else {
+            continue;
+        };
+        let Some(keys) = (!map.keys.is_null()).then_some(map.keys) else {
+            continue;
+        };
+        let Some(len) = usize::try_from(map.num).ok() else {
+            continue;
+        };
+
+        let mut start = None;
+        let mut title = None;
+        for index in 0..len {
+            // SAFETY: MPV guarantees both map arrays contain `num` entries.
+            let key = unsafe { *keys.add(index) };
+            if key.is_null() {
+                continue;
+            }
+            // SAFETY: MPV map keys are null-terminated and values has the same length.
+            let key = unsafe { CStr::from_ptr(key) }.to_bytes();
+            let value = unsafe { &*values.add(index) };
+            match key {
+                b"time" => start = node_double(value),
+                b"title" => title = node_string(value),
+                _ => {}
+            }
+        }
+        let Some(start) = start.filter(|value| value.is_finite() && *value >= 0.0) else {
+            continue;
+        };
+        let index = chapters.len();
+        chapters.push(Chapter {
+            index,
+            title: title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| format!("Chapter {}", index + 1)),
+            start,
+            end: start,
+        });
+    }
+    chapters.sort_by(|left, right| left.start.total_cmp(&right.start));
+    for (index, chapter) in chapters.iter_mut().enumerate() {
+        chapter.index = index;
+    }
+    chapters
+}
+
+fn normalize_chapter_ends(chapters: &mut [Chapter], duration: f64) {
+    for index in 0..chapters.len() {
+        let start = chapters[index].start;
+        let end = chapters
+            .get(index + 1)
+            .map(|next| next.start)
+            .unwrap_or(duration)
+            .max(start);
+        chapters[index].end = end;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -879,6 +1236,61 @@ fn node_int(node: &MpvNode) -> Option<i64> {
     (node.format == FORMAT_INT64).then_some(unsafe { node.value.int64 })
 }
 
+fn node_double(node: &MpvNode) -> Option<f64> {
+    (node.format == FORMAT_DOUBLE).then_some(unsafe { node.value.double_ })
+}
+
 fn node_flag(node: &MpvNode) -> Option<bool> {
     (node.format == FORMAT_FLAG).then_some(unsafe { node.value.flag != 0 })
+}
+
+#[cfg(test)]
+mod logic_tests {
+    use super::{Chapter, HdrMode, hdr_properties, normalize_chapter_ends, validate_ab_loop};
+
+    #[test]
+    fn validate_ab_loop_should_accept_a_without_b() {
+        assert!(validate_ab_loop(Some(12.0), None).is_ok());
+    }
+
+    #[test]
+    fn validate_ab_loop_should_reject_b_before_minimum_span() {
+        assert_eq!(
+            validate_ab_loop(Some(12.0), Some(12.2)),
+            Err("Loop point B must be at least 250 ms after point A")
+        );
+    }
+
+    #[test]
+    fn normalize_chapter_ends_should_use_next_start_and_duration() {
+        let mut chapters = vec![
+            Chapter {
+                index: 0,
+                title: "Intro".to_owned(),
+                start: 0.0,
+                end: 0.0,
+            },
+            Chapter {
+                index: 1,
+                title: "Story".to_owned(),
+                start: 90.0,
+                end: 90.0,
+            },
+        ];
+
+        normalize_chapter_ends(&mut chapters, 3_600.0);
+
+        assert_eq!(
+            chapters
+                .iter()
+                .map(|chapter| chapter.end)
+                .collect::<Vec<_>>(),
+            vec![90.0, 3_600.0]
+        );
+    }
+
+    #[test]
+    fn hdr_properties_should_disable_passthrough_for_tone_mapping() {
+        assert_eq!(hdr_properties(HdrMode::ToneMap), (false, "auto", true));
+    }
 }

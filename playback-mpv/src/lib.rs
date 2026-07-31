@@ -13,8 +13,8 @@ mod render;
 mod thumbnail;
 
 pub use actor::{
-    AudioTrack, EndReason, PlaybackCommand, PlaybackController, PlaybackEvent, PlaybackRuntime,
-    PlaybackState, PlayerConfig, SubtitleTrack,
+    AudioTrack, Chapter, EndReason, HdrMode, PlaybackCommand, PlaybackController, PlaybackEvent,
+    PlaybackRuntime, PlaybackState, PlayerConfig, SubtitleTrack,
 };
 pub use ffi::{ApiVersion, HEADER_CLIENT_API_VERSION, MpvError};
 pub use render::{

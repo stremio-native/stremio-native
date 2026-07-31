@@ -17,7 +17,7 @@ export component EventModal inherits Rectangle {
     callback action-requested(string, string);
 
     visible: root.open;
-    background: Theme.background-dark-40;
+    background: transparent;
 
     close-layer := TouchArea {
         enabled: root.open;

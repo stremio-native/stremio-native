@@ -45,6 +45,13 @@ pub fn setup(
 
     let ui_weak = ui.as_weak();
     ui.window().on_close_requested(move || {
+        if let Some(ui) = ui_weak.upgrade()
+            && ui.get_player_pip_active()
+        {
+            tracing::info!("close requested while picture-in-picture is active; restoring window");
+            ui.invoke_player_toggle_pip();
+            return CloseRequestResponse::KeepWindowShown;
+        }
         let quit_on_close = ui_weak
             .upgrade()
             .is_some_and(|ui| ui.get_settings_quit_on_close());

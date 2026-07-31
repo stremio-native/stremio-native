@@ -1,0 +1,84 @@
+import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { PillButton } from "button.slint";
+import { SelectField } from "select.slint";
+import { SettingsOption } from "settings_option.slint";
+
+export component IntegrationsManager inherits VerticalLayout {
+    in property <length> unit: 16px;
+    in property <[string]> configured: [];
+    in property <string> status: "";
+    in-out property <string> provider: "Real-Debrid";
+    in-out property <bool> provider-open: false;
+    in-out property <string> secret: "";
+    in-out property <string> endpoint: "";
+    in-out property <string> chat-id: "";
+    callback configure(string, string, string, string);
+    callback disconnect(string);
+    callback close;
+
+    private property <bool> notification: root.provider == "Webhook" || root.provider == "Telegram";
+    spacing: 0;
+    width: 100%;
+
+    for item in root.configured : SettingsOption {
+        unit: root.unit;
+        label: item;
+        description: @tr("Connected integration provider.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Disconnect");
+            outlined: true;
+            clicked => { root.disconnect(item); }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Add Integration");
+        description: @tr("Select Debrid, metadata, or notification provider.");
+        SelectField {
+            width: 100%;
+            field-width: 16 * root.unit;
+            unit: root.unit;
+            value: root.provider;
+            options: ["Real-Debrid", "AllDebrid", "Premiumize", "Debrid-Link", "TorBox", "TMDB", "OMDb", "Fanart.tv", "RPDB", "Webhook", "Telegram"];
+            open: root.provider-open;
+            toggle => { root.provider-open = !root.provider-open; }
+            selected(value) => { root.provider = value; root.provider-open = false; root.secret = ""; }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: root.notification ? (root.provider == "Telegram" ? @tr("Telegram Chat ID") : @tr("Webhook Endpoint")) : @tr("API Key or Secret Token");
+        description: @tr("Provider credentials stored securely in OS vault.");
+        LineEdit {
+            width: 16 * root.unit;
+            height: 3.5 * root.unit;
+            text <=> root.secret;
+            input-type: InputType.password;
+            placeholder-text: @tr("Enter API key");
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Connect Provider");
+        description: root.status != "" ? root.status : @tr("Authenticate and verify integration credentials.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Connect and test");
+            outlined: true;
+            enabled: root.secret != "" || (root.provider == "Webhook" && root.endpoint != "");
+            clicked => {
+                root.configure(root.provider, root.secret, root.endpoint, root.chat-id);
+                root.secret = "";
+                root.endpoint = "";
+                root.chat-id = "";
+            }
+        }
+    }
+}

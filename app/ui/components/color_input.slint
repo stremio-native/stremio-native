@@ -1,8 +1,7 @@
 import { Theme } from "../theme.slint";
 import { ButtonSurface } from "button.slint";
 
-// Swatch input from the official ColorInput. The picker remains a separate
-// primitive so callers can compose it inside any modal implementation.
+// Swatch input – opens the color picker modal when clicked.
 export component ColorInput inherits ButtonSurface {
     in property <length> unit: Theme.root-font-size;
     in property <color> value: #ffffffff;
@@ -29,104 +28,101 @@ export component ColorInput inherits ButtonSurface {
     }
 }
 
-// Native HSVA editor used in place of the web-only a-color-picker dependency.
-// It preserves the official alpha-capable color model for future theme editing.
+// HSVA color picker: 2D saturation/value canvas, hue strip, alpha strip, preset swatches.
 export component ColorPicker inherits Rectangle {
     in property <length> unit: Theme.root-font-size;
     in-out property <color> value: #ffffffff;
-    in-out property <float> hue: root.value.to-hsv().hue;
-    in-out property <float> saturation: root.value.to-hsv().saturation;
-    in-out property <float> brightness: root.value.to-hsv().value;
-    in-out property <float> alpha: root.value.to-hsv().alpha;
+    in-out property <float> hue: 0;
+    in-out property <float> sat: 1;
+    in-out property <float> val: 1;
+    in-out property <float> alpha: 1;
     callback input(color);
 
-    width: 26 * root.unit;
-    height: 20 * root.unit;
     background: transparent;
 
     public function commit() {
-        root.value = hsv(root.hue, root.saturation, root.brightness, root.alpha);
+        root.value = hsv(root.hue, root.sat, root.val, root.alpha);
         root.input(root.value);
     }
 
-    saturation-field := Rectangle {
+    // ── Saturation / Value canvas ──────────────────────────────────
+    sv-field := Rectangle {
         x: 0px;
         y: 0px;
         width: parent.width;
-        height: 14 * root.unit;
+        height: parent.height - 7.5 * root.unit;
+        border-radius: 0.5 * root.unit;
         border-width: 1px;
-        border-color: Theme.background;
-        background: @linear-gradient(
-            90deg,
-            #ffffff 0%,
-            hsv(root.hue, 1, 1) 100%
-        );
+        border-color: Theme.primary-foreground.with-alpha(0.15);
         clip: true;
 
+        // White → hue-colour horizontal gradient
         Rectangle {
             width: parent.width;
             height: parent.height;
-            background: @linear-gradient(
-                180deg,
-                #00000000 0%,
-                #000000 100%
+            background: @linear-gradient(90deg,
+                #ffffff 0%,
+                hsv(root.hue, 1, 1) 100%
             );
         }
-
+        // Transparent → black vertical gradient
         Rectangle {
-            x: root.saturation * parent.width - self.width / 2;
-            y: (1 - root.brightness) * parent.height - self.height / 2;
-            width: root.unit;
-            height: root.unit;
+            width: parent.width;
+            height: parent.height;
+            background: @linear-gradient(180deg,
+                #00000000 0%,
+                #000000ff 100%
+            );
+        }
+        // Selector circle
+        Rectangle {
+            x: root.sat * (parent.width - self.width);
+            y: (1 - root.val) * (parent.height - self.height);
+            width: 1.2 * root.unit;
+            height: 1.2 * root.unit;
             border-radius: self.width / 2;
             border-width: 2px;
-            border-color: Theme.primary-foreground;
+            border-color: root.val > 0.5 ? #000000 : #ffffff;
             background: transparent;
-            drop-shadow-blur: 0.2 * root.unit;
-            drop-shadow-color: Theme.background;
         }
-
         TouchArea {
             mouse-cursor: MouseCursor.crosshair;
             moved => {
                 if (self.pressed) {
-                    root.saturation = max(0, min(1, self.mouse-x / parent.width));
-                    root.brightness = max(0, min(1, 1 - self.mouse-y / parent.height));
+                    root.sat = max(0, min(1, self.mouse-x / parent.width));
+                    root.val = max(0, min(1, 1 - self.mouse-y / parent.height));
                     root.commit();
                 }
             }
             clicked => {
-                root.saturation = max(0, min(1, self.mouse-x / parent.width));
-                root.brightness = max(0, min(1, 1 - self.mouse-y / parent.height));
+                root.sat = max(0, min(1, self.mouse-x / parent.width));
+                root.val = max(0, min(1, 1 - self.mouse-y / parent.height));
                 root.commit();
             }
         }
     }
 
-    hue-field := Rectangle {
+    // ── Hue slider ─────────────────────────────────────────────────
+    hue-rail := Rectangle {
         x: 0px;
-        y: 15.5 * root.unit;
+        y: parent.height - 6 * root.unit;
         width: parent.width;
-        height: 1.5 * root.unit;
-        border-radius: 0.75 * root.unit;
+        height: 1.4 * root.unit;
+        border-radius: self.height / 2;
         border-width: 1px;
-        border-color: Theme.background;
-        background: @linear-gradient(
-            90deg,
-            #ff0000 0%,
-            #ffff00 16.667%,
-            #00ff00 33.333%,
-            #00ffff 50%,
-            #0000ff 66.667%,
-            #ff00ff 83.333%,
+        border-color: Theme.primary-foreground.with-alpha(0.15);
+        background: @linear-gradient(90deg,
+            #ff0000 0%,     #ffff00 16.667%,
+            #00ff00 33.333%, #00ffff 50%,
+            #0000ff 66.667%, #ff00ff 83.333%,
             #ff0000 100%
         );
 
         Rectangle {
-            x: (root.hue / 360) * parent.width - self.width / 2;
-            y: -0.25 * root.unit;
-            width: 0.75 * root.unit;
-            height: 2 * root.unit;
+            x: (root.hue / 360) * (parent.width - self.width);
+            y: (parent.height - self.height) / 2;
+            width: 0.9 * root.unit;
+            height: 1.8 * root.unit;
             border-radius: self.width / 2;
             border-width: 2px;
             border-color: Theme.primary-foreground;
@@ -148,25 +144,25 @@ export component ColorPicker inherits Rectangle {
         }
     }
 
-    alpha-field := Rectangle {
+    // ── Alpha slider ───────────────────────────────────────────────
+    alpha-rail := Rectangle {
         x: 0px;
-        y: 18.5 * root.unit;
+        y: parent.height - 3.8 * root.unit;
         width: parent.width;
-        height: 1.5 * root.unit;
-        border-radius: 0.75 * root.unit;
+        height: 1.4 * root.unit;
+        border-radius: self.height / 2;
         border-width: 1px;
-        border-color: Theme.background;
-        background: @linear-gradient(
-            90deg,
-            hsv(root.hue, root.saturation, root.brightness, 0) 0%,
-            hsv(root.hue, root.saturation, root.brightness, 1) 100%
+        border-color: Theme.primary-foreground.with-alpha(0.15);
+        background: @linear-gradient(90deg,
+            hsv(root.hue, root.sat, root.val, 0) 0%,
+            hsv(root.hue, root.sat, root.val, 1) 100%
         );
 
         Rectangle {
-            x: root.alpha * parent.width - self.width / 2;
-            y: -0.25 * root.unit;
-            width: 0.75 * root.unit;
-            height: 2 * root.unit;
+            x: root.alpha * (parent.width - self.width);
+            y: (parent.height - self.height) / 2;
+            width: 0.9 * root.unit;
+            height: 1.8 * root.unit;
             border-radius: self.width / 2;
             border-width: 2px;
             border-color: Theme.primary-foreground;
@@ -184,6 +180,45 @@ export component ColorPicker inherits Rectangle {
             clicked => {
                 root.alpha = max(0, min(1, self.mouse-x / parent.width));
                 root.commit();
+            }
+        }
+    }
+
+    // ── Preset swatches ────────────────────────────────────────────
+    HorizontalLayout {
+        x: 0px;
+        y: parent.height - 1.8 * root.unit;
+        width: parent.width;
+        height: 1.8 * root.unit;
+        spacing: 0.35 * root.unit;
+
+        for pc in [
+            #ffffffff, #000000ff, #00000000, #ffff00ff, #00ffffff,
+            #00ff00ff, #ff00ffff, #ff0000ff, #0000ffff, #00000080
+        ] : ButtonSurface {
+            horizontal-stretch: 1;
+            height: 1.8 * root.unit;
+            border-radius: 0.35 * root.unit;
+            background: pc;
+            border-width: 1px;
+            border-color: Theme.primary-foreground.with-alpha(0.25);
+            clicked => {
+                root.value = pc;
+                root.hue = pc.to-hsv().hue;
+                root.sat = pc.to-hsv().saturation;
+                root.val = pc.to-hsv().value;
+                root.alpha = pc.to-hsv().alpha;
+                root.input(root.value);
+            }
+
+            if (pc.alpha == 0) : Text {
+                width: parent.width;
+                height: parent.height;
+                text: "Ø";
+                color: Theme.primary-foreground;
+                font-size: 0.75 * root.unit;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
     }

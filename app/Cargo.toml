@@ -1,6 +1,6 @@
 [package]
 name = "stremio-native"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 license = "GPL-3.0-only"
 
@@ -23,19 +23,28 @@ tokio-util = { workspace = true, features = ["rt"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 futures.workspace = true
+fluent-bundle.workspace = true
 anyhow.workspace = true
+argon2.workspace = true
+async-trait.workspace = true
 blake3.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 tracing-chrome.workspace = true
 url.workspace = true
+unic-langid.workspace = true
+walkdir.workspace = true
 http.workspace = true
 reqwest = { workspace = true, features = ["rustls", "charset", "http2"] }
+rand.workspace = true
 image = { workspace = true, default-features = false, features = ["webp", "png", "jpeg"] }
 moka = { workspace = true, features = ["sync", "future"] }
+notify.workspace = true
 turso = { workspace = true }
 chrono = { workspace = true }
+chacha20poly1305.workspace = true
 mimalloc = "0.1.52"
 arboard = "3.6.1"
 hex = "0.4.3"
@@ -47,6 +56,10 @@ sys-locale.workspace = true
 uuid = { version = "1.24.0", features = ["v4"] }
 discord-rich-presence = { workspace = true }
 dirs.workspace = true
+credential-store = { path = "../credential-store" }
+debrid = { path = "../debrid" }
+media-integrations = { path = "../media-integrations" }
+stream-ranking = { path = "../stream-ranking" }
 souvlaki = { workspace = true }
 keepawake = { workspace = true }
 rodio.workspace = true

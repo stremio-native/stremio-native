@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 use stremio_core::{
+    constants::PROFILE_STORAGE_KEY,
     models::{
         addon_details::{AddonDetails, Selected as AddonDetailsSelected},
         catalog_with_filters::CatalogWithFilters,
@@ -19,11 +20,58 @@ use stremio_core::{
         Env, Runtime, RuntimeAction,
         msg::{Action, ActionCatalogWithFilters, ActionCtx, ActionLoad},
     },
-    types::addon::Descriptor,
+    types::{
+        addon::Descriptor,
+        api::{APIRequest, APIResult, SuccessResponse, fetch_api},
+    },
 };
 use url::Url;
 
 static LAST_SYNC_STATE: OnceLock<Mutex<Option<SyncFingerprint>>> = OnceLock::new();
+static PENDING_ADDON_ORDER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static ADDON_REORDER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+const ADDON_ORDER_STORAGE_KEY: &str = "stremio-native-addon-order";
+
+fn move_item<T>(items: &mut Vec<T>, from: i32, to: i32) -> bool {
+    let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else {
+        return false;
+    };
+    if from == to || from >= items.len() || to >= items.len() {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
+fn apply_transport_order(addons: &mut [Descriptor], order: &[String]) -> bool {
+    if addons.len() != order.len() {
+        return false;
+    }
+    let ranks = order
+        .iter()
+        .enumerate()
+        .map(|(index, transport_url)| (transport_url.as_str(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    if addons
+        .iter()
+        .any(|addon| !ranks.contains_key(addon.transport_url.as_str()))
+    {
+        return false;
+    }
+    addons.sort_by_key(|addon| ranks[addon.transport_url.as_str()]);
+    true
+}
+
+fn ordered_installed(addons: &[Descriptor]) -> Vec<Descriptor> {
+    let mut ordered = addons.to_vec();
+    let pending = PENDING_ADDON_ORDER
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    apply_transport_order(&mut ordered, &pending);
+    ordered
+}
 
 fn hash_addon(fingerprint: &mut Fingerprint, descriptor: &Descriptor, installed: bool) {
     fingerprint.bool(installed);
@@ -144,6 +192,37 @@ pub fn setup(
 ) {
     let ui_weak = ui.as_weak();
 
+    {
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        tokio::spawn(async move {
+            let Ok(Some(order)) =
+                DesktopEnv::get_storage::<Vec<String>>(ADDON_ORDER_STORAGE_KEY).await
+            else {
+                return;
+            };
+            *PENDING_ADDON_ORDER
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = order;
+
+            let Some((remote_addons, installed)) = runtime.model().ok().map(|model| {
+                (
+                    model.remote_addons.clone(),
+                    model.ctx.profile.addons.clone(),
+                )
+            }) else {
+                return;
+            };
+            let ui_weak_for_sync = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    sync(&ui, &remote_addons, &installed, &ui_weak_for_sync, &runtime);
+                }
+            });
+        });
+    }
+
     ui.on_addons_load_next_page({
         let runtime = runtime.clone();
         move || {
@@ -260,6 +339,114 @@ pub fn setup(
                         field: None,
                         action: Action::Ctx(ActionCtx::UninstallAddon(descriptor)),
                     });
+                }
+            });
+        }
+    });
+
+    ui.on_reorder_addon({
+        let runtime = runtime.clone();
+        let ui_weak = ui_weak.clone();
+        move |from, to| {
+            let Some((mut profile, remote_addons)) = runtime
+                .model()
+                .ok()
+                .map(|model| (model.ctx.profile.clone(), model.remote_addons.clone()))
+            else {
+                return;
+            };
+
+            {
+                let mut pending = PENDING_ADDON_ORDER
+                    .get_or_init(|| Mutex::new(Vec::new()))
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                apply_transport_order(&mut profile.addons, &pending);
+                if !move_item(&mut profile.addons, from, to) {
+                    return;
+                }
+                *pending = profile
+                    .addons
+                    .iter()
+                    .map(|addon| addon.transport_url.to_string())
+                    .collect();
+            }
+
+            if let Some(ui) = ui_weak.upgrade() {
+                sync(&ui, &remote_addons, &profile.addons, &ui_weak, &runtime);
+            }
+
+            let runtime = runtime.clone();
+            let ui_weak = ui_weak.clone();
+            tokio::spawn(async move {
+                let _reorder_guard = ADDON_REORDER_LOCK
+                    .get_or_init(|| tokio::sync::Mutex::new(()))
+                    .lock()
+                    .await;
+
+                let order = profile
+                    .addons
+                    .iter()
+                    .map(|addon| addon.transport_url.to_string())
+                    .collect::<Vec<_>>();
+                if let Err(error) =
+                    DesktopEnv::set_storage(ADDON_ORDER_STORAGE_KEY, Some(&order)).await
+                {
+                    tracing::error!(%error, "failed to persist addon order");
+                }
+
+                let Some(auth_key) = profile.auth_key().cloned() else {
+                    let stored_profile = DesktopEnv::get_storage::<
+                        stremio_core::types::profile::Profile,
+                    >(PROFILE_STORAGE_KEY)
+                    .await;
+                    let mut stored_profile = match stored_profile {
+                        Ok(Some(stored_profile)) => stored_profile,
+                        Ok(None) => profile,
+                        Err(error) => {
+                            tracing::error!(%error, "failed to read the local addon profile");
+                            return;
+                        }
+                    };
+                    apply_transport_order(&mut stored_profile.addons, &order);
+                    if let Err(error) =
+                        DesktopEnv::set_storage(PROFILE_STORAGE_KEY, Some(&stored_profile)).await
+                    {
+                        tracing::error!(%error, "failed to persist the local addon profile");
+                    }
+                    return;
+                };
+                let request = APIRequest::AddonCollectionSet {
+                    auth_key,
+                    addons: profile.addons,
+                };
+                match fetch_api::<DesktopEnv, _, _, SuccessResponse>(&request).await {
+                    Ok(APIResult::Ok(_)) => {
+                        runtime.dispatch(RuntimeAction {
+                            field: None,
+                            action: Action::Ctx(ActionCtx::PullAddonsFromAPI),
+                        });
+                    }
+                    Ok(APIResult::Err(error)) => {
+                        tracing::error!(?error, "addon order was rejected by the API");
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_error_message(
+                                    "Could not sync the new addon order to your account.".into(),
+                                );
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "failed to sync addon order");
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_error_message(
+                                    "Could not sync the new addon order to your account.".into(),
+                                );
+                            }
+                        });
+                    }
                 }
             });
         }
@@ -406,6 +593,7 @@ pub fn sync(
     ui_weak: &slint::Weak<MainWindow>,
     _runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
 ) {
+    let installed = ordered_installed(installed);
     let pagination_identity = remote_addons
         .selectable
         .next_page
@@ -426,7 +614,7 @@ pub fn sync(
     let query = ui.get_addons_search_query().trim().to_lowercase();
     let mut fingerprint = Fingerprint::new();
     fingerprint.str(&query);
-    for addon in installed {
+    for addon in &installed {
         hash_addon(&mut fingerprint, addon, true);
     }
     for page in &remote_addons.catalog {
@@ -480,7 +668,7 @@ pub fn sync(
             .collect::<HashSet<_>>();
 
         // 1. Add all currently installed addons
-        for addon in installed {
+        for addon in &installed {
             if matches_query(addon) {
                 slint_addons.push(project_addon(addon, true, ui_weak));
             }
@@ -504,4 +692,25 @@ pub fn sync(
 
     let addons_model = slint::VecModel::from(slint_addons);
     ui.set_addons_list(slint::ModelRc::new(addons_model));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::move_item;
+
+    #[test]
+    fn move_item_places_the_source_at_the_requested_index() {
+        let mut items = vec!["one", "two", "three", "four"];
+
+        move_item(&mut items, 0, 2);
+
+        assert_eq!(items, vec!["two", "three", "one", "four"]);
+    }
+
+    #[test]
+    fn move_item_rejects_an_out_of_bounds_target() {
+        let mut items = vec![1, 2, 3];
+
+        assert!(!move_item(&mut items, 1, 3));
+    }
 }

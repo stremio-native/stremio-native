@@ -199,6 +199,7 @@ component OptionsSection inherits VerticalLayout {
         enabled: !root.loading;
         show-icon: true;
         icon: root.facebook-icon;
+        icon-source: @image-url("../assets/images/icons/facebook.svg");
         surface-color: Theme.facebook;
         hover-color: transparent;
         outline-color: Theme.facebook;
@@ -215,6 +216,7 @@ component OptionsSection inherits VerticalLayout {
         enabled: !root.loading;
         show-icon: true;
         icon: root.apple-icon;
+        icon-source: @image-url("../assets/images/icons/macos.svg");
         surface-color: Theme.text-primary;
         hover-color: transparent;
         outline-color: Theme.text-primary;
@@ -421,7 +423,7 @@ export component AuthPage inherits Rectangle {
     }
 
     if (root.reset-open) : Rectangle {
-        background: #00000066;
+        background: transparent;
 
         TouchArea { clicked => { } }
 
@@ -524,7 +526,7 @@ export component AuthPage inherits Rectangle {
     }
 
     if (root.loading) : Rectangle {
-        background: #00000066;
+        background: transparent;
 
         Rectangle {
             width: 16 * root.unit;

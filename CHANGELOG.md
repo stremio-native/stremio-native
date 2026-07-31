@@ -2,6 +2,50 @@
 
 This file records notable changes to Stremio Native relative to the initial source snapshot.
 
+## 1.0.5 - 2026-07-31
+
+### Native player tools and recovery
+
+- Added picture-in-picture using the existing Slint/Winit window, including compact always-on-top presentation, player controls, close interception, and restoration of the previous window state.
+- Added A/B repeat markers and validation, episode-aware sleep timers, subtitle-inclusive PNG frame capture with reveal-in-folder support, and Auto, Passthrough, Tone Map, and Disabled HDR modes.
+- Added independent primary and secondary subtitle selection with conflict prevention and secondary position/scale controls.
+- Added embedded chapter projection and deterministic merging with TheIntroDB intro, recap, credits, and outro segments.
+- Added generation-guarded playback recovery that retries the same failed source once, resumes VOD near the last stable position, returns live streams to the live edge, and never selects another stream automatically.
+- Added an in-player stream picker that preserves the current media context, playback position, pause state, and subtitle preferences when changing source.
+- Replaced fixed player-key dispatch with typed, remappable Winit hotkeys supporting modifiers, hold/release actions, reserved-combination checks, conflict feedback, and input-focus suppression.
+
+### Profiles, credentials, and localization
+
+- Added transactional schema migrations for local profiles, profile-scoped settings and Core storage, integrations, downloads, and local-media indexes, with a timestamped database backup before the first migration and legacy tables retained for rollback.
+- Added Owner, Standard, and Kids profiles, Argon2id PIN hashing, failed-attempt throttling, parental decisions, startup profile selection, profile management, and live profile switching without restarting the process.
+- Added a platform credential-store abstraction backed by Windows Credential Manager and Linux Secret Service, with no plaintext SQLite fallback.
+- Moved Stremio authentication keys behind a vault sentinel during Core storage reads and writes, and added vault-backed storage for integration secrets and signed download sources.
+- Added Fluent-based native localization resources for English, Portuguese, and Arabic, including English fallback, locale-aware formatting helpers, pluralization, and RTL layout signaling.
+
+### Streams, debrid, and metadata
+
+- Added deterministic offline stream parsing and Smart, Quality, Smallest, Seeders, and Original ranking modes with positive/negative score explanations and recoverable filtering for suspicious or fake results.
+- Added typed Real-Debrid, AllDebrid, Premiumize, Debrid-Link, and TorBox integrations with vault-only credentials, connection/account checks, bounded availability requests, timeouts, and short-lived caching.
+- Added incremental metadata-provider interfaces for TMDB, OMDb, Fanart.tv, RPDB, Kitsu, AniZip, and Trakt, with provider attribution and region-aware watch-provider enrichment that cannot block canonical Stremio metadata.
+- Added a compatible community-addon adapter with trending/rating ordering, language and type filters, pagination, manifest URL validation, caching, and Owner-PIN gating for adult addons.
+- Added Movies, Shows, Anime, and Kids navigation entries as native discovery views while retaining Stremio metadata as the canonical source.
+
+### Downloads and local media
+
+- Replaced browser-only download actions with a native, profile-scoped manager supporting queued, resolving, downloading, paused, completed, failed, and cancelled jobs.
+- Added HTTP Range resume, `.part` recovery, atomic completion, two-job concurrency, bandwidth limits, vault-backed source data, restart recovery, collision-safe filenames, and subtitle sidecars.
+- Added a Downloads room with pause, resume, retry, cancel, play, refresh, and reveal actions; completed media is never deleted implicitly.
+- Added device-global local-library roots with recursive scanning and filesystem watching, filename/NFO movie and episode parsing, lightweight fingerprints, move/duplicate detection, external subtitle discovery, repair tools, and direct libmpv playback.
+
+### Customization, backup, and operations
+
+- Added versioned native theme and player-layout manifests with Side Rail, Top Bar, Minimal, and Classic presets, validated fonts/images, managed profile assets, mandatory player controls, safe import/export, and reset paths.
+- Added logical backup and restore with manifest validation, restore preview, a safety backup before apply, default secret exclusion, and optional Argon2id/XChaCha20-Poly1305 encrypted secret export.
+- Added vault-backed webhook and Telegram notification settings, regional and bandwidth controls, an opt-in connection speed test, and a redacted local diagnostic ZIP with a prefilled issue link.
+- Added native profile, integrations, operations, hotkey-editor, Downloads, and local-library Slint surfaces while preserving the existing Stremio visual system.
+
+
+
 ## 1.0.4 - 2026-07-25
 
 ### Downloads

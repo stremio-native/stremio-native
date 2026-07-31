@@ -1,6 +1,8 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -10,9 +12,9 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use playback_mpv::{
-    EndReason, PlaybackCommand, PlaybackController, PlaybackEvent, PlaybackRuntime, PlaybackState,
-    PlayerConfig, RenderContext, RenderOutcome, RenderSource, ThumbnailConfig, ThumbnailRuntime,
-    ThumbnailSource,
+    EndReason, HdrMode, PlaybackCommand, PlaybackController, PlaybackEvent, PlaybackRuntime,
+    PlaybackState, PlayerConfig, RenderContext, RenderOutcome, RenderSource, ThumbnailConfig,
+    ThumbnailRuntime, ThumbnailSource,
 };
 use slint::{
     BorrowedOpenGLTextureBuilder, BorrowedOpenGLTextureOrigin, ComponentHandle, ModelRc,
@@ -29,7 +31,7 @@ use stremio_core::{
     },
     types::{
         addon::ResourcePath,
-        resource::StreamSource,
+        resource::{StreamSource, Subtitles},
         streaming_server::StatisticsRequest,
         streams::{AudioTrack, StreamItemState, StreamsBucket, StreamsItemKey, SubtitleTrack},
     },
@@ -95,7 +97,10 @@ struct PlaybackEventInbox {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaybackEvent, PlaybackEventInbox, PlaybackState};
+    use super::{
+        ExternalSubtitle, PlaybackEvent, PlaybackEventInbox, PlaybackState, SessionState,
+        UNKNOWN_SUBTITLE_ORIGIN, addon_origin, subtitle_track_label,
+    };
     use std::sync::Arc;
 
     fn state_at(time: f64) -> PlaybackEvent {
@@ -139,6 +144,95 @@ mod tests {
         ));
         assert!(matches!(inbox.recv().await, Some(PlaybackEvent::Shutdown)));
         assert!(inbox.recv().await.is_none());
+    }
+
+    fn external_subtitle(url: &str) -> ExternalSubtitle {
+        ExternalSubtitle {
+            url: url.to_owned(),
+            title: Some(url.to_owned()),
+            language: Some("eng".to_owned()),
+            origin: "OpenSubtitles v3".to_owned(),
+        }
+    }
+
+    fn subtitle_track(title: Option<&str>, language: Option<&str>) -> playback_mpv::SubtitleTrack {
+        playback_mpv::SubtitleTrack {
+            id: "1".to_owned(),
+            title: title.map(ToOwned::to_owned),
+            language: language.map(ToOwned::to_owned),
+            codec: None,
+            selected: false,
+            external: true,
+            source_url: None,
+        }
+    }
+
+    #[test]
+    fn a_url_label_falls_back_to_the_language_name() {
+        assert_eq!(
+            subtitle_track_label(&subtitle_track(
+                Some("https://opensubtitles.example/abc.srt"),
+                Some("eng"),
+            )),
+            "English"
+        );
+    }
+
+    #[test]
+    fn a_real_label_is_kept_verbatim() {
+        assert_eq!(
+            subtitle_track_label(&subtitle_track(Some("English (SDH)"), Some("eng"))),
+            "English (SDH)"
+        );
+    }
+
+    #[test]
+    fn a_blank_label_falls_back_to_the_language_name() {
+        assert_eq!(
+            subtitle_track_label(&subtitle_track(Some("   "), Some("spa"))),
+            "Spanish"
+        );
+    }
+
+    #[test]
+    fn an_unknown_addon_transport_gets_a_neutral_origin() {
+        let addons = [(
+            "https://opensubtitles.example/manifest.json".to_owned(),
+            "OpenSubtitles v3".to_owned(),
+        )];
+
+        assert_eq!(
+            addon_origin("https://opensubtitles.example/manifest.json", &addons),
+            "OpenSubtitles v3"
+        );
+        assert_eq!(
+            addon_origin("https://removed.example/manifest.json", &addons),
+            UNKNOWN_SUBTITLE_ORIGIN
+        );
+    }
+
+    #[test]
+    fn subtitles_wait_for_the_media_and_are_only_added_once_per_load() {
+        let mut session = SessionState::default();
+        session.register_subtitles([
+            external_subtitle("https://example.com/english.srt"),
+            external_subtitle("https://example.com/english.srt"),
+        ]);
+
+        assert!(session.take_pending_subtitles().is_empty());
+        assert_eq!(session.on_file_loaded().len(), 1);
+        assert!(session.take_pending_subtitles().is_empty());
+    }
+
+    #[test]
+    fn subtitles_are_added_again_after_a_same_source_recovery() {
+        let mut session = SessionState::default();
+        session.register_subtitles([external_subtitle("https://example.com/addon-subtitle.srt")]);
+
+        assert_eq!(session.on_file_loaded().len(), 1);
+        session.begin_subtitle_reload();
+        assert!(session.take_pending_subtitles().is_empty());
+        assert_eq!(session.on_file_loaded().len(), 1);
     }
 }
 
@@ -208,10 +302,88 @@ struct DiscordActivity {
     end_timestamp: Option<i64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExternalSubtitle {
+    url: String,
+    title: Option<String>,
+    language: Option<String>,
+    /// Name of the add-on that supplied this track, shown as the menu's second
+    /// line the way stremio-web renders `t(track.origin)`.
+    origin: String,
+}
+
+impl ExternalSubtitle {
+    fn from_resource(subtitle: &Subtitles, origin: &str) -> Self {
+        let url = subtitle.url.to_string();
+        let title = subtitle
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| Some(url.clone()));
+        let language = Some(subtitle.lang.trim())
+            .filter(|language| !language.is_empty())
+            .map(ToOwned::to_owned);
+        Self {
+            url,
+            title,
+            language,
+            origin: origin.to_owned(),
+        }
+    }
+}
+
+/// URL to add-on name for every external subtitle handed to MPV. MPV only
+/// reports `external-filename` back on the track, so this is the only way to
+/// map a track to the add-on that supplied it.
+static SUBTITLE_ORIGINS: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+
+fn subtitle_origins() -> &'static RwLock<HashMap<String, String>> {
+    SUBTITLE_ORIGINS.get_or_init(Default::default)
+}
+
+fn record_subtitle_origins(subtitles: &[ExternalSubtitle]) {
+    let mut origins = subtitle_origins()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for subtitle in subtitles {
+        origins.insert(subtitle.url.clone(), subtitle.origin.clone());
+    }
+}
+
+/// Shown for subtitles carried on the stream itself rather than fetched from an
+/// add-on's subtitles resource.
+const STREAM_SUBTITLE_ORIGIN: &str = "Stream";
+/// Fallback when an add-on's transport URL is no longer in the profile, e.g. it
+/// was uninstalled while the player was open.
+const UNKNOWN_SUBTITLE_ORIGIN: &str = "Addon";
+
+fn addon_origin(base: &str, addon_names: &[(String, String)]) -> String {
+    addon_names
+        .iter()
+        .find(|(transport_url, _)| transport_url == base)
+        .map_or_else(
+            || UNKNOWN_SUBTITLE_ORIGIN.to_owned(),
+            |(_, name)| name.clone(),
+        )
+}
+
+fn subtitle_origin(source_url: Option<&str>) -> Option<String> {
+    let source_url = source_url?;
+    subtitle_origins()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(source_url)
+        .cloned()
+}
+
 #[derive(Default)]
 struct SessionState {
     url: Option<String>,
-    loaded_subtitles: HashSet<String>,
+    subtitle_catalog: Vec<ExternalSubtitle>,
+    loaded_subtitle_urls: HashSet<String>,
+    media_loaded: bool,
     last_time: u64,
     last_time_dispatch: Option<Instant>,
     last_paused: Option<bool>,
@@ -237,6 +409,109 @@ struct SessionState {
     episode_selector_video_id: Option<String>,
     episode_selector_season: Option<i32>,
     episode_selector_fingerprint: Option<SyncFingerprint>,
+    recovery: crate::player_features::RecoveryState,
+    recovery_task: Option<tokio::task::JoinHandle<()>>,
+    sleep_timer: Option<crate::player_features::SleepTimerState>,
+    sleep_task: Option<tokio::task::JoinHandle<()>>,
+    preserve_end_timer_for_next_load: bool,
+    last_capture_path: Option<PathBuf>,
+    stream_switch_position: Option<f64>,
+    pending_pause_restore: Option<bool>,
+}
+
+impl SessionState {
+    fn begin_subtitle_source(&mut self) {
+        self.subtitle_catalog.clear();
+        self.begin_subtitle_reload();
+    }
+
+    fn begin_subtitle_reload(&mut self) {
+        self.loaded_subtitle_urls.clear();
+        self.media_loaded = false;
+        subtitle_origins()
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    fn register_subtitles(&mut self, subtitles: impl IntoIterator<Item = ExternalSubtitle>) {
+        for subtitle in subtitles {
+            if !self
+                .subtitle_catalog
+                .iter()
+                .any(|known| known.url == subtitle.url)
+            {
+                self.subtitle_catalog.push(subtitle);
+            }
+        }
+    }
+
+    fn on_file_loaded(&mut self) -> Vec<ExternalSubtitle> {
+        self.media_loaded = true;
+        self.take_pending_subtitles()
+    }
+
+    fn take_pending_subtitles(&mut self) -> Vec<ExternalSubtitle> {
+        if !self.media_loaded {
+            return Vec::new();
+        }
+        let mut pending = Vec::new();
+        for subtitle in &self.subtitle_catalog {
+            if self.loaded_subtitle_urls.insert(subtitle.url.clone()) {
+                pending.push(subtitle.clone());
+            }
+        }
+        pending
+    }
+}
+
+/// Core requests subtitles from every installed add-on that offers the resource
+/// (`AggrRequest::AllOfResource`), so `player.subtitles` holds one entry per
+/// add-on. Take them all, tagging each with the add-on's name for the menu.
+fn collect_player_subtitles(
+    player: &Player,
+    addon_names: &[(String, String)],
+) -> Vec<ExternalSubtitle> {
+    let mut subtitles = Vec::new();
+    if let Some(selected) = player.selected.as_ref() {
+        subtitles.extend(
+            selected
+                .stream
+                .subtitles
+                .iter()
+                .map(|subtitle| ExternalSubtitle::from_resource(subtitle, STREAM_SUBTITLE_ORIGIN)),
+        );
+    }
+    for resource in &player.subtitles {
+        let Some(Loadable::Ready(addon_subtitles)) = resource.content.as_ref() else {
+            continue;
+        };
+        let origin = addon_origin(resource.request.base.as_str(), addon_names);
+        subtitles.extend(
+            addon_subtitles
+                .iter()
+                .map(|subtitle| ExternalSubtitle::from_resource(subtitle, &origin)),
+        );
+    }
+    subtitles
+}
+
+fn send_external_subtitles(
+    controller: &PlaybackController,
+    subtitles: Vec<ExternalSubtitle>,
+    ui: &slint::Weak<MainWindow>,
+) {
+    for subtitle in subtitles {
+        send_or_show(
+            controller,
+            PlaybackCommand::AddSubtitle {
+                url: subtitle.url,
+                title: subtitle.title,
+                language: subtitle.language,
+            },
+            ui,
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -529,6 +804,7 @@ enum SkipButtonState {
     Intro,
     Recap,
     Credits,
+    Outro,
     Preview,
 }
 
@@ -539,6 +815,7 @@ impl SkipButtonState {
             Self::Intro => "Skip Intro",
             Self::Recap => "Skip Recap",
             Self::Credits => "Skip Credits",
+            Self::Outro => "Skip Outro",
             Self::Preview => "Skip Preview",
         }
     }
@@ -546,6 +823,38 @@ impl SkipButtonState {
     fn is_visible(self) -> bool {
         self != Self::Hidden
     }
+}
+
+fn embedded_chapter_skip(state: &PlaybackState) -> Option<(SkipButtonState, f64)> {
+    state
+        .chapters
+        .iter()
+        .find(|chapter| state.time >= chapter.start && state.time < chapter.end)
+        .and_then(|chapter| {
+            let title = chapter.title.to_ascii_lowercase();
+            let kind = crate::config::with_config(|config| {
+                if config.tidb_show_recap
+                    && (title.contains("recap") || title.contains("previously"))
+                {
+                    SkipButtonState::Recap
+                } else if config.tidb_show_intro
+                    && (title.contains("intro") || title.contains("opening"))
+                {
+                    SkipButtonState::Intro
+                } else if config.tidb_show_credits && title.contains("outro") {
+                    SkipButtonState::Outro
+                } else if config.tidb_show_credits
+                    && (title.contains("credit") || title.contains("ending"))
+                {
+                    SkipButtonState::Credits
+                } else if config.tidb_show_preview && title.contains("preview") {
+                    SkipButtonState::Preview
+                } else {
+                    SkipButtonState::Hidden
+                }
+            });
+            kind.is_visible().then_some((kind, chapter.end))
+        })
 }
 
 struct StatisticsPoll {
@@ -566,6 +875,8 @@ pub struct NativePlaybackBridge {
     runtime_handle: tokio::runtime::Handle,
     shaders: SharedShaderCoordinator,
     thumbnails: crate::thumbnail_preview::ThumbnailPreview,
+    capture_directory: Arc<PathBuf>,
+    capture_sequence: Arc<AtomicU64>,
 }
 
 pub struct NativePlayback {
@@ -577,6 +888,7 @@ pub struct NativePlayback {
 
 pub(crate) struct PreparedPlaybackFiles {
     config_dir: PathBuf,
+    capture_directory: PathBuf,
     shader_readiness: [bool; crate::shaders::SHADER_PRESET_COUNT],
 }
 
@@ -596,8 +908,11 @@ pub(crate) async fn prepare_playback_files() -> anyhow::Result<PreparedPlaybackF
             tracing::warn!(%error, "could not disable the obsolete generated ThumbFast script");
         }
         let shader_readiness = crate::shaders::preset_readiness(&config_dir.join("shaders"));
+        let capture_directory = crate::player_features::prepare_capture_directory()
+            .context("could not prepare the frame capture directory")?;
         Ok(PreparedPlaybackFiles {
             config_dir,
+            capture_directory,
             shader_readiness,
         })
     })
@@ -629,6 +944,7 @@ impl NativePlayback {
 
         let PreparedPlaybackFiles {
             config_dir,
+            capture_directory,
             shader_readiness,
         } = prepared_files;
         tracing::info!(
@@ -791,6 +1107,8 @@ impl NativePlayback {
             runtime_handle,
             shaders: shader_coordinator,
             thumbnails,
+            capture_directory: Arc::new(capture_directory),
+            capture_sequence: Arc::new(AtomicU64::new(1)),
         };
         bridge.install_callbacks(ui, core, navigation);
         Ok(Self {
@@ -821,6 +1139,85 @@ impl NativePlayback {
 }
 
 impl NativePlaybackBridge {
+    pub fn stop_for_profile_switch(&self) {
+        self.cancel_statistics_poll();
+        self.cancel_background_tasks();
+        {
+            let mut session = lock_session(&self.session);
+            cancel_sleep_timer(&mut session);
+            *session = SessionState::default();
+        }
+        log_command(self.controller.send(PlaybackCommand::Stop));
+        self.thumbnails.leave();
+    }
+
+    pub fn current_source(&self) -> Option<String> {
+        lock_session(&self.session).url.clone()
+    }
+
+    pub fn current_external_subtitle(&self) -> Option<String> {
+        lock_session(&self.session)
+            .loaded_subtitle_urls
+            .iter()
+            .next()
+            .cloned()
+    }
+
+    pub fn play_local_file(
+        &self,
+        ui: &MainWindow,
+        navigation: &NavigationController,
+        path: &std::path::Path,
+        title: &str,
+    ) {
+        let Some(url) = path.to_str().map(ToOwned::to_owned) else {
+            ui.set_error_message("The local media path is not valid Unicode.".into());
+            return;
+        };
+        if !path.is_file() {
+            ui.set_error_message("The downloaded media file is no longer available.".into());
+            return;
+        }
+        {
+            let mut session = lock_session(&self.session);
+            if let Some(task) = session.recovery_task.take() {
+                task.abort();
+            }
+            if let Some(task) = session.tidb_task.take() {
+                task.abort();
+            }
+            cancel_sleep_timer(&mut session);
+            session.playback_generation = session.playback_generation.wrapping_add(1);
+            session.url = Some(url.clone());
+            session.begin_subtitle_source();
+            session.last_time = 0;
+            session.last_paused = None;
+            session.load_requested_at = Some(Instant::now());
+            session.recovery.reset_for_source();
+            session.episode_selector_meta_id = None;
+            session.episode_selector_video_id = None;
+            session.episode_selector_fingerprint = None;
+        }
+        navigation.dispatch_and_project(ui, NavigationIntent::OpenPlayer);
+        ui.set_player_title(title.into());
+        ui.set_player_stream_name("Local media".into());
+        ui.set_player_is_series(false);
+        ui.set_player_loading(true);
+        ui.set_player_error("".into());
+        ui.set_player_video_frame(slint::Image::default());
+        ui.set_player_has_video_frame(false);
+        ui.set_player_ab_loop_a(-1.0);
+        ui.set_player_ab_loop_b(-1.0);
+        log_command(
+            self.controller
+                .send(PlaybackCommand::SetAbLoop { a: None, b: None }),
+        );
+        log_command(self.controller.send(PlaybackCommand::Load {
+            url,
+            start_at: None,
+        }));
+    }
+
     fn sync_episode_selector(
         &self,
         player: &Player,
@@ -958,6 +1355,7 @@ impl NativePlaybackBridge {
         &self,
         player: &Player,
         streams: &StreamsBucket,
+        addon_names: &[(String, String)],
         ui: &slint::Weak<MainWindow>,
         navigation: &NavigationController,
     ) {
@@ -982,7 +1380,7 @@ impl NativePlaybackBridge {
             return;
         };
 
-        let start_at = resume_time(player);
+        let resume_at = resume_time(player);
         let pending_load = {
             let mut session = lock_session(&self.session);
             if navigation.snapshot().revision != route_revision || !navigation.is_player_visible() {
@@ -994,9 +1392,27 @@ impl NativePlaybackBridge {
                 if let Some(task) = session.tidb_task.take() {
                     task.abort();
                 }
+                if let Some(task) = session.recovery_task.take() {
+                    task.abort();
+                }
+                session.recovery.reset_for_source();
+                let preserve_end_timer = session.preserve_end_timer_for_next_load;
+                session.preserve_end_timer_for_next_load = false;
+                if !preserve_end_timer
+                    && session.sleep_timer.as_ref().is_some_and(|timer| {
+                        matches!(
+                            timer.mode,
+                            crate::player_features::SleepMode::EndOfCurrent
+                                | crate::player_features::SleepMode::EndOfNext
+                        )
+                    })
+                {
+                    cancel_sleep_timer(&mut session);
+                }
                 session.playback_generation = session.playback_generation.wrapping_add(1);
                 session.url = Some(url.clone());
-                session.loaded_subtitles.clear();
+                session.begin_subtitle_source();
+                let start_at = session.stream_switch_position.take().or(resume_at);
                 session.last_time = start_at.unwrap_or_default().round().max(0.0) as u64;
                 session.last_time_dispatch = None;
                 session.last_paused = None;
@@ -1013,6 +1429,10 @@ impl NativePlaybackBridge {
             }
         };
         if let Some((generation, url, start_at)) = pending_load {
+            log_command(
+                self.controller
+                    .send(PlaybackCommand::SetAbLoop { a: None, b: None }),
+            );
             self.thumbnails.begin_load(generation);
             send_or_show(
                 &self.controller,
@@ -1034,37 +1454,22 @@ impl NativePlaybackBridge {
                     ui.set_player_loading(true);
                     ui.set_player_buffering(false);
                     ui.set_player_buffering_percent(0.0);
+                    ui.set_player_ab_loop_a(-1.0);
+                    ui.set_player_ab_loop_b(-1.0);
                 }
             });
         }
         self.sync_episode_selector(player, streams, ui);
-
-        for resource in &player.subtitles {
-            if !navigation.is_player_visible() {
-                break;
-            }
-            let Some(Loadable::Ready(subtitles)) = resource.content.as_ref() else {
-                continue;
-            };
-            for subtitle in subtitles {
-                let should_add = lock_session(&self.session)
-                    .loaded_subtitles
-                    .insert(subtitle.id.clone());
-                if should_add {
-                    send_or_show(
-                        &self.controller,
-                        PlaybackCommand::AddSubtitle {
-                            url: subtitle.url.to_string(),
-                            title: subtitle
-                                .label
-                                .clone()
-                                .or_else(|| Some(subtitle.lang.clone())),
-                        },
-                        ui,
-                    );
-                }
-            }
+        if !navigation.is_player_visible() {
+            return;
         }
+        let pending_subtitles = {
+            let mut session = lock_session(&self.session);
+            session.register_subtitles(collect_player_subtitles(player, addon_names));
+            session.take_pending_subtitles()
+        };
+        record_subtitle_origins(&pending_subtitles);
+        send_external_subtitles(&self.controller, pending_subtitles, ui);
     }
 
     fn install_callbacks(
@@ -1073,6 +1478,10 @@ impl NativePlaybackBridge {
         core: &Arc<Runtime<DesktopEnv, AppModel>>,
         navigation: NavigationController,
     ) {
+        let pip_controller = Rc::new(RefCell::new(
+            crate::player_features::PipController::default(),
+        ));
+
         ui.on_player_activity({
             let bridge = self.clone();
             let weak_ui = ui.as_weak();
@@ -1185,6 +1594,24 @@ impl NativePlaybackBridge {
             }
         });
 
+        ui.on_player_change_secondary_subtitle({
+            let controller = self.controller.clone();
+            let state = self.state.clone();
+            let weak = ui.as_weak();
+            move |index| {
+                let snapshot = read_state(&state).clone();
+                let track_id = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| snapshot.subtitle_tracks.get(index))
+                    .map(|track| track.id.clone());
+                if track_id.as_ref() == snapshot.active_subtitle_track.as_ref() {
+                    queue_player_status(&weak, "Primary and secondary subtitles must be different");
+                    return;
+                }
+                log_command(controller.send(PlaybackCommand::SetSecondarySubtitleTrack(track_id)));
+            }
+        });
+
         ui.on_player_change_subtitle_delay({
             let controller = self.controller.clone();
             let core = core.clone();
@@ -1224,6 +1651,28 @@ impl NativePlaybackBridge {
                 update_stream_state(&core, |stream_state| {
                     stream_state.subtitle_offset = Some(percent);
                 });
+            }
+        });
+
+        ui.on_player_change_secondary_subtitle_size({
+            let controller = self.controller.clone();
+            move |percent| {
+                let percent = percent.clamp(50.0, 200.0);
+                log_command(controller.send(PlaybackCommand::SetSecondarySubtitleScale(
+                    f64::from(percent) / 100.0,
+                )));
+            }
+        });
+
+        ui.on_player_change_secondary_subtitle_offset({
+            let controller = self.controller.clone();
+            move |percent| {
+                let percent = percent.clamp(0.0, 100.0);
+                log_command(
+                    controller.send(PlaybackCommand::SetSecondarySubtitlePosition(f64::from(
+                        100.0 - percent,
+                    ))),
+                );
             }
         });
 
@@ -1277,6 +1726,214 @@ impl NativePlaybackBridge {
                 cfg.active_shader_preset = preset as u8;
                 cfg.shaders_enabled = preset != crate::shaders::ShaderPreset::Off;
                 crate::config::save_config(&cfg);
+            }
+        });
+
+        ui.on_player_set_ab_loop_point({
+            let controller = self.controller.clone();
+            let state = self.state.clone();
+            let weak = ui.as_weak();
+            move |action| {
+                let snapshot = read_state(&state).clone();
+                let time = snapshot.time.max(0.0);
+                let (a, b) = match action {
+                    0 => {
+                        let b = snapshot.ab_loop_b.filter(|b| *b - time >= 0.25);
+                        (Some(time), b)
+                    }
+                    1 => {
+                        let Some(a) = snapshot.ab_loop_a else {
+                            queue_player_status(&weak, "Set point A before point B");
+                            return;
+                        };
+                        if time - a < 0.25 {
+                            queue_player_status(
+                                &weak,
+                                "Point B must be at least 0.25 seconds after A",
+                            );
+                            return;
+                        }
+                        (Some(a), Some(time))
+                    }
+                    2 => (None, None),
+                    _ => return,
+                };
+                log_command(controller.send(PlaybackCommand::SetAbLoop { a, b }));
+            }
+        });
+
+        ui.on_player_set_sleep_timer({
+            let controller = self.controller.clone();
+            let session = self.session.clone();
+            let runtime_handle = self.runtime_handle.clone();
+            let weak = ui.as_weak();
+            move |value| {
+                let mode = crate::player_features::SleepMode::from_ui_value(value);
+                {
+                    let mut current = lock_session(&session);
+                    cancel_sleep_timer(&mut current);
+                }
+                let Some(mode) = mode else {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_player_sleep_timer_label("".into());
+                        ui.set_player_status_message("Sleep timer cancelled".into());
+                    }
+                    return;
+                };
+
+                let timer = crate::player_features::SleepTimerState::new(mode);
+                let cancellation = timer.cancellation.clone();
+                let label = timer.mode.label();
+                lock_session(&session).sleep_timer = Some(timer);
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_player_sleep_timer_label(label.into());
+                    ui.set_player_status_message("Sleep timer set".into());
+                }
+
+                let crate::player_features::SleepMode::After(duration) = mode else {
+                    return;
+                };
+                let controller = controller.clone();
+                let session_for_task = session.clone();
+                let weak_for_task = weak.clone();
+                let task = runtime_handle.spawn(async move {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        _ = tokio::time::sleep(duration) => {}
+                    }
+                    log_command(controller.send(PlaybackCommand::SetPaused(true)));
+                    {
+                        let mut current = lock_session(&session_for_task);
+                        current.sleep_timer = None;
+                        current.sleep_task = None;
+                    }
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak_for_task.upgrade() {
+                            ui.set_player_sleep_timer_label("".into());
+                            ui.set_player_status_message("Sleep timer finished".into());
+                        }
+                    });
+                });
+                lock_session(&session).sleep_task = Some(task);
+            }
+        });
+
+        ui.on_player_capture_frame({
+            let controller = self.controller.clone();
+            let directory = self.capture_directory.clone();
+            let sequence = self.capture_sequence.clone();
+            let weak = ui.as_weak();
+            move || {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let request_id = sequence.fetch_add(1, Ordering::Relaxed);
+                let episode = ui.get_player_active_video_id();
+                let path = crate::player_features::capture_path(
+                    directory.as_path(),
+                    ui.get_player_title().as_str(),
+                    (!episode.is_empty()).then_some(episode.as_str()),
+                    chrono::Utc::now(),
+                    request_id,
+                );
+                log_command(controller.send(PlaybackCommand::CaptureFrame {
+                    request_id,
+                    path,
+                    include_subtitles: true,
+                }));
+            }
+        });
+
+        ui.on_player_reveal_last_capture({
+            let session = self.session.clone();
+            move || {
+                let path = lock_session(&session).last_capture_path.clone();
+                let Some(path) = path else {
+                    return;
+                };
+                let reveal_target = path.parent().unwrap_or(path.as_path());
+                if let Err(error) = open::that(reveal_target) {
+                    tracing::error!(%error, path = %reveal_target.display(), "failed to reveal frame capture");
+                }
+            }
+        });
+
+        ui.on_player_cycle_hdr_mode({
+            let controller = self.controller.clone();
+            let weak = ui.as_weak();
+            move || {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let (mode, index) = match ui.get_player_hdr_mode() {
+                    0 => (HdrMode::Passthrough, 1),
+                    1 => (HdrMode::ToneMap, 2),
+                    2 => (HdrMode::Disabled, 3),
+                    _ => (HdrMode::Auto, 0),
+                };
+                ui.set_player_hdr_mode(index);
+                log_command(controller.send(PlaybackCommand::SetHdrMode(mode)));
+            }
+        });
+
+        ui.on_player_toggle_pip({
+            let weak = ui.as_weak();
+            let pip_controller = pip_controller.clone();
+            move || {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let active = ui
+                    .window()
+                    .with_winit_window(|window| pip_controller.borrow_mut().toggle(window))
+                    .unwrap_or(false);
+                ui.set_player_pip_active(active);
+                ui.set_is_fullscreen(false);
+                ui.invoke_close_player_menus();
+            }
+        });
+
+        ui.on_player_retry_playback({
+            let controller = self.controller.clone();
+            let state = self.state.clone();
+            let session = self.session.clone();
+            let weak = ui.as_weak();
+            move || {
+                let snapshot = read_state(&state).clone();
+                let (url, last_time) = {
+                    let current = lock_session(&session);
+                    (current.url.clone(), current.last_time)
+                };
+                let Some(url) = url else {
+                    return;
+                };
+                let start_at =
+                    (snapshot.duration > 0.0).then_some(last_time.saturating_sub(3) as f64);
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_player_error("".into());
+                    ui.set_player_loading(true);
+                    ui.set_player_status_message("Retrying the same source…".into());
+                }
+                log_command(controller.send(PlaybackCommand::Load { url, start_at }));
+            }
+        });
+
+        ui.on_player_choose_another_stream({
+            let weak = ui.as_weak();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.invoke_player_close();
+                }
+            }
+        });
+
+        ui.on_player_return_to_details({
+            let weak = ui.as_weak();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_detail_in_stream_view(false);
+                    ui.invoke_player_close();
+                }
             }
         });
 
@@ -1342,7 +1999,7 @@ impl NativePlaybackBridge {
             let session = self.session.clone();
             move || {
                 let subtitle_url = lock_session(&session)
-                    .loaded_subtitles
+                    .loaded_subtitle_urls
                     .iter()
                     .next()
                     .cloned();
@@ -1593,6 +2250,7 @@ impl NativePlaybackBridge {
             let navigation = navigation.clone();
             let discord_rpc = self.discord_rpc.clone();
             let thumbnails = self.thumbnails.clone();
+            let pip_controller = pip_controller.clone();
             move |index, video_id| {
                 let video_id = video_id.to_string();
                 let selection = core.model().ok().map(|model| {
@@ -1634,6 +2292,10 @@ impl NativePlaybackBridge {
                     if !navigation.is_player_visible() {
                         return;
                     }
+                    let _ = ui.window().with_winit_window(|window| {
+                        pip_controller.borrow_mut().exit(window);
+                    });
+                    ui.set_player_pip_active(false);
                     if let Some(season) = season {
                         ui.set_detail_active_season(season);
                         ui.invoke_details_season_changed(season);
@@ -1665,6 +2327,7 @@ impl NativePlaybackBridge {
             let media_session = self.media_session.clone();
             let autohide_task = self.autohide_task.clone();
             let thumbnails = self.thumbnails.clone();
+            let pip_controller = pip_controller.clone();
             move || {
                 // Release the OS media controls and wake lock up front, so an exit
                 // that emits no further playback state can't strand either.
@@ -1674,6 +2337,10 @@ impl NativePlaybackBridge {
                     if !navigation.is_player_visible() {
                         return;
                     }
+                    let _ = ui.window().with_winit_window(|window| {
+                        pip_controller.borrow_mut().exit(window);
+                    });
+                    ui.set_player_pip_active(false);
                     navigation.dispatch_and_project(&ui, NavigationIntent::Back);
                     ui.invoke_close_player_menus();
                     // Never leave the player with the pointer hidden after exit.
@@ -1728,14 +2395,33 @@ impl NativePlaybackBridge {
                             device: PLAYER_DEVICE.to_owned(),
                         },
                     );
+                } else if let Some((chapter_kind, end_secs)) = embedded_chapter_skip(&state_val) {
+                    tracing::info!(?chapter_kind, end_secs, "skipping embedded chapter");
+                    log_command(controller.send(PlaybackCommand::SeekAbsolute(end_secs)));
+                    session_lock.last_time = end_secs.round().max(0.0) as u64;
+                    dispatch_player(
+                        &core,
+                        ActionPlayer::Seek {
+                            time: end_secs.round().max(0.0) as u64,
+                            duration: state_val.duration.round().max(0.0) as u64,
+                            device: PLAYER_DEVICE.to_owned(),
+                        },
+                    );
                 }
             }
         });
 
         ui.on_player_toggle_fullscreen({
             let weak = ui.as_weak();
+            let pip_controller = pip_controller.clone();
             move || {
                 if let Some(ui) = weak.upgrade() {
+                    if pip_controller.borrow().is_active() {
+                        let _ = ui.window().with_winit_window(|window| {
+                            pip_controller.borrow_mut().exit(window);
+                        });
+                        ui.set_player_pip_active(false);
+                    }
                     let fs = !ui.window().is_fullscreen();
                     ui.window().set_fullscreen(fs);
                     ui.set_is_fullscreen(fs);
@@ -1813,14 +2499,131 @@ impl NativePlaybackBridge {
         self.thumbnails.set_enabled(enabled, current_source);
     }
 
+    /// Preserve same-media playback state across an explicit in-player source
+    /// change. The next resolved URL consumes this snapshot exactly once.
+    pub fn prepare_stream_switch(&self) {
+        let state = read_state(&self.state).clone();
+        let mut session = lock_session(&self.session);
+        session.stream_switch_position = Some(state.time.max(0.0));
+        session.pending_pause_restore = Some(state.paused);
+        session.last_time = state.time.round().max(0.0) as u64;
+        session.recovery.reset_for_source();
+    }
+
     fn cancel_background_tasks(&self) {
-        if let Some(task) = lock_session(&self.session).tidb_task.take() {
+        let mut session = lock_session(&self.session);
+        if let Some(task) = session.tidb_task.take() {
             task.abort();
         }
+        if let Some(task) = session.recovery_task.take() {
+            task.abort();
+        }
+        cancel_sleep_timer(&mut session);
+        drop(session);
         if let Some(task) = lock_autohide_task(&self.autohide_task).take() {
             task.abort();
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryDisposition {
+    Scheduled,
+    InFlight,
+    Exhausted,
+    Unavailable,
+}
+
+fn schedule_automatic_recovery(
+    state: &PlaybackState,
+    session: &Arc<Mutex<SessionState>>,
+    controller: &Arc<OnceLock<PlaybackController>>,
+    ui: &slint::Weak<MainWindow>,
+    runtime_handle: &tokio::runtime::Handle,
+) -> RecoveryDisposition {
+    let Some(controller) = controller.get().cloned() else {
+        return RecoveryDisposition::Unavailable;
+    };
+    let (generation, url, start_at) = {
+        let mut current = lock_session(session);
+        if current
+            .recovery_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            return RecoveryDisposition::InFlight;
+        }
+        current.recovery_task = None;
+        if !current.recovery.claim_automatic_retry() {
+            return RecoveryDisposition::Exhausted;
+        }
+        let Some(url) = current.url.clone() else {
+            return RecoveryDisposition::Unavailable;
+        };
+        let start_at = (state.duration > 0.0).then_some(current.last_time.saturating_sub(3) as f64);
+        (current.playback_generation, url, start_at)
+    };
+
+    let task_session = session.clone();
+    let task_ui = ui.clone();
+    let task = runtime_handle.spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let current_source = {
+            let mut current = lock_session(&task_session);
+            let current_source = current.playback_generation == generation
+                && current.url.as_deref() == Some(url.as_str());
+            if current_source {
+                current.load_requested_at = Some(Instant::now());
+                current.begin_subtitle_reload();
+            }
+            current.recovery_task = None;
+            current_source
+        };
+        if !current_source {
+            tracing::debug!(generation, "discarded stale playback recovery callback");
+            return;
+        }
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = task_ui.upgrade() {
+                ui.set_player_error("".into());
+                ui.set_player_loading(true);
+                ui.set_player_status_message("Retrying the same source (1/1)…".into());
+            }
+        });
+        log_command(controller.send(PlaybackCommand::Load { url, start_at }));
+    });
+    lock_session(session).recovery_task = Some(task);
+    RecoveryDisposition::Scheduled
+}
+
+fn consume_end_sleep_timer(session: &Arc<Mutex<SessionState>>) -> bool {
+    let mut current = lock_session(session);
+    let should_stop = current
+        .sleep_timer
+        .as_mut()
+        .is_some_and(crate::player_features::SleepTimerState::consume_episode_end);
+    if should_stop {
+        cancel_sleep_timer(&mut current);
+    } else if current.sleep_timer.as_ref().is_some_and(|timer| {
+        matches!(
+            timer.mode,
+            crate::player_features::SleepMode::EndOfCurrent
+                | crate::player_features::SleepMode::EndOfNext
+        )
+    }) {
+        current.preserve_end_timer_for_next_load = true;
+    }
+    should_stop
+}
+
+fn queue_player_status(ui: &slint::Weak<MainWindow>, message: impl Into<SharedString>) {
+    let message = message.into();
+    let ui = ui.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui.upgrade() {
+            ui.set_player_status_message(message);
+        }
+    });
 }
 
 #[expect(
@@ -1865,6 +2668,12 @@ fn handle_event(
                 Ok(mut current) => *current = state.clone(),
                 Err(poisoned) => *poisoned.into_inner() = state.clone(),
             }
+            lock_session(session).recovery.observe_playback(
+                state.loaded,
+                state.paused,
+                state.buffering,
+                Instant::now(),
+            );
             dispatch_state_to_core(
                 &state,
                 session,
@@ -1883,8 +2692,8 @@ fn handle_event(
             );
         }
         PlaybackEvent::FileLoaded => {
-            let (load_elapsed_ms, thumbnail_source) = {
-                let session = lock_session(session);
+            let (load_elapsed_ms, thumbnail_source, pause_restore, pending_subtitles) = {
+                let mut session = lock_session(session);
                 (
                     session
                         .load_requested_at
@@ -1894,6 +2703,8 @@ fn handle_event(
                         url: url.clone(),
                         initial_position: session.last_time as f64,
                     }),
+                    session.pending_pause_restore.take(),
+                    session.on_file_loaded(),
                 )
             };
             tracing::info!(?load_elapsed_ms, "MPV file loaded");
@@ -1901,6 +2712,12 @@ fn handle_event(
                 thumbnails.prewarm(source);
             }
             restore_stream_state(core, controller, ui);
+            if let Some(controller) = controller.get() {
+                send_external_subtitles(controller, pending_subtitles, ui);
+            }
+            if let (Some(controller), Some(paused)) = (controller.get(), pause_restore) {
+                log_command(controller.send(PlaybackCommand::SetPaused(paused)));
+            }
             // Binge/autoplay advances episodes with no user interaction, so the
             // UI-side activity hooks never fire to reclaim keyboard focus. Anchor
             // it here: every started file routes through FileLoaded.
@@ -1917,12 +2734,29 @@ fn handle_event(
             tracing::info!(?reason, error = error.as_deref(), "MPV playback ended");
             if reason == EndReason::Eof {
                 dispatch_player(core, ActionPlayer::Ended);
+                if consume_end_sleep_timer(session) {
+                    if let Some(controller) = controller.get() {
+                        log_command(controller.send(PlaybackCommand::SetPaused(true)));
+                    }
+                    queue_player_status(ui, "Sleep timer finished at the episode boundary");
+                    let ui = ui.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui.upgrade() {
+                            ui.set_player_sleep_timer_label("".into());
+                            if ui.get_player_pip_active() {
+                                ui.invoke_player_toggle_pip();
+                            }
+                        }
+                    });
+                    return;
+                }
                 let binge = core
                     .model()
                     .ok()
                     .map(|model| model.ctx.profile.settings.binge_watching)
                     .unwrap_or(false);
-                if binge && play_next(core) {
+                let advanced = binge && play_next(core);
+                if advanced {
                     let ui = ui.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui.upgrade() {
@@ -1931,10 +2765,84 @@ fn handle_event(
                             );
                         }
                     });
+                } else {
+                    let ui = ui.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui.upgrade()
+                            && ui.get_player_pip_active()
+                        {
+                            ui.invoke_player_toggle_pip();
+                        }
+                    });
                 }
-            } else if let Some(error) = error {
-                show_player_error(ui, error);
+            } else {
+                match schedule_automatic_recovery(
+                    &read_state(state_slot),
+                    session,
+                    controller,
+                    ui,
+                    runtime_handle,
+                ) {
+                    RecoveryDisposition::Scheduled | RecoveryDisposition::InFlight => {}
+                    RecoveryDisposition::Exhausted | RecoveryDisposition::Unavailable => {
+                        show_player_error(
+                            ui,
+                            error.unwrap_or_else(|| {
+                                "Playback failed after retrying this source".to_owned()
+                            }),
+                        );
+                    }
+                }
             }
+        }
+        PlaybackEvent::FrameCaptured { request_id, path } => {
+            tracing::info!(request_id, path = %path.display(), "frame captured");
+            lock_session(session).last_capture_path = Some(path.clone());
+            let ui = ui.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_player_last_capture_path(path.to_string_lossy().into_owned().into());
+                    ui.set_player_status_message("Frame captured".into());
+                }
+            });
+        }
+        PlaybackEvent::FrameCaptureFailed {
+            request_id,
+            path,
+            message,
+        } => {
+            tracing::error!(request_id, path = %path.display(), %message, "frame capture failed");
+            queue_player_status(ui, format!("Frame capture failed: {message}"));
+        }
+        PlaybackEvent::ChaptersUpdated(chapters) => {
+            tracing::debug!(chapter_count = chapters.len(), "embedded chapters updated");
+        }
+        PlaybackEvent::HdrStateChanged {
+            requested,
+            applied,
+            content_hdr,
+            passthrough_available,
+        } => {
+            tracing::info!(
+                ?requested,
+                ?applied,
+                content_hdr,
+                passthrough_available,
+                "HDR state changed"
+            );
+            let ui = ui.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_player_hdr_mode(hdr_mode_index(applied));
+                    ui.set_player_hdr_content(content_hdr);
+                    ui.set_player_hdr_passthrough_available(passthrough_available);
+                    if requested == HdrMode::Passthrough && applied != requested {
+                        ui.set_player_status_message(
+                            "HDR passthrough is unavailable; tone mapping is active".into(),
+                        );
+                    }
+                }
+            });
         }
         PlaybackEvent::ClientMessage(args) => {
             tracing::debug!(argument_count = args.len(), "MPV client message received");
@@ -1973,9 +2881,29 @@ fn handle_event(
         PlaybackEvent::Warning(error) => tracing::warn!(%error, "MPV command failed"),
         PlaybackEvent::Error(error) => {
             tracing::error!(%error, "MPV playback error");
-            show_player_error(ui, error);
+            match schedule_automatic_recovery(
+                &read_state(state_slot),
+                session,
+                controller,
+                ui,
+                runtime_handle,
+            ) {
+                RecoveryDisposition::Scheduled | RecoveryDisposition::InFlight => {}
+                RecoveryDisposition::Exhausted | RecoveryDisposition::Unavailable => {
+                    show_player_error(ui, error);
+                }
+            }
         }
         PlaybackEvent::Shutdown => tracing::info!("MPV playback shutdown event received"),
+    }
+}
+
+fn hdr_mode_index(mode: HdrMode) -> i32 {
+    match mode {
+        HdrMode::Auto => 0,
+        HdrMode::Passthrough => 1,
+        HdrMode::ToneMap => 2,
+        HdrMode::Disabled => 3,
     }
 }
 
@@ -2220,7 +3148,7 @@ fn dispatch_state_to_core(
             let session_clone = session.clone();
             let fetch_task = crate::theintrodb::fetch_segments(
                 runtime_handle,
-                crate::config::with_config(|config| config.tidb_api_key.clone()),
+                crate::secure_settings::tidb_api_key(),
                 request.id_type,
                 request.media_id.clone(),
                 request.season,
@@ -2482,7 +3410,11 @@ fn dispatch_state_to_core(
                         _ => SkipButtonState::Hidden,
                     })
                 })
-                .unwrap_or(SkipButtonState::Hidden)
+                .unwrap_or_else(|| {
+                    embedded_chapter_skip(state)
+                        .map(|(kind, _)| kind)
+                        .unwrap_or(SkipButtonState::Hidden)
+                })
         } else {
             SkipButtonState::Hidden
         };
@@ -2820,7 +3752,7 @@ fn apply_state_to_ui(
         let subtitle_labels = state
             .subtitle_tracks
             .iter()
-            .map(|track| track_label(&track.title, &track.language, &track.codec))
+            .map(subtitle_track_label)
             .map(SharedString::from)
             .collect::<Vec<_>>();
         ui.set_player_subtitles_tracks(ModelRc::new(VecModel::from(subtitle_labels)));
@@ -2839,11 +3771,11 @@ fn apply_state_to_ui(
             .subtitle_tracks
             .iter()
             .map(|track| {
-                if track.external {
-                    "External"
-                } else {
-                    "Embedded"
+                if !track.external {
+                    return "Embedded".to_owned();
                 }
+                subtitle_origin(track.source_url.as_deref())
+                    .unwrap_or_else(|| "External".to_owned())
             })
             .map(SharedString::from)
             .collect::<Vec<_>>();
@@ -2884,6 +3816,43 @@ fn apply_state_to_ui(
                 .and_then(|index| i32::try_from(index).ok())
                 .unwrap_or(-1),
         );
+    }
+    if subtitle_tracks_changed
+        || previous.is_none_or(|previous| {
+            previous.active_secondary_subtitle_track != state.active_secondary_subtitle_track
+        })
+    {
+        ui.set_player_active_secondary_subtitle_idx(
+            state
+                .active_secondary_subtitle_track
+                .as_ref()
+                .and_then(|active| {
+                    state
+                        .subtitle_tracks
+                        .iter()
+                        .position(|track| &track.id == active)
+                })
+                .and_then(|index| i32::try_from(index).ok())
+                .unwrap_or(-1),
+        );
+    }
+
+    if previous.is_none_or(|previous| previous.ab_loop_a != state.ab_loop_a) {
+        ui.set_player_ab_loop_a(state.ab_loop_a.unwrap_or(-1.0) as f32);
+    }
+    if previous.is_none_or(|previous| previous.ab_loop_b != state.ab_loop_b) {
+        ui.set_player_ab_loop_b(state.ab_loop_b.unwrap_or(-1.0) as f32);
+    }
+    if previous.is_none_or(|previous| previous.hdr_mode != state.hdr_mode) {
+        ui.set_player_hdr_mode(hdr_mode_index(state.hdr_mode));
+    }
+    if previous.is_none_or(|previous| previous.hdr_content != state.hdr_content) {
+        ui.set_player_hdr_content(state.hdr_content);
+    }
+    if previous.is_none_or(|previous| {
+        previous.hdr_passthrough_available != state.hdr_passthrough_available
+    }) {
+        ui.set_player_hdr_passthrough_available(state.hdr_passthrough_available);
     }
 
     if previous.is_none_or(|previous| previous.video_format != state.video_format) {
@@ -3376,6 +4345,22 @@ fn track_label<'a>(
         .unwrap_or("Unknown track")
 }
 
+/// stremio-web treats a subtitle label as usable only when it is non-empty and
+/// is not a URL (`hasValidLabel`), otherwise it shows the language name. Add-on
+/// subtitles carry their URL as the label, and that is what MPV reports back as
+/// the track title, so without this the menu lists raw links.
+fn subtitle_track_label(track: &playback_mpv::SubtitleTrack) -> String {
+    track
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty() && !title.starts_with("http"))
+        .map_or_else(
+            || language_label(track.language.as_deref()),
+            ToOwned::to_owned,
+        )
+}
+
 fn language_label(language: Option<&str>) -> String {
     let raw = language.map(str::trim).filter(|value| !value.is_empty());
     let Some(raw) = raw else {
@@ -3466,6 +4451,16 @@ fn lock_session(session: &Mutex<SessionState>) -> std::sync::MutexGuard<'_, Sess
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn cancel_sleep_timer(session: &mut SessionState) {
+    if let Some(timer) = session.sleep_timer.take() {
+        timer.cancellation.cancel();
+    }
+    if let Some(task) = session.sleep_task.take() {
+        task.abort();
+    }
+    session.preserve_end_timer_for_next_load = false;
+}
+
 fn read_state(
     state: &RwLock<Arc<PlaybackState>>,
 ) -> std::sync::RwLockReadGuard<'_, Arc<PlaybackState>> {
@@ -3499,6 +4494,10 @@ fn unload_player(
     if let Some(task) = current.tidb_task.take() {
         task.abort();
     }
+    if let Some(task) = current.recovery_task.take() {
+        task.abort();
+    }
+    cancel_sleep_timer(&mut current);
     let next_generation = current.playback_generation.wrapping_add(1);
     *current = SessionState {
         playback_generation: next_generation,

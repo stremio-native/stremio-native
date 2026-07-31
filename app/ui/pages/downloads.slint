@@ -1,0 +1,176 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { PillButton } from "../components/button.slint";
+import { EmptyState } from "../components/feedback.slint";
+
+export struct DownloadItem {
+    id: string,
+    title: string,
+    filename: string,
+    destination: string,
+    status: string,
+    progress: float,
+    can-pause: bool,
+    can-resume: bool,
+    can-play: bool,
+}
+
+export component DownloadsPage inherits Rectangle {
+    in property <length> unit: Theme.root-font-size;
+    in property <[DownloadItem]> items: [];
+    in property <bool> loading: false;
+    in property <string> error: "";
+    callback pause(string);
+    callback resume(string);
+    callback cancel(string);
+    callback play(string);
+    callback reveal(string);
+    callback retry;
+
+    background: transparent;
+
+    VerticalLayout {
+        padding-left: 3 * root.unit;
+        padding-right: 3 * root.unit;
+        padding-top: 2.5 * root.unit;
+        padding-bottom: 2 * root.unit;
+        spacing: 1.5 * root.unit;
+
+        Text {
+            height: 3 * root.unit;
+            text: @tr("DOWNLOADS_TITLE" => "Downloads");
+            color: Theme.text-primary;
+            font-size: 2 * root.unit;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+
+        if (root.error != "") : Rectangle {
+            height: 4 * root.unit;
+            border-radius: Theme.border-radius;
+            background: Theme.danger.with-alpha(0.16);
+
+            Text {
+                x: root.unit;
+                width: parent.width - 10 * root.unit;
+                height: parent.height;
+                text: root.error;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            PillButton {
+                x: parent.width - 8 * root.unit;
+                y: 0.6 * root.unit;
+                width: 7 * root.unit;
+                unit: root.unit;
+                label: @tr("RETRY" => "Retry");
+                clicked => { root.retry(); }
+            }
+        }
+
+        if (!root.loading && root.items.length == 0 && root.error == "") : EmptyState {
+            vertical-stretch: 1;
+            unit: root.unit;
+            icon-source: @image-url("../assets/images/icons/download.svg");
+            title: @tr("DOWNLOADS_EMPTY" => "No downloads yet");
+            message: @tr("DOWNLOADS_EMPTY_HINT" => "Download a stream from its menu to keep it available offline.");
+        }
+
+        if (root.loading) : Text {
+            vertical-stretch: 1;
+            text: @tr("LOADING" => "Loading…");
+            color: Theme.text-secondary;
+            font-size: root.unit;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if (!root.loading && root.items.length > 0) : ListView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+            for item in root.items : Rectangle {
+                width: parent.width;
+                height: 7.5 * root.unit;
+                border-radius: Theme.border-radius;
+                background: row-area.has-hover ? Theme.overlay-hover : Theme.overlay-color.with-alpha(0.35);
+
+                row-area := TouchArea { }
+
+                VerticalLayout {
+                    padding: root.unit;
+                    spacing: 0.45 * root.unit;
+
+                    HorizontalLayout {
+                        height: 2.3 * root.unit;
+                        spacing: root.unit;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: item.title;
+                            color: Theme.text-primary;
+                            font-size: 1.05 * root.unit;
+                            font-weight: 650;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        if (item.can-pause) : PillButton {
+                            width: 6 * root.unit;
+                            unit: root.unit;
+                            label: @tr("PAUSE" => "Pause");
+                            clicked => { root.pause(item.id); }
+                        }
+                        if (item.can-resume) : PillButton {
+                            width: 6 * root.unit;
+                            unit: root.unit;
+                            label: @tr("RESUME" => "Resume");
+                            clicked => { root.resume(item.id); }
+                        }
+                        if (item.can-play) : PillButton {
+                            width: 5 * root.unit;
+                            unit: root.unit;
+                            label: @tr("CTX_PLAY" => "Play");
+                            clicked => { root.play(item.id); }
+                        }
+                        PillButton {
+                            width: 6 * root.unit;
+                            unit: root.unit;
+                            label: @tr("REVEAL" => "Reveal");
+                            clicked => { root.reveal(item.id); }
+                        }
+                        if (!item.can-play) : PillButton {
+                            width: 6 * root.unit;
+                            unit: root.unit;
+                            label: @tr("CANCEL" => "Cancel");
+                            outlined: true;
+                            clicked => { root.cancel(item.id); }
+                        }
+                    }
+
+                    Text {
+                        height: 1.6 * root.unit;
+                        text: item.filename + "  ·  " + item.status;
+                        color: Theme.text-secondary;
+                        font-size: 0.9 * root.unit;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        height: 0.35 * root.unit;
+                        border-radius: self.height / 2;
+                        background: Theme.overlay-color;
+                        Rectangle {
+                            width: parent.width * item.progress.clamp(0, 1);
+                            height: parent.height;
+                            border-radius: parent.border-radius;
+                            background: Theme.accent;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

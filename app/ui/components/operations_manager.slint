@@ -1,0 +1,117 @@
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { PillButton } from "button.slint";
+import { SelectField } from "select.slint";
+import { ToggleSwitch } from "toggle.slint";
+import { SettingsOption } from "settings_option.slint";
+
+export component OperationsManager inherits VerticalLayout {
+    in property <length> unit: 16px;
+    in-out property <string> backup-path: "";
+    in-out property <string> restore-path: "";
+    in-out property <string> passphrase: "";
+    in-out property <bool> include-secrets: false;
+    in property <bool> restore-ready: false;
+    in-out property <string> diagnostic-path: "";
+    in-out property <string> speed-endpoint: "https://speed.cloudflare.com/__down?bytes=10000000";
+    in-out property <string> region: "US";
+    in-out property <string> bandwidth-mbps: "0";
+    in-out property <string> layout-preset: "Side Rail";
+    in-out property <bool> layout-open: false;
+    in-out property <string> theme-path: "";
+    in-out property <string> player-layout-path: "";
+    in property <string> status: "";
+    callback create-backup(string, bool, string);
+    callback preview-restore(string, string);
+    callback apply-restore(string, string);
+    callback create-diagnostics(string);
+    callback run-speed-test(string);
+    callback save-network(string, string);
+    callback apply-layout(string);
+    callback import-theme(string);
+    callback export-theme(string);
+    callback import-player-layout(string);
+    callback export-player-layout(string);
+    callback reset-customization;
+    callback close;
+
+    spacing: 0;
+    width: 100%;
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Backup Application Data");
+        description: @tr("Export an encrypted backup ZIP of settings and library.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Create Backup");
+            outlined: true;
+            clicked => { root.create-backup(root.backup-path, root.include-secrets, root.passphrase); }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Restore Backup Archive");
+        description: @tr("Restore local application state from a backup ZIP.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Apply Restore");
+            outlined: true;
+            clicked => { root.apply-restore(root.restore-path, root.passphrase); }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Network Speed Test");
+        description: @tr("Test connection throughput against Cloudflare speed endpoint.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Run Speed Test");
+            outlined: true;
+            clicked => { root.run-speed-test(root.speed-endpoint); }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("System Diagnostics");
+        description: @tr("Generate redacted diagnostic archive for troubleshooting.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Create Diagnostics");
+            outlined: true;
+            clicked => { root.create-diagnostics(root.diagnostic-path); }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Navigation Layout");
+        description: @tr("Select navigation interface preset.");
+        SelectField {
+            width: 100%;
+            field-width: 16 * root.unit;
+            unit: root.unit;
+            value: root.layout-preset;
+            options: ["Side Rail", "Top Bar", "Minimal", "Classic Home"];
+            open: root.layout-open;
+            toggle => { root.layout-open = !root.layout-open; }
+            selected(value) => { root.layout-preset = value; root.layout-open = false; }
+        }
+    }
+
+    if (root.status != "") : Text {
+        height: 3 * root.unit;
+        text: root.status;
+        color: Theme.text-primary;
+        opacity: 0.45;
+        font-size: 0.85 * root.unit;
+        wrap: word-wrap;
+    }
+}

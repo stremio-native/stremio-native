@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, LineEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { MediaCardItem } from "../components/media_card.slint";
 import { MediaCardGridRow, MediaGridPlaceholder } from "../components/media_carousel.slint";
@@ -14,6 +14,7 @@ export component LibraryPage inherits Rectangle {
     width: 1280px;
     height: 720px;
     in property <[LibraryRow]> rows: [];
+    in property <[LibraryRow]> local-rows: [];
     in property <int> column-count: 6;
     in property <bool> loading: false;
     in property <bool> has-next-page: false;
@@ -21,6 +22,10 @@ export component LibraryPage inherits Rectangle {
     in property <bool> continue-watching-mode: false;
     in-out property <string> active-type: "All";
     in-out property <string> active-sort: "Last Watched";
+    in-out property <string> local-root-path: "";
+    in property <string> local-scan-status: "";
+    private property <bool> local-mode: root.active-type == "Local";
+    private property <[LibraryRow]> visible-rows: root.local-mode ? root.local-rows : root.rows;
 
     callback type-changed(string);
     callback sort-changed(string);
@@ -32,6 +37,9 @@ export component LibraryPage inherits Rectangle {
     callback watched-changed(string, bool);
     callback play-item(string);
     callback dismiss-item(string);
+    callback local-add-root(string);
+    callback local-rescan;
+    callback local-play(string);
     in-out property <length> scroll-y: 0px;
 
     private property <bool> pagination-latched: false;
@@ -43,7 +51,7 @@ export component LibraryPage inherits Rectangle {
         }
     }
     function request-next-page() {
-        if (root.has-next-page && !root.pagination-latched) {
+        if (!root.local-mode && root.has-next-page && !root.pagination-latched) {
             root.pagination-latched = true;
             root.load-next-page();
         }
@@ -70,7 +78,7 @@ export component LibraryPage inherits Rectangle {
     VerticalLayout {
         spacing: 0px;
 
-        if (root.authenticated) : Rectangle {
+        if (root.authenticated || root.local-mode) : Rectangle {
             height: 5.75 * root.unit;
             z: 1000;
 
@@ -83,7 +91,7 @@ export component LibraryPage inherits Rectangle {
                     unit: root.unit;
                     field-width: 15 * root.unit;
                     value: root.active-type;
-                    options: ["All", "Movies", "Series", "Others"];
+                    options: ["All", "Movies", "Series", "Others", "Local"];
                     open: root.type-open;
                     toggle => {
                         root.type-open = !root.type-open;
@@ -96,7 +104,34 @@ export component LibraryPage inherits Rectangle {
                     }
                 }
 
-                HorizontalLayout {
+                if (root.local-mode) : LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> root.local-root-path;
+                    placeholder-text: @tr("Folder path to add");
+                    accepted => {
+                        if (root.local-root-path != "") {
+                            root.local-add-root(root.local-root-path);
+                        }
+                    }
+                }
+
+                if (root.local-mode) : PillButton {
+                    width: 8 * root.unit;
+                    unit: root.unit;
+                    label: @tr("Add folder");
+                    enabled: root.local-root-path != "";
+                    clicked => { root.local-add-root(root.local-root-path); }
+                }
+
+                if (root.local-mode) : PillButton {
+                    width: 7 * root.unit;
+                    unit: root.unit;
+                    label: @tr("Rescan");
+                    outlined: true;
+                    clicked => { root.local-rescan(); }
+                }
+
+                if (!root.local-mode) : HorizontalLayout {
                     spacing: 0.5 * root.unit;
                     for sort-label in ["Last Watched", "A–Z", "Z–A", "Most Watched", "Watched", "Not Watched"] : ButtonSurface {
                         height: 3.25 * root.unit;
@@ -125,11 +160,12 @@ export component LibraryPage inherits Rectangle {
             }
         }
 
-        if (!root.authenticated) : VerticalLayout {
+        if (!root.authenticated && !root.local-mode) : VerticalLayout {
             vertical-stretch: 1;
             alignment: center;
             spacing: 1.5 * root.unit;
             Text {
+                width: 100%;
                 text: @tr("Library is only available for logged in users");
                 color: Theme.text-primary;
                 opacity: 0.55;
@@ -137,6 +173,7 @@ export component LibraryPage inherits Rectangle {
                 horizontal-alignment: center;
             }
             Image {
+                x: (parent.width - self.width) / 2;
                 width: 8 * root.unit;
                 height: 6 * root.unit;
                 source: @image-url("../assets/images/icons/cloud-library.svg");
@@ -145,7 +182,8 @@ export component LibraryPage inherits Rectangle {
                 image-fit: contain;
             }
             HorizontalLayout {
-                width: 34 * root.unit;
+                x: (parent.width - self.width) / 2;
+                width: 36 * root.unit;
                 height: 5 * root.unit;
                 spacing: 3 * root.unit;
                 HorizontalLayout {
@@ -188,6 +226,7 @@ export component LibraryPage inherits Rectangle {
                 }
             }
             PillButton {
+                x: (parent.width - self.width) / 2;
                 width: 12 * root.unit;
                 unit: root.unit;
                 label: @tr("BUTTON_LOGIN" => "Log in");
@@ -196,30 +235,44 @@ export component LibraryPage inherits Rectangle {
             }
         }
 
-        if (root.authenticated && root.loading) : MediaGridPlaceholder {
+        if (!root.local-mode && root.authenticated && root.loading) : MediaGridPlaceholder {
             vertical-stretch: 1;
             unit: root.unit;
             card-width: root.card-width;
             card-height: root.card-height;
         }
 
-        if (root.authenticated && !root.loading && root.rows.length == 0) : EmptyState {
+        if ((root.local-mode || root.authenticated) && !root.loading && root.visible-rows.length == 0) : EmptyState {
             vertical-stretch: 1;
             unit: root.unit;
-            icon-source: @image-url("../assets/images/icons/library.svg");
-            title: root.continue-watching-mode
+            icon-source: root.continue-watching-mode
+                ? @image-url("../assets/images/icons/play.svg")
+                : @image-url("../assets/images/icons/library.svg");
+            title: root.local-mode
+                ? @tr("No local media found")
+                : (root.continue-watching-mode
                 ? @tr("BOARD_CONTINUE_WATCHING_EMPTY" => "Your Continue Watching list is empty")
-                : @tr("MOBILE_EMPTY_LIBRARY" => "Your library is empty");
-            message: root.continue-watching-mode
+                : @tr("MOBILE_EMPTY_LIBRARY" => "Your library is empty"));
+            message: root.local-mode
+                ? @tr("Add a managed folder or rescan your existing folders.")
+                : (root.continue-watching-mode
                 ? @tr("Start watching something and it will appear here.")
-                : @tr("Add movies and series to find them here.");
+                : @tr("Add movies and series to find them here."));
         }
 
-        if (root.authenticated && !root.loading && root.rows.length > 0) : library-scroll := ListView {
+        if (root.local-mode && root.local-scan-status != "") : Text {
+            height: 2 * root.unit;
+            text: root.local-scan-status;
+            color: Theme.text-secondary;
+            font-size: 0.9 * root.unit;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if ((root.local-mode || root.authenticated) && !root.loading && root.visible-rows.length > 0) : library-scroll := ListView {
             vertical-stretch: 1;
             viewport-width: root.width;
             viewport-y <=> root.scroll-y;
-            mouse-drag-pan-enabled: true;
             horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
             changed viewport-y => {
                 root.check-pagination(self.viewport-height + self.viewport-y - self.height);
@@ -228,12 +281,12 @@ export component LibraryPage inherits Rectangle {
                 root.check-pagination(self.viewport-height + self.viewport-y - self.height);
             }
 
-            for row[row-index] in root.rows : Rectangle {
+            for row[row-index] in root.visible-rows : Rectangle {
                 width: root.width;
                 height: root.card-height + 0.5 * root.unit;
 
                 init => {
-                    if (row-index == root.rows.length - 1) {
+                    if (!root.local-mode && row-index == root.visible-rows.length - 1) {
                         root.request-next-page();
                     }
                 }
@@ -247,17 +300,24 @@ export component LibraryPage inherits Rectangle {
                     card-width: root.card-width;
                     card-height: root.card-height;
                     spacing: 0.5 * root.unit;
-                    library-context-menu: true;
+                    library-context-menu: !root.local-mode;
                     continue-watching-context-menu: root.continue-watching-mode;
                     item-selected(id, media-type, video-id) => {
-                        root.item-selected(id, media-type, video-id);
+                        if (root.local-mode) {
+                            root.local-play(id);
+                        } else {
+                            root.item-selected(id, media-type, video-id);
+                        }
                     }
                     poster-requested(url) => { root.poster-requested(url); }
                     watched-change-requested(id, watched) => {
                         root.watched-changed(id, watched);
                     }
                     library-remove-requested(id) => { root.remove-item(id); }
-                    play-clicked(id) => { root.play-item(id); }
+                    play-clicked(id) => {
+                        if (root.local-mode) { root.local-play(id); }
+                        else { root.play-item(id); }
+                    }
                     dismiss-requested(id) => { root.dismiss-item(id); }
                 }
             }

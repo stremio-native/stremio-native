@@ -1,6 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
-import { ButtonSurface } from "button.slint";
+import { ButtonSurface, MenuButton } from "button.slint";
 import { DialogAction } from "types.slint";
 import { OnboardingModal } from "onboarding.slint";
 export { OnboardingModal }
@@ -20,6 +20,130 @@ export component PopupMenuSurface inherits Rectangle {
     @children
 }
 
+// Interactive wrapper for native dropdown content. Rejected key events bubble
+// through key-event so the composing menu can own hierarchy navigation.
+export component DropdownMenuSurface inherits PopupMenuSurface {
+    out property <bool> has-hover: interaction-area.has-hover;
+    out property <bool> has-focus: menu-focus.has-focus;
+    callback key-event(KeyEvent) -> EventResult;
+
+    forward-focus: menu-focus;
+
+    public function focus-menu() {
+        menu-focus.focus();
+    }
+
+    key-event(event) => { reject }
+
+    interaction-area := TouchArea {
+        mouse-cursor: MouseCursor.default;
+
+        menu-focus := FocusScope {
+            key-pressed(event) => { root.key-event(event) }
+
+            @children
+        }
+    }
+}
+
+// A menu row that owns a flyout. Hover and keyboard focus open immediately;
+// the parent coordinates grace-period closing and focus transfer.
+export component DropdownMenuSubTrigger inherits MenuButton {
+    in property <bool> submenu-open: false;
+    in property <string> submenu-side: "left";
+    callback open-requested(bool);
+    callback close-grace-requested;
+
+    selected: root.submenu-open;
+    show-trailing-icon: true;
+    trailing-icon-source: @image-url("../assets/images/icons/chevron-forward.svg");
+    accessible-expandable: true;
+    accessible-expanded: root.submenu-open;
+
+    changed has-hover => {
+        if (root.has-hover) {
+            root.open-requested(false);
+        } else if (!root.has-focus) {
+            root.close-grace-requested();
+        }
+    }
+
+    changed has-focus => {
+        if (root.has-focus) {
+            root.open-requested(false);
+        } else if (!root.has-hover) {
+            root.close-grace-requested();
+        }
+    }
+
+    clicked => { root.open-requested(true); }
+}
+
+// Viewport-aware flyout placement. It prefers the requested horizontal side,
+// flips when that side collides, then clamps as a final fallback.
+export component DropdownMenuSubSurface inherits DropdownMenuSurface {
+    in property <length> viewport-width;
+    in property <length> viewport-height;
+    in property <length> anchor-x;
+    in property <length> anchor-y;
+    in property <length> anchor-width;
+    in property <length> anchor-height;
+    in property <length> menu-width;
+    in property <length> menu-height;
+    in property <length> gap: 8px;
+    in property <length> collision-padding: 24px;
+    in property <string> preferred-side: "left";
+    in property <bool> focus-content-requested: false;
+
+    private property <length> left-x: root.anchor-x - root.gap - root.menu-width;
+    private property <length> right-x: root.anchor-x + root.anchor-width + root.gap;
+    private property <bool> left-fits: root.left-x >= root.collision-padding;
+    private property <bool> right-fits:
+        root.right-x + root.menu-width <= root.viewport-width - root.collision-padding;
+    private property <length> left-space:
+        root.anchor-x - root.gap - root.collision-padding;
+    private property <length> right-space:
+        root.viewport-width - root.collision-padding - root.right-x;
+    out property <string> resolved-side:
+        root.preferred-side == "right"
+            ? (root.right-fits ? "right"
+                : (root.left-fits ? "left"
+                    : (root.right-space >= root.left-space ? "right" : "left")))
+            : (root.left-fits ? "left"
+                : (root.right-fits ? "right"
+                    : (root.left-space >= root.right-space ? "left" : "right")));
+
+    x: Math.max(
+        root.collision-padding,
+        Math.min(
+            root.resolved-side == "left" ? root.left-x : root.right-x,
+            root.viewport-width - root.menu-width - root.collision-padding
+        )
+    );
+    y: Math.max(
+        root.collision-padding,
+        Math.min(
+            root.anchor-y,
+            root.viewport-height - root.menu-height - root.collision-padding
+        )
+    );
+    width: root.menu-width;
+    height: root.menu-height;
+    direction: root.resolved-side;
+
+    init => {
+        if (root.focus-content-requested) {
+            root.focus-menu();
+        }
+    }
+
+    changed focus-content-requested => {
+        if (root.focus-content-requested) {
+            root.focus-menu();
+        }
+    }
+}
+
 export component ModalDialog inherits Rectangle {
     in property <length> unit: Theme.root-font-size;
     in property <bool> open: false;
@@ -33,7 +157,7 @@ export component ModalDialog inherits Rectangle {
     callback action-triggered(string);
 
     visible: root.open;
-    background: Theme.background-dark-40;
+    background: transparent;
     forward-focus: dialog-focus;
 
     close-layer := TouchArea {
@@ -197,8 +321,7 @@ export component BottomSheet inherits Rectangle {
     Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.background;
-        opacity: 0.8;
+        background: transparent;
         TouchArea {
             mouse-cursor: MouseCursor.pointer;
             clicked => { root.drag-offset = sheet.height; }
@@ -288,7 +411,8 @@ export component BottomSheet inherits Rectangle {
 }
 
 // Context menu positioning is kept data-driven so the shell can pass pointer
-// or trigger coordinates and retain exact viewport clamping.
+// Context menu positioning is kept data-driven so the shell can pass pointer
+// or trigger coordinates and retain exact viewport clamping matching web.
 export component ContextMenuSurface inherits Rectangle {
     in property <length> unit: Theme.root-font-size;
     in-out property <bool> open: false;
@@ -315,14 +439,21 @@ export component ContextMenuSurface inherits Rectangle {
         (root.lock-direction == "bottom" ? root.anchor-y + root.anchor-height :
         (root.lock-direction == "left" || root.lock-direction == "right"
             ? root.anchor-y : root.requested-y));
-    private property <length> flipped-x:
-        root.lock-direction == "" && root.desired-x + root.menu-width > root.width - 8px
-            ? root.desired-x - root.menu-width
-            : root.desired-x;
-    private property <length> flipped-y:
-        root.lock-direction == "" && root.desired-y + root.menu-height > root.height - 8px
-            ? root.desired-y - root.menu-height
-            : root.desired-y;
+
+    private property <length> clamped-x: Math.max(
+        8px,
+        Math.min(
+            root.desired-x + root.menu-width > root.width - 8px ? root.desired-x - root.menu-width : root.desired-x,
+            root.width - root.menu-width - 8px
+        )
+    );
+    private property <length> clamped-y: Math.max(
+        8px,
+        Math.min(
+            root.desired-y + root.menu-height > root.height - 8px ? root.desired-y - root.menu-height : root.desired-y,
+            root.height - root.menu-height - 8px
+        )
+    );
 
     visible: root.open;
     opacity: root.open ? 1 : 0;
@@ -340,12 +471,12 @@ export component ContextMenuSurface inherits Rectangle {
     }
 
     menu := Rectangle {
-        x: max(8px, min(root.flipped-x, parent.width - self.width - 8px));
-        y: max(8px, min(root.flipped-y, parent.height - self.height - 8px));
+        x: root.clamped-x;
+        y: root.clamped-y;
         width: root.menu-width;
         height: root.menu-height;
         border-radius: Theme.border-radius;
-        background: Theme.modal-color;
+        background: Theme.modal-background;
         drop-shadow-offset-y: 1.35 * root.unit;
         drop-shadow-blur: 2.7 * root.unit;
         drop-shadow-color: Theme.background-dark-40;
@@ -381,8 +512,7 @@ export component ContextMenuSurface inherits Rectangle {
     }
 }
 
-// Standard row for ContextMenuSurface. The menu owns viewport placement and
-// dismissal while each row remains a normal reusable button.
+// Standard row for ContextMenuSurface. Matches web-version item layout and hover states.
 export component ContextMenuOption inherits ButtonSurface {
     in property <length> unit: Theme.root-font-size;
     in property <string> label: "";
@@ -392,9 +522,9 @@ export component ContextMenuOption inherits ButtonSurface {
     in property <bool> destructive: false;
     in property <brush> selection-color: Theme.primary-accent;
 
-    height: 3.25 * root.unit;
-    border-radius: 0px;
-    background: root.has-hover || root.has-focus ? Theme.overlay-color : transparent;
+    height: 3.5 * root.unit;
+    border-radius: Theme.border-radius / 2;
+    background: root.has-hover || root.has-focus ? Theme.overlay-hover : transparent;
     accessible-name: root.label;
 
     HorizontalLayout {
@@ -406,8 +536,8 @@ export component ContextMenuOption inherits ButtonSurface {
         if (root.show-icon) : VerticalLayout {
             alignment: center;
             Image {
-                width: 1.35 * root.unit;
-                height: 1.35 * root.unit;
+                width: 1.25 * root.unit;
+                height: 1.25 * root.unit;
                 source: root.icon-source;
                 colorize: root.destructive ? Theme.danger : Theme.primary-foreground;
                 opacity: 0.9;
@@ -419,7 +549,7 @@ export component ContextMenuOption inherits ButtonSurface {
             horizontal-stretch: 1;
             text: root.label;
             color: root.destructive ? Theme.danger : Theme.primary-foreground;
-            font-size: root.unit;
+            font-size: 1.05 * root.unit;
             font-weight: 500;
             vertical-alignment: center;
             overflow: elide;

@@ -88,10 +88,12 @@ export component SelectField inherits Rectangle {
         accessible-name: root.value == "" ? translate-option(root.placeholder) : translate-option(root.value);
         clicked => {
             root.toggle();
-            if (root.open) {
-                root.opened();
-            } else {
+            if (!root.open) {
+                popup.close();
                 root.closed();
+            } else {
+                popup.show();
+                root.opened();
             }
         }
 
@@ -134,66 +136,78 @@ export component SelectField inherits Rectangle {
         }
     }
 
-    if (root.open) : menu := Rectangle {
+    popup := PopupWindow {
         x: 0px;
-        y: root.height;
+        y: root.height + 2px;
         width: root.width;
         height: root.options.length == 0
-            ? 4 * root.unit
-            : min(root.options.length, 7) * 3 * root.unit;
-        border-radius: Theme.border-radius;
-        background: Theme.modal-color;
-        drop-shadow-blur: Theme.outer-glow-blur;
-        drop-shadow-color: Theme.outer-glow-color;
-        clip: true;
-        z: 10001;
+            ? 3 * root.unit
+            : min(root.options.length, 7) * 2.5 * root.unit;
 
-        if (root.options.length == 0) : Text {
-            width: parent.width;
-            height: parent.height;
-            text: @tr("No options");
-            color: Theme.surface-light-90;
-            font-size: 1.2 * root.unit;
-            font-weight: 500;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        menu := Rectangle {
+            width: 100%;
+            height: 100%;
+            border-radius: Theme.border-radius;
+            background: Theme.modal-color;
+            drop-shadow-blur: Theme.outer-glow-blur;
+            drop-shadow-color: Theme.outer-glow-color;
+            clip: true;
 
-        if (root.options.length > 0) : ScrollView {
-            width: parent.width;
-            height: parent.height;
+            if (root.options.length == 0) : Text {
+                width: parent.width;
+                height: parent.height;
+                text: @tr("No options");
+                color: Theme.surface-light-90;
+                font-size: 1.2 * root.unit;
+                font-weight: 500;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
 
-            VerticalLayout {
-                width: menu.width;
-                spacing: 0px;
+            if (root.options.length > 0) : ScrollView {
+                width: parent.width;
+                height: parent.height;
 
-                for option in root.options : option-button := ButtonSurface {
-                    horizontal-stretch: 1;
-                    height: 3 * root.unit;
-                    accessible-name: translate-option(option);
-                    background: self.has-hover || self.has-focus
-                        ? Theme.overlay-color
-                        : transparent;
-                    clicked => { root.selected(option); }
+                VerticalLayout {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    spacing: 0px;
 
-                    HorizontalLayout {
-                        padding: root.unit;
-                        spacing: root.unit;
-
-                        Text {
-                            horizontal-stretch: 1;
-                            text: translate-option(option);
-                            color: Theme.primary-foreground;
-                            font-size: root.unit;
-                            vertical-alignment: center;
-                            overflow: elide;
+                    for option in root.options : option-button := ButtonSurface {
+                        horizontal-stretch: 1;
+                        height: 2.5 * root.unit;
+                        accessible-name: translate-option(option);
+                        background: self.has-hover || self.has-focus
+                            ? Theme.overlay-color
+                            : transparent;
+                        clicked => {
+                            root.selected(option);
+                            popup.close();
                         }
 
-                        if (option == root.value) : Rectangle {
-                            width: 0.5 * root.unit;
-                            height: 0.5 * root.unit;
-                            border-radius: self.width / 2;
-                            background: Theme.secondary-accent;
+                        HorizontalLayout {
+                            padding-left: root.unit;
+                            padding-right: root.unit;
+                            padding-top: 0.5 * root.unit;
+                            padding-bottom: 0.5 * root.unit;
+                            spacing: root.unit;
+
+                            Text {
+                                horizontal-stretch: 1;
+                                text: translate-option(option);
+                                color: Theme.primary-foreground;
+                                font-size: root.unit;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            if (option == root.value) : Rectangle {
+                                width: 0.5 * root.unit;
+                                height: 0.5 * root.unit;
+                                border-radius: self.width / 2;
+                                background: Theme.secondary-accent;
+                            }
                         }
                     }
                 }
@@ -208,6 +222,8 @@ export component SeasonSelectField inherits Rectangle {
     in property <[int]> options: [];
     in-out property <bool> open: false;
     in property <bool> enabled: true;
+    // Floor width. The web's season pill is `flex: 0 1 auto`, so it grows with
+    // its label rather than clipping it; `field-width` only sets the minimum.
     in property <length> field-width: 15 * root.unit;
     in property <brush> surface-color: Theme.overlay-color;
     callback toggle;
@@ -215,7 +231,8 @@ export component SeasonSelectField inherits Rectangle {
     callback closed;
     callback selected(int);
 
-    width: root.field-width;
+    // 1.5u padding on each side, plus the 1.5u caret column and its 1u gap.
+    width: max(root.field-width, season-label.preferred-width + 5.5 * root.unit);
     height: 2.75 * root.unit;
     border-radius: root.height / 2;
     background: root.surface-color;
@@ -241,7 +258,7 @@ export component SeasonSelectField inherits Rectangle {
             padding-right: 1.5 * root.unit;
             spacing: root.unit;
 
-            Text {
+            season-label := Text {
                 horizontal-stretch: 1;
                 text: root.value > 0 ? @tr("SEASON_NUMBER" => "Season {}", root.value) : @tr("SPECIAL" => "Special");
                 color: Theme.primary-foreground;
@@ -276,8 +293,8 @@ export component SeasonSelectField inherits Rectangle {
         y: root.height;
         width: root.width;
         height: root.options.length == 0
-            ? 4 * root.unit
-            : min(root.options.length, 7) * 3 * root.unit;
+            ? 3 * root.unit
+            : min(root.options.length, 7) * 2.5 * root.unit;
         border-radius: Theme.border-radius;
         background: Theme.modal-color;
         drop-shadow-blur: Theme.outer-glow-blur;
@@ -301,12 +318,14 @@ export component SeasonSelectField inherits Rectangle {
             height: parent.height;
 
             VerticalLayout {
-                width: menu.width;
+                x: 0px;
+                y: 0px;
+                width: 100%;
                 spacing: 0px;
 
                 for option in root.options : option-button := ButtonSurface {
                     horizontal-stretch: 1;
-                    height: 3 * root.unit;
+                    height: 2.5 * root.unit;
                     accessible-name: option > 0 ? @tr("SEASON_NUMBER" => "Season {}", option) : @tr("SPECIAL" => "Special");
                     background: self.has-hover || self.has-focus
                         ? Theme.overlay-color
@@ -314,7 +333,10 @@ export component SeasonSelectField inherits Rectangle {
                     clicked => { root.selected(option); }
 
                     HorizontalLayout {
-                        padding: root.unit;
+                        padding-left: root.unit;
+                        padding-right: root.unit;
+                        padding-top: 0.5 * root.unit;
+                        padding-bottom: 0.5 * root.unit;
                         spacing: root.unit;
 
                         Text {

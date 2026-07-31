@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::OnceLock;
+use std::sync::{Arc, LazyLock, RwLock};
 use tokio::runtime::Handle;
 use tokio::sync::{OnceCell, mpsc};
 
 use stremio_core::{
+    constants::PROFILE_STORAGE_KEY,
     models::{ctx::Ctx, streaming_server::StreamingServer},
     runtime::{Env, EnvError, EnvFuture, TryEnvFuture},
 };
@@ -207,6 +209,185 @@ impl DesktopEnv {
 
 static DB: OnceLock<turso::Database> = OnceLock::new();
 static DB_CONNECTION: OnceCell<turso::Connection> = OnceCell::const_new();
+static CREDENTIAL_STORE: OnceLock<Arc<dyn credential_store::CredentialStore>> = OnceLock::new();
+static ACTIVE_PROFILE_ID: LazyLock<RwLock<String>> =
+    LazyLock::new(|| RwLock::new("default".to_owned()));
+const AUTH_VAULT_SENTINEL: &str = "__STREMIO_NATIVE_OS_VAULT__";
+
+pub fn install_credential_store(store: Arc<dyn credential_store::CredentialStore>) {
+    let _ = CREDENTIAL_STORE.set(store);
+}
+
+pub fn set_active_profile_scope(profile_id: impl Into<String>) {
+    *ACTIVE_PROFILE_ID
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = profile_id.into();
+}
+
+pub async fn load_profile_scope(
+    profile_id: &str,
+) -> Result<Option<stremio_core::types::profile::Profile>, EnvError> {
+    let mut conn = get_db_conn().await?;
+    let mut rows = conn
+        .query(
+            "SELECT value FROM profile_core_storage WHERE profile_id = ? AND key = ?",
+            (profile_id, PROFILE_STORAGE_KEY),
+        )
+        .await
+        .map_err(|error| EnvError::StorageReadError(error.to_string()))?;
+    let value = rows
+        .next()
+        .await
+        .map_err(|error| EnvError::StorageReadError(error.to_string()))?
+        .map(|row| row.get::<String>(0))
+        .transpose()
+        .map_err(|error| EnvError::StorageReadError(error.to_string()))?;
+    drop(rows);
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&value).map_err(|error| EnvError::Serde(error.to_string()))?;
+    rehydrate_profile_from_vault(&mut conn, profile_id, &mut raw).await?;
+    serde_json::from_value(raw)
+        .map(Some)
+        .map_err(|error| EnvError::Serde(error.to_string()))
+}
+
+fn active_profile_scope() -> String {
+    ACTIVE_PROFILE_ID
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn credential_store() -> &'static Arc<dyn credential_store::CredentialStore> {
+    CREDENTIAL_STORE.get_or_init(|| Arc::new(credential_store::PlatformCredentialStore::default()))
+}
+
+fn profile_auth_key(value: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+    value
+        .as_object_mut()?
+        .get_mut("auth")?
+        .as_object_mut()?
+        .get_mut("key")
+}
+
+fn credential_error(operation: &str, error: credential_store::CredentialError) -> EnvError {
+    let message = match error {
+        credential_store::CredentialError::Missing => "profile credential is missing",
+        credential_store::CredentialError::Locked => "operating-system credential vault is locked",
+        credential_store::CredentialError::Unavailable => {
+            "operating-system credential vault is unavailable"
+        }
+        _ => "operating-system credential vault operation failed",
+    };
+    EnvError::Other(format!("{operation}: {message}"))
+}
+
+fn vault_reference(profile_id: &str) -> Result<credential_store::CredentialRef, EnvError> {
+    credential_store::CredentialRef::stremio_auth(profile_id)
+        .map_err(|error| credential_error("credential reference", error))
+}
+
+pub async fn delete_profile_credential(profile_id: &str) -> Result<(), EnvError> {
+    let reference = vault_reference(profile_id)?;
+    match credential_store().delete(&reference).await {
+        Ok(()) | Err(credential_store::CredentialError::Missing) => Ok(()),
+        Err(error) => Err(credential_error("delete profile credential", error)),
+    }
+}
+
+async fn prepare_profile_for_storage(
+    profile_id: &str,
+    value: &mut serde_json::Value,
+) -> Result<(), EnvError> {
+    let reference = vault_reference(profile_id)?;
+    match profile_auth_key(value) {
+        Some(key) if key.as_str() == Some(AUTH_VAULT_SENTINEL) => Ok(()),
+        Some(key) => {
+            let secret =
+                serde_json::to_vec(key).map_err(|error| EnvError::Serde(error.to_string()))?;
+            credential_store()
+                .put(
+                    &reference,
+                    credential_store::SecretKind::StremioAuth,
+                    credential_store::SecretValue::new(secret),
+                )
+                .await
+                .map_err(|error| credential_error("store profile credential", error))?;
+            *key = serde_json::Value::String(AUTH_VAULT_SENTINEL.to_owned());
+            Ok(())
+        }
+        None => credential_store()
+            .delete(&reference)
+            .await
+            .map_err(|error| credential_error("delete profile credential", error)),
+    }
+}
+
+async fn rehydrate_profile_from_vault(
+    conn: &mut turso::Connection,
+    profile_id: &str,
+    raw: &mut serde_json::Value,
+) -> Result<(), EnvError> {
+    let Some(key) = profile_auth_key(raw) else {
+        return Ok(());
+    };
+    let reference = vault_reference(profile_id)?;
+    if key.as_str() == Some(AUTH_VAULT_SENTINEL) {
+        let secret = credential_store()
+            .get(&reference)
+            .await
+            .map_err(|error| credential_error("read profile credential", error))?;
+        *key = serde_json::from_slice(secret.expose())
+            .map_err(|error| EnvError::Serde(error.to_string()))?;
+        return Ok(());
+    }
+
+    // One-time plaintext migration: write the native vault first, then replace
+    // the SQLite value within a transaction before returning hydrated data.
+    let plaintext = key.clone();
+    let secret =
+        serde_json::to_vec(&plaintext).map_err(|error| EnvError::Serde(error.to_string()))?;
+    credential_store()
+        .put(
+            &reference,
+            credential_store::SecretKind::StremioAuth,
+            credential_store::SecretValue::new(secret),
+        )
+        .await
+        .map_err(|error| credential_error("migrate profile credential", error))?;
+    *key = serde_json::Value::String(AUTH_VAULT_SENTINEL.to_owned());
+    let redacted =
+        serde_json::to_string(raw).map_err(|error| EnvError::Serde(error.to_string()))?;
+    let transaction = conn
+        .transaction()
+        .await
+        .map_err(|error| EnvError::StorageWriteError(error.to_string()))?;
+    transaction
+        .execute(
+            "UPDATE profile_core_storage SET value = ? WHERE profile_id = ? AND key = ?",
+            (redacted.clone(), profile_id, PROFILE_STORAGE_KEY),
+        )
+        .await
+        .map_err(|error| EnvError::StorageWriteError(error.to_string()))?;
+    transaction
+        .execute(
+            "UPDATE core_storage SET value = ? WHERE key = ?",
+            (redacted, PROFILE_STORAGE_KEY),
+        )
+        .await
+        .map_err(|error| EnvError::StorageWriteError(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| EnvError::StorageWriteError(error.to_string()))?;
+    if let Some(key) = profile_auth_key(raw) {
+        *key = plaintext;
+    }
+    Ok(())
+}
 
 #[cfg(feature = "in-process")]
 fn in_process_router() -> Result<axum::Router, EnvError> {
@@ -299,52 +480,83 @@ impl Env for DesktopEnv {
     ) -> TryEnvFuture<Option<T>> {
         let key = key.to_owned();
         async move {
-            let conn = get_db_conn().await?;
+            let mut conn = get_db_conn().await?;
+            let profile_id = active_profile_scope();
             let mut rows = conn
-                .query("SELECT value FROM core_storage WHERE key = ?", [key])
+                .query(
+                    "SELECT value FROM profile_core_storage WHERE profile_id = ? AND key = ?",
+                    (profile_id.as_str(), key.as_str()),
+                )
                 .await
                 .map_err(|e| EnvError::StorageReadError(e.to_string()))?;
 
-            if let Some(row) = rows
+            let value_str = if let Some(row) = rows
                 .next()
                 .await
                 .map_err(|e| EnvError::StorageReadError(e.to_string()))?
             {
-                let value_str: String = row
-                    .get(0)
-                    .map_err(|e| EnvError::StorageReadError(e.to_string()))?;
-                let val: T =
-                    serde_json::from_str(&value_str).map_err(|e| EnvError::Serde(e.to_string()))?;
-                Ok(Some(val))
+                Some(
+                    row.get::<String>(0)
+                        .map_err(|e| EnvError::StorageReadError(e.to_string()))?,
+                )
             } else {
-                Ok(None)
+                None
+            };
+            drop(rows);
+            let Some(value_str) = value_str else {
+                return Ok(None);
+            };
+            let mut json: serde_json::Value = serde_json::from_str(&value_str)
+                .map_err(|error| EnvError::Serde(error.to_string()))?;
+            if key == PROFILE_STORAGE_KEY {
+                rehydrate_profile_from_vault(&mut conn, &profile_id, &mut json).await?;
             }
+            serde_json::from_value(json)
+                .map(Some)
+                .map_err(|error| EnvError::Serde(error.to_string()))
         }
         .boxed()
     }
 
     fn set_storage<T: Serialize>(key: &str, value: Option<&T>) -> TryEnvFuture<()> {
         let key = key.to_owned();
-        let value_str = match value {
-            Some(v) => match serde_json::to_string(v) {
-                Ok(s) => Some(s),
+        let value_json = match value {
+            Some(v) => match serde_json::to_value(v) {
+                Ok(value) => Some(value),
                 Err(e) => return future::ready(Err(EnvError::Serde(e.to_string()))).boxed(),
             },
             None => None,
         };
         async move {
             let conn = get_db_conn().await?;
-            if let Some(val) = value_str {
+            let profile_id = active_profile_scope();
+            if key == PROFILE_STORAGE_KEY && value_json.is_none() {
+                let reference = vault_reference(&profile_id)?;
+                credential_store()
+                    .delete(&reference)
+                    .await
+                    .map_err(|error| credential_error("delete profile credential", error))?;
+            }
+            if let Some(mut value) = value_json {
+                if key == PROFILE_STORAGE_KEY {
+                    prepare_profile_for_storage(&profile_id, &mut value).await?;
+                }
+                let val = serde_json::to_string(&value)
+                    .map_err(|error| EnvError::Serde(error.to_string()))?;
                 conn.execute(
-                    "INSERT OR REPLACE INTO core_storage (key, value) VALUES (?, ?)",
-                    (key, val),
+                    "INSERT INTO profile_core_storage (profile_id, key, value) VALUES (?, ?, ?)
+                     ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+                    (profile_id, key, val),
                 )
                 .await
                 .map_err(|e| EnvError::StorageWriteError(e.to_string()))?;
             } else {
-                conn.execute("DELETE FROM core_storage WHERE key = ?", [key])
-                    .await
-                    .map_err(|e| EnvError::StorageWriteError(e.to_string()))?;
+                conn.execute(
+                    "DELETE FROM profile_core_storage WHERE profile_id = ? AND key = ?",
+                    (profile_id, key),
+                )
+                .await
+                .map_err(|e| EnvError::StorageWriteError(e.to_string()))?;
             }
             Ok(())
         }

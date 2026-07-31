@@ -459,10 +459,11 @@ fn decode_image(bytes: &[u8]) -> Result<ImageEntry, String> {
                     .read_image(&mut rgb)
                     .map_err(|error| error.to_string())?;
                 let mut decoded = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-                for (src, dst) in rgb
-                    .chunks_exact(3)
-                    .zip(decoded.make_mut_bytes().chunks_exact_mut(4))
-                {
+                let (rgb_pixels, rgb_remainder) = rgb.as_chunks::<3>();
+                debug_assert!(rgb_remainder.is_empty());
+                let (rgba_pixels, rgba_remainder) = decoded.make_mut_bytes().as_chunks_mut::<4>();
+                debug_assert!(rgba_remainder.is_empty());
+                for (src, dst) in rgb_pixels.iter().zip(rgba_pixels) {
                     dst[..3].copy_from_slice(src);
                     dst[3] = 255;
                 }

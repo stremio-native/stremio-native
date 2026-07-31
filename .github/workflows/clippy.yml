@@ -1,0 +1,44 @@
+name: Clippy
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.rs"
+      - "**/*.slint"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/clippy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.rs"
+      - "**/*.slint"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/clippy.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  CARGO_HTTP_MULTIPLEXING: false
+
+jobs:
+  clippy:
+    name: Rust workspace
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake ninja-build pkg-config libssl-dev libtorrent-rasterbar-dev libboost-dev libclang-dev libgtk-3-dev libayatana-appindicator3-dev libmpv-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libegl1-mesa-dev
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

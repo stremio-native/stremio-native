@@ -1,7 +1,6 @@
 use crate::{AppModel, AppModelField, MainWindow};
 use core_env::DesktopEnv;
-use slint::ComponentHandle;
-use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
+use slint::winit_030::{EventResult, winit};
 use std::{
     cell::Cell,
     path::PathBuf,
@@ -61,7 +60,7 @@ fn import_torrent(runtime: Arc<Runtime<DesktopEnv, AppModel>>, path: PathBuf) {
 
 pub fn install(ui: &MainWindow, runtime: Arc<Runtime<DesktopEnv, AppModel>>) {
     let last_focus_sync = Cell::new(Instant::now());
-    ui.window().on_winit_window_event(move |_window, event| {
+    crate::window_hooks::register(ui, move |_window, event| {
         match event {
             winit::event::WindowEvent::Focused(true)
                 if last_focus_sync.get().elapsed() >= FOCUS_SYNC_DEBOUNCE =>
@@ -69,7 +68,7 @@ pub fn install(ui: &MainWindow, runtime: Arc<Runtime<DesktopEnv, AppModel>>) {
                 last_focus_sync.set(Instant::now());
                 dispatch_focus_sync(&runtime);
             }
-            winit::event::WindowEvent::DroppedFile(path) if is_torrent(&path) => {
+            winit::event::WindowEvent::DroppedFile(path) if is_torrent(path) => {
                 import_torrent(runtime.clone(), path.clone());
             }
             _ => {}

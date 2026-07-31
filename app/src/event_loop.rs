@@ -7,7 +7,7 @@ use crate::{
 };
 use core_env::DesktopEnv;
 use futures::StreamExt;
-use slint::Model;
+use slint::{Model, ModelRc};
 use std::sync::Arc;
 use stremio_core::{
     models::common::Loadable,
@@ -29,6 +29,125 @@ fn update_vec_model<T: Clone + 'static>(
         model.set_vec(values);
     }
     Ok(())
+}
+
+pub(crate) fn project_stream_selection_views(
+    ui: &MainWindow,
+    ui_weak: &slint::Weak<MainWindow>,
+    stream_selection_views: Vec<crate::playback::StreamSelectionView>,
+) {
+    let stream_links: Vec<StreamLink> = stream_selection_views
+        .into_iter()
+        .map(|link| {
+            let score_summary = link.score_reasons.join(", ");
+            StreamLink {
+                id: link.id.into(),
+                name: link.name.into(),
+                description: link.description.into(),
+                provider: link.provider.into(),
+                thumbnail: link
+                    .thumbnail
+                    .as_deref()
+                    .and_then(|thumbnail| url::Url::parse(thumbnail).ok())
+                    .map(|thumbnail| image_cache::get_poster_image(&Some(thumbnail), ui_weak))
+                    .unwrap_or_default(),
+                thumbnail_url: link.thumbnail.unwrap_or_default().into(),
+                progress: link.progress,
+                score: link.score,
+                score_reasons: ModelRc::new(slint::VecModel::from(
+                    link.score_reasons
+                        .into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<slint::SharedString>>(),
+                )),
+                score_summary: score_summary.into(),
+                filtered: link.filtered,
+            }
+        })
+        .collect();
+    let mut providers = vec![slint::SharedString::from("All")];
+    for stream in &stream_links {
+        if !providers
+            .iter()
+            .any(|provider| provider == &stream.provider)
+        {
+            providers.push(stream.provider.clone());
+        }
+    }
+    let current_streams = ui.get_stream_links();
+    if let Err(stream_links) = update_vec_model(&current_streams, stream_links) {
+        ui.set_stream_links(slint::ModelRc::new(slint::VecModel::from(stream_links)));
+    }
+    let current_providers = ui.get_detail_stream_providers();
+    if let Err(providers) = update_vec_model(&current_providers, providers) {
+        ui.set_detail_stream_providers(slint::ModelRc::new(slint::VecModel::from(providers)));
+    }
+}
+
+fn schedule_debrid_annotations(
+    runtime: Arc<Runtime<DesktopEnv, AppModel>>,
+    playback_selections: Arc<PlaybackSelections>,
+    ui_weak: slint::Weak<MainWindow>,
+) {
+    let (generation, candidates) = playback_selections.debrid_candidates();
+    if candidates.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let Ok(profile_id) = crate::profiles::active_profile_id().await else {
+            return;
+        };
+        let Ok(providers) =
+            crate::integrations::enabled_debrid_providers(profile_id.as_str()).await
+        else {
+            return;
+        };
+        if providers.is_empty() {
+            return;
+        }
+        let checks = candidates.into_iter().map(|(selection_id, hash)| {
+            let providers = providers.clone();
+            async move {
+                let results = futures::future::join_all(
+                    providers
+                        .iter()
+                        .map(|provider| provider.availability(&hash)),
+                )
+                .await;
+                let available = if results
+                    .iter()
+                    .any(|result| matches!(result, Ok(debrid::DebridAvailability::Cached)))
+                {
+                    Some(stream_ranking::DebridAvailability::Cached)
+                } else if results
+                    .iter()
+                    .any(|result| matches!(result, Ok(debrid::DebridAvailability::Uncached)))
+                {
+                    Some(stream_ranking::DebridAvailability::Uncached)
+                } else {
+                    None
+                };
+                available.map(|available| (selection_id, available))
+            }
+        });
+        let availability = futures::future::join_all(checks)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        if !playback_selections.apply_debrid_availability(generation, availability) {
+            return;
+        }
+        let views = {
+            let model = runtime.model().expect("model read failed");
+            playback_selections.rebuild(&model.meta_details, &model.ctx.profile.addons)
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                project_stream_selection_views(&ui, &ui_weak, views);
+            }
+        });
+    });
 }
 
 pub fn start_event_loop(
@@ -97,7 +216,7 @@ pub fn start_event_loop(
                     }
                     let ui_weak_clone = ui_weak.clone();
 
-                    let active_tab = navigation.active_tab_index() as usize;
+                    let active_tab = navigation.active_tab_index();
                     let profile_sync_needed = first_render || fields.contains(&AppModelField::Ctx);
                     let profile_catalogs_changed = if profile_sync_needed {
                         let fingerprint =
@@ -172,9 +291,10 @@ pub fn start_event_loop(
                         || fields.contains(&AppModelField::Board)
                         || profile_catalogs_changed)
                         && active_tab == 0;
-                    let discover_sync_needed = (first_render
-                        || fields.contains(&AppModelField::Discover))
-                        && active_tab == 1;
+                    let discover_tab =
+                        crate::Tab::try_from(active_tab).is_ok_and(crate::Tab::is_discovery);
+                    let discover_sync_needed =
+                        (first_render || fields.contains(&AppModelField::Discover)) && discover_tab;
                     let library_sync_needed = (first_render
                         || fields.contains(&AppModelField::Library)
                         || fields.contains(&AppModelField::ContinueWatching)
@@ -404,23 +524,46 @@ pub fn start_event_loop(
                         )
                         .unwrap_or(i32::MAX)
                     });
-                    let player_cloned = player_sync_needed
-                        .then(|| (model.player.clone(), model.ctx.streams.clone()));
+                    // The subtitles menu labels each add-on track with the
+                    // add-on's name, so carry the installed transport URLs out
+                    // with the player snapshot before the model guard drops.
+                    let player_cloned = player_sync_needed.then(|| {
+                        (
+                            model.player.clone(),
+                            model.ctx.streams.clone(),
+                            model
+                                .ctx
+                                .profile
+                                .addons
+                                .iter()
+                                .map(|addon| {
+                                    (addon.transport_url.to_string(), addon.manifest.name.clone())
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    });
 
                     drop(_clone_span);
                     // Drop the model guard before invoking event loop
                     drop(model);
                     let calendar_refresh_started = calendar_context_refresh_needed
                         && models::calendar::ensure_loaded(&runtime);
-                    if let (Some(playback), Some((player, streams))) =
+                    if let (Some(playback), Some((player, streams, addon_names))) =
                         (&native_playback_bridge, player_cloned.as_ref())
                         && navigation.is_player_visible()
                     {
-                        playback.sync_player(player, streams, &ui_weak_clone, &navigation);
+                        playback.sync_player(
+                            player,
+                            streams,
+                            addon_names,
+                            &ui_weak_clone,
+                            &navigation,
+                        );
                     }
                     let ui_weak_for_sync = ui_weak_clone.clone();
                     let runtime_for_sync = runtime.clone();
                     let navigation_for_sync = navigation.clone();
+                    let playback_selections_for_sync = playback_selections.clone();
                     let last_stream_fingerprint_clone = last_stream_fingerprint.clone();
                     let last_details_id_clone = last_details_id.clone();
 
@@ -578,58 +721,16 @@ pub fn start_event_loop(
                                     if let Ok(mut last) = last_stream_fingerprint_clone.lock() {
                                         *last = stream_selection_fingerprint;
                                     }
-                                    let stream_links: Vec<StreamLink> = stream_selection_views
-                                        .into_iter()
-                                        .map(|link| StreamLink {
-                                            id: link.id.into(),
-                                            name: link.name.into(),
-                                            description: link.description.into(),
-                                            provider: link.provider.into(),
-                                            thumbnail: link
-                                                .thumbnail
-                                                .as_deref()
-                                                .and_then(|thumbnail| {
-                                                    url::Url::parse(thumbnail).ok()
-                                                })
-                                                .map(|thumbnail| {
-                                                    image_cache::get_poster_image(
-                                                        &Some(thumbnail),
-                                                        &ui_weak_for_sync,
-                                                    )
-                                                })
-                                                .unwrap_or_default(),
-                                            thumbnail_url: link
-                                                .thumbnail
-                                                .unwrap_or_default()
-                                                .into(),
-                                            progress: link.progress,
-                                        })
-                                        .collect();
-                                    let mut providers = vec![slint::SharedString::from("All")];
-                                    for stream in &stream_links {
-                                        if !providers
-                                            .iter()
-                                            .any(|provider| provider == &stream.provider)
-                                        {
-                                            providers.push(stream.provider.clone());
-                                        }
-                                    }
-                                    let current_streams = ui.get_stream_links();
-                                    if let Err(stream_links) =
-                                        update_vec_model(&current_streams, stream_links)
-                                    {
-                                        ui.set_stream_links(slint::ModelRc::new(
-                                            slint::VecModel::from(stream_links),
-                                        ));
-                                    }
-                                    let current_providers = ui.get_detail_stream_providers();
-                                    if let Err(providers) =
-                                        update_vec_model(&current_providers, providers)
-                                    {
-                                        ui.set_detail_stream_providers(slint::ModelRc::new(
-                                            slint::VecModel::from(providers),
-                                        ));
-                                    }
+                                    project_stream_selection_views(
+                                        &ui,
+                                        &ui_weak_for_sync,
+                                        stream_selection_views,
+                                    );
+                                    schedule_debrid_annotations(
+                                        runtime_for_sync.clone(),
+                                        playback_selections_for_sync.clone(),
+                                        ui_weak_for_sync.clone(),
+                                    );
                                 }
                                 if let Some(loading_count) = detail_stream_loading_count {
                                     ui.set_detail_stream_loading_count(loading_count);
@@ -661,7 +762,7 @@ pub fn start_event_loop(
                                     active_tab
                                 );
                             }
-                            if discover_sync_needed && active_tab != 1 {
+                            if discover_sync_needed && !discover_tab {
                                 tracing::warn!(
                                     "Out-of-focus tab rendering warning: Discover sync requested but active tab is {}",
                                     active_tab
@@ -705,7 +806,7 @@ pub fn start_event_loop(
                                         &runtime_for_sync,
                                     );
                                 }
-                            } else if active_tab == 1 && discover_sync_needed {
+                            } else if discover_tab && discover_sync_needed {
                                 if let Some(disc) = &discover_cloned {
                                     models::discover::sync(
                                         &ui,

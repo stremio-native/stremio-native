@@ -148,6 +148,11 @@ pub fn setup(
                 ui.set_library_has_next_page(false);
                 ui.set_library_scroll_y(0.0);
             }
+            if t.as_str() == "Local" {
+                let ui_weak = ui_weak.clone();
+                tokio::spawn(crate::local_library::project(ui_weak));
+                return;
+            }
             clear_sync_state();
             let rt = runtime.clone();
             let r_type = type_from_label(t.as_str());
@@ -430,7 +435,9 @@ pub fn sync<F: LibraryFilter>(
     }
 
     if let Some(selected) = &library.selected {
-        ui.set_library_active_type(type_label(selected.request.r#type.as_deref()).into());
+        if ui.get_library_active_type().as_str() != "Local" {
+            ui.set_library_active_type(type_label(selected.request.r#type.as_deref()).into());
+        }
         ui.set_library_active_sort(sort_label(&selected.request.sort).into());
     }
 

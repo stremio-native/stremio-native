@@ -7,23 +7,32 @@ export component StreamRow inherits Rectangle {
     in property <length> unit: 16px;
     in property <string> name;
     in property <string> description;
+    in property <string> score-label: "";
+    in property <string> score-details: "";
+    in property <bool> filtered: false;
     in property <image> thumbnail;
     in property <bool> has-thumbnail: root.thumbnail.width > 0;
     in property <float> progress: 0;
     in property <bool> selected: false;
     callback play;
+    callback context-requested(length, length);
 
     height: 5.4 * root.unit;
     border-radius: Theme.border-radius;
     background: root.selected || area.has-hover ? Theme.overlay-hover : transparent;
 
     accessible-role: button;
-    accessible-label: root.name + " " + root.description;
+    accessible-label: root.name + " " + root.description + " " + root.score-details;
     accessible-action-default => { root.play(); }
 
     area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.play(); }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                root.context-requested(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
     }
 
     HorizontalLayout {
@@ -95,6 +104,32 @@ export component StreamRow inherits Rectangle {
             vertical-alignment: center;
         }
 
+        if (root.score-label != "") : Rectangle {
+            width: 3.75 * root.unit;
+            height: 1.8 * root.unit;
+            border-radius: self.height / 2;
+            background: root.filtered
+                ? Theme.danger.with-alpha(0.22)
+                : Theme.accent.with-alpha(0.2);
+
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.score-label;
+                color: root.filtered ? Theme.danger : Theme.accent;
+                font-size: 0.78 * root.unit;
+                font-weight: 650;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                mouse-cursor: help;
+                accessible-role: text;
+                accessible-label: root.score-details;
+            }
+        }
+
         if (root.selected || area.has-hover) : Rectangle {
             width: 3 * root.unit;
             height: parent.height;
@@ -143,6 +178,8 @@ export component EpisodeRow inherits Rectangle {
     callback toggle-season-watched;
     callback context-requested;
 
+    // 6rem of row plus the web's `margin-bottom: 0.5rem`, so consecutive rows
+    // in a ListView are separated the way `.video-container` is.
     height: 6.5 * root.unit;
     background: transparent;
     private property <bool> selection-highlight: false;

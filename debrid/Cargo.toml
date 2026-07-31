@@ -1,0 +1,18 @@
+[package]
+name = "debrid"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+async-trait.workspace = true
+credential-store = { path = "../credential-store" }
+reqwest = { workspace = true, features = ["rustls", "charset", "http2", "json", "query", "form"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+url.workspace = true
+
+[dev-dependencies]
+credential-store = { path = "../credential-store" }

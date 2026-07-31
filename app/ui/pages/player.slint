@@ -4,8 +4,15 @@ import { ButtonSurface, ChevronTextButton, IconAction, MenuButton, PillButton } 
 import { Video } from "../components/media_rows.slint";
 import { SeasonSelectField } from "../components/select.slint";
 import { Slider } from "../components/slider.slint";
-import { PopupMenuSurface } from "../components/overlays.slint";
-import { EpisodeItem } from "details.slint";
+import {
+    PopupMenuSurface,
+    DropdownMenuSurface,
+    DropdownMenuSubTrigger,
+    DropdownMenuSubSurface,
+    ContextMenuSurface,
+    ContextMenuOption,
+} from "../components/overlays.slint";
+import { EpisodeItem, StreamLink } from "details.slint";
 
 export struct CastDevice {
     id: string,
@@ -93,9 +100,57 @@ component PlayerMenuOption inherits MenuButton {
     show-icon: true;
     icon-size: 22px;
     label-font-size: 16px;
+    label-font-weight: 400;
     horizontal-padding: 16px;
-    hover-color: Theme.overlay-hover;
+    hover-color: Theme.overlay-color;
     opacity: 1;
+}
+
+component PlayerMenuSubTrigger inherits DropdownMenuSubTrigger {
+    unit: 14px;
+    height: 56px;
+    border-radius: Theme.border-radius;
+    show-icon: true;
+    icon-size: 22px;
+    trailing-icon-size: 18px;
+    label-font-size: 16px;
+    label-font-weight: 400;
+    horizontal-padding: 16px;
+    selected-color: Theme.overlay-color;
+    hover-color: Theme.overlay-color;
+    opacity: 1;
+}
+
+// stremio-web's SideDrawerButton is a 7.5rem circle positioned 4rem beyond
+// the right viewport edge. The visible 3.5rem handle stays centered vertically.
+component PlayerSideDrawerButton inherits ButtonSurface {
+    in property <bool> drawer-open: false;
+
+    width: 120px;
+    height: 200px;
+    border-radius: self.height / 2;
+    focus-outline-size: 0px;
+    background: Theme.modal-background;
+    drop-shadow-blur: 10px;
+    drop-shadow-color: #0000001a;
+    accessible-name: root.drawer-open
+        ? @tr("Close media details")
+        : @tr("Open media details");
+
+    Image {
+        x: 8px;
+        y: (parent.height - self.height) / 2;
+        width: 40px;
+        height: 40px;
+        source: root.drawer-open
+            ? @image-url("../assets/images/icons/chevron-forward.svg")
+            : @image-url("../assets/images/icons/chevron-back.svg");
+        colorize: Theme.primary-foreground;
+        image-fit: contain;
+        opacity: root.has-hover || root.has-focus ? 1 : 0.6;
+
+        animate opacity { duration: Theme.motion-panel; easing: ease-in-out; }
+    }
 }
 
 component SubtitleStepper inherits Rectangle {
@@ -193,6 +248,8 @@ export component PlayerPage inherits Rectangle {
     in property <bool> buffering: false;
     in property <float> buffering-percent: 0.0;
     in property <string> error-message: "";
+    in-out property <string> status-message: "";
+    in property <string> last-capture-path: "";
     in property <string> video-format: "";
     in property <string> audio-format: "";
     in property <string> file-format: "";
@@ -223,10 +280,13 @@ export component PlayerPage inherits Rectangle {
     in property <[string]> audio-track-languages: [];
     in property <[string]> audio-track-labels: [];
     in-out property <int> active-subtitle-idx: -1;
+    in-out property <int> active-secondary-subtitle-idx: -1;
     in-out property <int> active-audio-idx: 0;
     in-out property <float> subtitle-delay-seconds: 0.0;
     in-out property <float> subtitle-size-percent: 100.0;
     in-out property <float> subtitle-offset-percent: 100.0;
+    in-out property <float> secondary-subtitle-size-percent: 85.0;
+    in-out property <float> secondary-subtitle-offset-percent: 15.0;
     in-out property <float> audio-delay-seconds: 0.0;
     
     // Episode playlist
@@ -260,6 +320,13 @@ export component PlayerPage inherits Rectangle {
     in-out property <float> playback-speed: 1.0;
     in-out property <int> video-scale-mode: 0;
     in-out property <int> active-shader-preset: 0;
+    in-out property <float> ab-loop-a: -1.0;
+    in-out property <float> ab-loop-b: -1.0;
+    in-out property <string> sleep-timer-label: "";
+    in-out property <int> hdr-mode: 0;
+    in property <bool> hdr-content: false;
+    in property <bool> hdr-passthrough-available: false;
+    in-out property <bool> pip-active: false;
     in property <[bool]> shader-preset-available: [true, false, false, false, false, false, false, false];
     in property <string> shader-status: "Checking GPU support…";
     in property <[string]> shader-preset-names: [
@@ -303,14 +370,27 @@ export component PlayerPage inherits Rectangle {
     callback change-volume(float);
     callback toggle-mute();
     callback change-subtitle(int);
+    callback change-secondary-subtitle(int);
     callback change-audio(int);
     callback change-subtitle-delay(float);
     callback change-subtitle-size(float);
     callback change-subtitle-offset(float);
+    callback change-secondary-subtitle-size(float);
+    callback change-secondary-subtitle-offset(float);
     callback change-audio-delay(float);
     callback change-speed(float);
     callback change-video-scale(int);
     callback change-shader-preset(int);
+    callback set-ab-loop-point(int);
+    callback set-sleep-timer(int);
+    callback capture-frame();
+    callback reveal-last-capture();
+    callback cycle-hdr-mode();
+    callback toggle-pip();
+    callback retry-playback();
+    callback choose-another-stream();
+    callback return-to-details();
+    callback switch-stream(string);
     callback copy-stream-link();
     callback copy-magnet-link();
     callback download-subs();
@@ -334,6 +414,9 @@ export component PlayerPage inherits Rectangle {
     in-out property <bool> show-stats-menu: false;
     in-out property <bool> show-upscaler-menu: false;
     in-out property <bool> show-options-menu: false;
+    in-out property <bool> show-tools-menu: false;
+    in-out property <bool> show-streams-menu: false;
+    in property <[StreamLink]> available-streams: [];
     in-out property <bool> show-cast-menu: false;
     in-out property <bool> show-playlist-drawer: false;
     in-out property <bool> season-menu-open: false;
@@ -347,6 +430,23 @@ export component PlayerPage inherits Rectangle {
         ? stream-progress
         : buffering-percent;
     private property <bool> volume-osd-visible: false;
+    private property <int> volume-osd-level: -1;
+    private property <float> volume-osd-value: 1.0;
+    private property <string> options-focused-submenu: "";
+    private property <string> pending-submenu-focus: "";
+    private property <string> restore-options-focus: "";
+    private property <string> tools-submenu-side: "left";
+    private property <string> streams-submenu-side: "left";
+    private property <length> tools-anchor-x: root.width - 304px;
+    private property <length> tools-anchor-y:
+        root.height - min(448px, root.height - 160px) - 104px;
+    private property <length> tools-anchor-width: 224px;
+    private property <length> tools-anchor-height: 56px;
+    private property <length> streams-anchor-x: root.width - 304px;
+    private property <length> streams-anchor-y:
+        root.height - min(448px, root.height - 160px) - 44px;
+    private property <length> streams-anchor-width: 224px;
+    private property <length> streams-anchor-height: 56px;
     property <string> selected-subtitle-language: active-subtitle-idx >= 0 && active-subtitle-idx < subtitle-track-languages.length
         ? subtitle-track-languages[active-subtitle-idx]
         : "";
@@ -357,6 +457,61 @@ export component PlayerPage inherits Rectangle {
     private property <length> thumbnail-card-height: safe-thumbnail-aspect >= 1.6
         ? 160px / safe-thumbnail-aspect
         : 100px;
+
+    function close-options-submenus() {
+        submenu-close-grace.stop();
+        root.pending-submenu-focus = "";
+        root.show-tools-menu = false;
+        root.show-streams-menu = false;
+    }
+
+    function close-options-hierarchy() {
+        root.restore-options-focus = "";
+        root.show-options-menu = false;
+        root.close-options-submenus();
+    }
+
+    function open-options-submenu(kind: string, focus-content: bool) {
+        submenu-close-grace.stop();
+        root.restore-options-focus = "";
+        root.show-options-menu = true;
+        root.show-tools-menu = kind == "tools";
+        root.show-streams-menu = kind == "streams";
+        root.pending-submenu-focus = focus-content ? kind : "";
+    }
+
+    function schedule-options-submenu-close() {
+        if (root.show-tools-menu || root.show-streams-menu) {
+            submenu-close-grace.restart();
+        }
+    }
+
+    function close-options-submenu-and-restore-focus(kind: string) {
+        submenu-close-grace.stop();
+        root.pending-submenu-focus = "";
+        root.restore-options-focus = kind;
+        root.show-tools-menu = false;
+        root.show-streams-menu = false;
+    }
+
+    function toggle-player-side-drawer() {
+        let open = !root.show-playlist-drawer;
+        root.show-playlist-drawer = open;
+        root.show-stats-menu = false;
+        root.show-speed-menu = false;
+        root.show-subtitles-menu = false;
+        root.show-audio-menu = false;
+        root.show-upscaler-menu = false;
+        root.show-cast-menu = false;
+        root.close-options-hierarchy();
+    }
+
+    changed show-options-menu => {
+        if (!root.show-options-menu) {
+            root.restore-options-focus = "";
+            root.close-options-submenus();
+        }
+    }
 
     changed show-playlist-drawer => {
         if (!root.show-playlist-drawer) {
@@ -386,6 +541,16 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
+    submenu-close-grace := Timer {
+        interval: 200ms;
+        running: false;
+        triggered => {
+            self.stop();
+            root.restore-options-focus = "";
+            root.close-options-submenus();
+        }
+    }
+
     buffering-pulse-timer := Timer {
         interval: 1s;
         running: loading && !has-video-frame;
@@ -393,17 +558,35 @@ export component PlayerPage inherits Rectangle {
     }
 
     changed volume => {
-        root.volume-osd-visible = true;
-        volume-osd-timer.restart();
+        let displayed-level = round(root.volume * 100);
+        if (displayed-level != root.volume-osd-level) {
+            root.volume-osd-level = displayed-level;
+            root.volume-osd-value = root.volume;
+            root.volume-osd-visible = true;
+            volume-osd-timer.restart();
+        }
     }
 
+    // `restart()` only re-arms a timer that has already been started, so a
+    // `running: false` literal leaves it dead and the OSD never dismissed.
+    // Driving `running` off the visibility arms it on the first change; the
+    // `restart()` above then extends the window while it is already ticking.
     volume-osd-timer := Timer {
-        interval: 900ms;
-        running: false;
-        triggered => {
-            self.stop();
-            root.volume-osd-visible = false;
+        interval: 1500ms;
+        running: root.volume-osd-visible;
+        triggered => { root.volume-osd-visible = false; }
+    }
+
+    changed status-message => {
+        if (root.status-message != "") {
+            status-message-timer.restart();
         }
+    }
+
+    status-message-timer := Timer {
+        interval: 4s;
+        running: root.status-message != "";
+        triggered => { root.status-message = ""; }
     }
 
     background: #000000;
@@ -469,27 +652,27 @@ export component PlayerPage inherits Rectangle {
                 alignment: center;
 
                 PillButton {
-                    width: 170px;
+                    width: 150px;
                     unit: 16px;
-                    label: @tr("Back to streams");
-                    outlined: true;
-                    surface-color: transparent;
-                    clicked => { close(); }
+                    label: @tr("Retry manually");
+                    outlined: false;
+                    clicked => { retry-playback(); }
                 }
                 PillButton {
                     width: 190px;
                     unit: 16px;
-                    label: @tr("PLAYER_PLAY_IN" => "Play in external player");
-                    outlined: false;
-                    clicked => { open-external-player(); }
+                    label: @tr("Choose another stream");
+                    outlined: true;
+                    surface-color: transparent;
+                    clicked => { choose-another-stream(); }
                 }
                 PillButton {
                     width: 170px;
                     unit: 16px;
-                    label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
+                    label: @tr("Return to details");
                     outlined: true;
                     surface-color: transparent;
-                    clicked => { copy-stream-link(); }
+                    clicked => { return-to-details(); }
                 }
             }
         }
@@ -508,7 +691,8 @@ export component PlayerPage inherits Rectangle {
                 return;
             }
             if (!show-subtitles-menu && !show-audio-menu && !show-speed-menu &&
-                !show-stats-menu && !show-options-menu && !show-playlist-drawer) {
+                !show-stats-menu && !show-options-menu && !show-tools-menu
+                && !show-streams-menu && !show-playlist-drawer) {
                 toggle-pause();
             }
             show-subtitles-menu = false;
@@ -516,6 +700,8 @@ export component PlayerPage inherits Rectangle {
             show-speed-menu = false;
             show-stats-menu = false;
             show-options-menu = false;
+            show-tools-menu = false;
+            show-streams-menu = false;
             show-cast-menu = false;
             show-playlist-drawer = false;
             season-menu-open = false;
@@ -528,30 +714,66 @@ export component PlayerPage inherits Rectangle {
                 controls-visible = true;
                 root.activity();
             }
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                root.context-menu-x = self.absolute-position.x + self.mouse-x;
+                root.context-menu-y = self.absolute-position.y + self.mouse-y;
+                root.show-context-menu = true;
+            }
         }
+    }
 
-        ContextMenuArea {
-            width: 100%;
-            height: 100%;
-            Menu {
-                MenuItem {
-                    title: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
-                    activated => { root.copy-stream-link(); }
+    ContextMenuSurface {
+        unit: Theme.root-font-size;
+        open <=> root.show-context-menu;
+        requested-x: root.context-menu-x;
+        requested-y: root.context-menu-y;
+        menu-width: 20 * Theme.root-font-size;
+        menu-height: 16 * Theme.root-font-size;
+        close-requested => { root.show-context-menu = false; }
+
+        VerticalLayout {
+            padding: 0.5 * Theme.root-font-size;
+            spacing: 0.25 * Theme.root-font-size;
+
+            ContextMenuOption {
+                unit: Theme.root-font-size;
+                label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/link.svg");
+                clicked => {
+                    root.show-context-menu = false;
+                    root.copy-stream-link();
                 }
-                MenuItem {
-                    title: @tr("Copy magnet link");
-                    activated => { root.copy-magnet-link(); }
+            }
+            ContextMenuOption {
+                unit: Theme.root-font-size;
+                label: @tr("Copy magnet link");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/magnet-link.svg");
+                clicked => {
+                    root.show-context-menu = false;
+                    root.copy-magnet-link();
                 }
-                MenuItem {
-                    title: @tr("CTX_DOWNLOAD_VIDEO" => "Download this video");
-                    activated => { root.download-video(); }
+            }
+            ContextMenuOption {
+                unit: Theme.root-font-size;
+                label: @tr("CTX_DOWNLOAD_VIDEO" => "Download this video");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/download.svg");
+                clicked => {
+                    root.show-context-menu = false;
+                    root.download-video();
                 }
-                MenuItem {
-                    title: @tr("Playback information");
-                    activated => {
-                        root.controls-visible = true;
-                        root.show-stats-menu = true;
-                    }
+            }
+            ContextMenuOption {
+                unit: Theme.root-font-size;
+                label: @tr("Playback information");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/about.svg");
+                clicked => {
+                    root.show-context-menu = false;
+                    root.controls-visible = true;
+                    root.show-stats-menu = true;
                 }
             }
         }
@@ -607,7 +829,7 @@ export component PlayerPage inherits Rectangle {
     // Official Stremio player navigation. These items are positioned
     // explicitly instead of being put in a nested layout so their anchors do
     // not collapse when the video texture changes size.
-    if (controls-visible) : Rectangle {
+    if (controls-visible && !pip-active) : Rectangle {
         y: 0px;
         width: 100%;
         height: 128px;
@@ -676,9 +898,22 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
+    // The web player exposes this handle for every ready metadata item, not
+    // only for series. For movies it opens the compact metadata-only drawer.
+    if (controls-visible && !pip-active && item-title != "") : PlayerSideDrawerButton {
+        x: parent.width - 56px;
+        y: (parent.height - self.height) / 2;
+        drawer-open: root.show-playlist-drawer;
+        z: 173;
+        clicked => {
+            root.toggle-player-side-drawer();
+            root.activity();
+        }
+    }
+
     // Match the web player's side drawer: season navigation stays fixed while
     // the selected season's rich episode rows scroll independently.
-    if (controls-visible && show-playlist-drawer && is-series) : Rectangle {
+    if (controls-visible && !pip-active && show-playlist-drawer && item-title != "") : Rectangle {
         width: max(0px, parent.width - min(560px, parent.width * 0.42));
         height: parent.height;
         background: transparent;
@@ -695,7 +930,7 @@ export component PlayerPage inherits Rectangle {
     // Keep the drawer instantiated while player chrome is visible so changing
     // its x position produces the same 300 ms slide as the web SideDrawer.
     playlist-drawer := Rectangle {
-        visible: controls-visible && is-series;
+        visible: controls-visible && !pip-active && item-title != "";
         x: root.show-playlist-drawer ? parent.width - playlist-drawer.width : parent.width;
         y: 0px;
         width: min(560px, parent.width * 0.42);
@@ -856,15 +1091,15 @@ export component PlayerPage inherits Rectangle {
                 }
             }
 
-            Rectangle {
+            if (root.is-series) : Rectangle {
                 height: 1px;
                 background: Theme.divider;
             }
 
             episode-list := ListView {
+                visible: root.is-series;
                 vertical-stretch: 1;
                 horizontal-scrollbar-policy: always-off;
-                mouse-drag-pan-enabled: true;
 
                 for episode[idx] in episodes : Video {
                     width: parent.width;
@@ -937,7 +1172,7 @@ export component PlayerPage inherits Rectangle {
     // Official web control-bar geometry: a 10rem fade, a 2.5rem seek row and
     // a 4rem button row with 2rem page gutters. Explicit anchors keep the
     // timeline and right-side controls full-width on every Slint renderer.
-    if (controls-visible) : Rectangle {
+    if (controls-visible && !pip-active) : Rectangle {
         y: parent.height - 160px;
         width: 100%;
         height: 160px;
@@ -981,6 +1216,24 @@ export component PlayerPage inherits Rectangle {
             completed(value) => { root.seek(value); }
             hover-position-changed(val) => { root.seek-hover(val); }
             hover-left => { root.seek-leave(); }
+        }
+
+        if (ab-loop-a >= 0 && duration-seconds > 0) : Rectangle {
+            x: 130px + (parent.width - 260px) * min(1, ab-loop-a / duration-seconds);
+            y: 51px;
+            width: 3px;
+            height: 34px;
+            border-radius: 2px;
+            background: #7ee7ff;
+        }
+
+        if (ab-loop-b >= 0 && duration-seconds > 0) : Rectangle {
+            x: 130px + (parent.width - 260px) * min(1, ab-loop-b / duration-seconds);
+            y: 51px;
+            width: 3px;
+            height: 34px;
+            border-radius: 2px;
+            background: #ffcf67;
         }
 
         if (thumbnail-visible) : Rectangle {
@@ -1201,7 +1454,7 @@ export component PlayerPage inherits Rectangle {
             PlayerIconButton {
                 icon-source: @image-url("../assets/images/icons/settings-upscaler.svg");
                 tooltip: active-shader-preset == 0 ? @tr("Upscaler") : shader-preset-names[active-shader-preset];
-                active: show-upscaler-menu || active-shader-preset > 0;
+                active: show-upscaler-menu;
                 clicked => {
                     show-upscaler-menu = !show-upscaler-menu;
                     show-stats-menu = false;
@@ -1218,13 +1471,7 @@ export component PlayerPage inherits Rectangle {
                 tooltip: @tr("Episode list");
                 active: show-playlist-drawer;
                 clicked => {
-                    show-playlist-drawer = !show-playlist-drawer;
-                    show-stats-menu = false;
-                    show-speed-menu = false;
-                    show-subtitles-menu = false;
-                    show-audio-menu = false;
-                    show-upscaler-menu = false;
-                    show-options-menu = false;
+                    root.toggle-player-side-drawer();
                 }
             }
 
@@ -1256,33 +1503,131 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
+    if (status-message != "") : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: pip-active ? 20px : 76px;
+        width: min(560px, max(220px, status-text.preferred-width + 40px));
+        height: 44px;
+        border-radius: 22px;
+        background: Theme.scrim.with-alpha(0.9);
+        border-width: 1px;
+        border-color: Theme.divider;
+        z: 310;
+
+        status-text := Text {
+            x: 20px;
+            width: parent.width - 40px;
+            height: parent.height;
+            text: root.status-message;
+            color: Theme.text-primary;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    if (controls-visible && pip-active) : Rectangle {
+        x: 12px;
+        y: parent.height - self.height - 12px;
+        width: parent.width - 24px;
+        height: 68px;
+        border-radius: 18px;
+        background: Theme.scrim.with-alpha(0.86);
+        border-width: 1px;
+        border-color: Theme.divider;
+        z: 190;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 4px;
+            alignment: center;
+
+            PlayerIconButton {
+                icon-source: paused
+                    ? @image-url("../assets/images/icons/play.svg")
+                    : @image-url("../assets/images/icons/pause.svg");
+                tooltip: paused ? @tr("Play") : @tr("Pause");
+                clicked => { root.toggle-pause(); }
+            }
+            PlayerIconButton {
+                icon-source: @image-url("../assets/images/icons/replay.svg");
+                tooltip: @tr("Seek backward");
+                clicked => { root.seek-relative(-root.seek-step-seconds); }
+            }
+            if (is-series && has-next-episode) : PlayerIconButton {
+                icon-source: @image-url("../assets/images/icons/next.svg");
+                tooltip: @tr("Next episode");
+                clicked => { root.play-next-episode(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PlayerIconButton {
+                icon-source: @image-url("../assets/images/icons/maximize.svg");
+                tooltip: @tr("Restore window");
+                clicked => { root.toggle-pip(); }
+            }
+            PlayerIconButton {
+                icon-source: @image-url("../assets/images/icons/close.svg");
+                tooltip: @tr("Close player");
+                clicked => { root.close(); }
+            }
+        }
+    }
+
     if (root.volume-osd-visible) : Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 160px;
-        height: 112px;
+        width: 176px;
+        height: 176px;
         border-radius: Theme.border-radius;
-        background: Theme.scrim.with-alpha(0.86);
+        background: Theme.overlay-color;
         z: 300;
 
         VerticalLayout {
             alignment: center;
-            spacing: 8px;
-            Image {
-                width: 40px;
-                height: 40px;
-                source: muted || volume == 0
-                    ? @image-url("../assets/images/icons/volume-mute.svg")
-                    : @image-url("../assets/images/icons/volume-high.svg");
-                colorize: Theme.text-primary;
-                image-fit: contain;
+            spacing: 16px;
+            padding: 32px;
+
+            HorizontalLayout {
+                height: 72px;
+                alignment: center;
+
+                Image {
+                    width: 72px;
+                    height: 72px;
+                    source: (muted || root.volume-osd-value == 0.0)
+                        ? @image-url("../assets/images/icons/volume-mute.svg")
+                        : (root.volume-osd-value < 0.3
+                            ? @image-url("../assets/images/icons/volume-low.svg")
+                            : (root.volume-osd-value < 0.7
+                                ? @image-url("../assets/images/icons/volume-medium.svg")
+                                : @image-url("../assets/images/icons/volume-high.svg")));
+                    colorize: Theme.primary-foreground;
+                    image-fit: contain;
+                }
             }
-            Text {
-                text: muted ? @tr("Muted") : round(root.volume * 100) + "%";
-                color: Theme.text-primary;
-                font-size: 18px;
-                font-weight: 700;
-                horizontal-alignment: center;
+
+            Slider {
+                width: 100%;
+                height: 24px;
+                unit: 16px;
+                minimum: 0;
+                maximum: 2;
+                step: 0.01;
+                value: muted ? 0.0 : root.volume-osd-value;
+                track-inset: 0px;
+                track-size: 6px;
+                thumb-size: 16px;
+                hover-thumb-size: 16px;
+                track-color: Theme.primary-foreground;
+                track-opacity: 0.2;
+                buffered-color: transparent;
+                progress-color: Theme.primary-foreground;
+                thumb-color: Theme.primary-foreground;
+                changed(value) => {
+                    root.change-volume(value);
+                }
             }
         }
     }
@@ -1339,58 +1684,387 @@ export component PlayerPage inherits Rectangle {
         }
     }
 
-    if (controls-visible && show-options-menu) : options-menu := PopupMenuSurface {
+    if (controls-visible && show-options-menu) : options-menu := DropdownMenuSurface {
         x: parent.width - options-menu.width - 64px;
         y: parent.height - options-menu.height - 120px;
         width: 256px;
-        height: 336px;
-        background: Theme.card-background;
+        height: min(
+            available-streams.length > 1 ? 472px : 408px,
+            max(160px, parent.height - 208px)
+        );
+        background: Theme.modal-background;
         border-radius: Theme.border-radius;
-        border-width: 1px;
-        border-color: Theme.divider;
+        border-width: 0px;
+        drop-shadow-offset-y: 22px;
+        drop-shadow-blur: 43px;
+        drop-shadow-color: Theme.background-dark-40;
         z: 180;
 
-        VerticalLayout {
-            padding: 16px;
-            spacing: 4px;
-            PlayerMenuOption {
+        key-event(event) => {
+            if (event.text == Key.Escape) {
+                root.close-options-hierarchy();
+                return accept;
+            }
+            if (event.text == Key.RightArrow && root.options-focused-submenu != "") {
+                root.open-options-submenu(root.options-focused-submenu, true);
+                return accept;
+            }
+            reject
+        }
+
+        ScrollView {
+            horizontal-scrollbar-policy: always-off;
+            viewport-width: self.width;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+
+                playback-tools-trigger := PlayerMenuSubTrigger {
+                icon-source: @image-url("../assets/images/icons/settings.svg");
+                label: @tr("Playback tools");
+                submenu-open: root.show-tools-menu;
+                submenu-side: root.tools-submenu-side;
+                open-requested(focus-content) => {
+                    root.tools-anchor-x = self.absolute-position.x - root.absolute-position.x;
+                    root.tools-anchor-y = self.absolute-position.y - root.absolute-position.y;
+                    root.tools-anchor-width = self.width;
+                    root.tools-anchor-height = self.height;
+                    root.open-options-submenu("tools", focus-content);
+                }
+                close-grace-requested => { root.schedule-options-submenu-close(); }
+                changed has-focus => {
+                    if (self.has-focus) {
+                        root.options-focused-submenu = "tools";
+                    } else if (root.options-focused-submenu == "tools") {
+                        root.options-focused-submenu = "";
+                    }
+                }
+                changed absolute-position => {
+                    root.tools-anchor-x = self.absolute-position.x - root.absolute-position.x;
+                    root.tools-anchor-y = self.absolute-position.y - root.absolute-position.y;
+                }
+                changed width => { root.tools-anchor-width = self.width; }
+                changed height => { root.tools-anchor-height = self.height; }
+                changed submenu-open => {
+                    if (!self.submenu-open && root.restore-options-focus == "tools") {
+                        self.focus();
+                        root.restore-options-focus = "";
+                    }
+                }
+                }
+                if (available-streams.length > 1) : PlayerMenuSubTrigger {
+                icon-source: @image-url("../assets/images/icons/list.svg");
+                label: @tr("Switch stream");
+                submenu-open: root.show-streams-menu;
+                submenu-side: root.streams-submenu-side;
+                open-requested(focus-content) => {
+                    root.streams-anchor-x = self.absolute-position.x - root.absolute-position.x;
+                    root.streams-anchor-y = self.absolute-position.y - root.absolute-position.y;
+                    root.streams-anchor-width = self.width;
+                    root.streams-anchor-height = self.height;
+                    root.open-options-submenu("streams", focus-content);
+                }
+                close-grace-requested => { root.schedule-options-submenu-close(); }
+                changed has-focus => {
+                    if (self.has-focus) {
+                        root.options-focused-submenu = "streams";
+                    } else if (root.options-focused-submenu == "streams") {
+                        root.options-focused-submenu = "";
+                    }
+                }
+                changed absolute-position => {
+                    root.streams-anchor-x = self.absolute-position.x - root.absolute-position.x;
+                    root.streams-anchor-y = self.absolute-position.y - root.absolute-position.y;
+                }
+                changed width => { root.streams-anchor-width = self.width; }
+                changed height => { root.streams-anchor-height = self.height; }
+                changed submenu-open => {
+                    if (!self.submenu-open && root.restore-options-focus == "streams") {
+                        self.focus();
+                        root.restore-options-focus = "";
+                    }
+                }
+                }
+                PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/link.svg");
                 label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
                 clicked => {
                     copy-stream-link();
                     show-options-menu = false;
                 }
-            }
-            PlayerMenuOption {
+                }
+                PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/link.svg");
                 label: @tr("CTX_COPY_MAGNET_LINK" => "Copy magnet link");
                 clicked => {
                     copy-magnet-link();
                     show-options-menu = false;
                 }
-            }
-            PlayerMenuOption {
+                }
+                PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/download.svg");
                 label: @tr("CTX_DOWNLOAD_SUBS" => "Download subtitles");
                 clicked => {
                     download-subs();
                     show-options-menu = false;
                 }
-            }
-            PlayerMenuOption {
+                }
+                PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/download.svg");
                 label: @tr("CTX_DOWNLOAD_VIDEO" => "Download video");
                 clicked => {
                     download-video();
                     show-options-menu = false;
                 }
-            }
-            PlayerMenuOption {
+                }
+                PlayerMenuOption {
                 icon-source: @image-url("../assets/images/icons/play-circle.svg");
                 label: @tr("PLAYER_PLAY_IN" => "Play in external player");
                 clicked => {
                     open-external-player();
                     show-options-menu = false;
+                }
+                }
+            }
+        }
+    }
+
+    if (controls-visible && show-options-menu && show-streams-menu) : streams-menu := DropdownMenuSubSurface {
+        viewport-width: root.width;
+        viewport-height: root.height;
+        anchor-x: root.streams-anchor-x;
+        anchor-y: root.streams-anchor-y;
+        anchor-width: root.streams-anchor-width;
+        anchor-height: root.streams-anchor-height;
+        menu-width: min(480px, root.width - 96px);
+        menu-height: min(
+            min(560px, 65px + available-streams.length * 64px),
+            root.height - 48px
+        );
+        gap: 8px;
+        collision-padding: 24px;
+        preferred-side: "left";
+        focus-content-requested: root.pending-submenu-focus == "streams";
+        background: Theme.modal-background;
+        border-radius: Theme.border-radius;
+        border-width: 0px;
+        drop-shadow-offset-y: 22px;
+        drop-shadow-blur: 43px;
+        drop-shadow-color: Theme.background-dark-40;
+        z: 183;
+
+        key-event(event) => {
+            if (event.text == Key.Escape) {
+                root.close-options-hierarchy();
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.close-options-submenu-and-restore-focus("streams");
+                return accept;
+            }
+            reject
+        }
+        changed resolved-side => { root.streams-submenu-side = self.resolved-side; }
+        changed has-hover => {
+            if (self.has-hover) {
+                submenu-close-grace.stop();
+            } else if (!self.has-focus) {
+                root.schedule-options-submenu-close();
+            }
+        }
+        changed has-focus => {
+            if (self.has-focus) {
+                submenu-close-grace.stop();
+                root.pending-submenu-focus = "";
+            } else if (!self.has-hover) {
+                root.schedule-options-submenu-close();
+            }
+        }
+
+        VerticalLayout {
+            spacing: 0px;
+            HorizontalLayout {
+                height: 64px;
+                padding-left: 32px;
+                padding-right: 32px;
+                alignment: center;
+                Text {
+                    text: @tr("Choose another stream");
+                    color: Theme.text-primary;
+                    font-size: 16px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+            Rectangle { height: 1px; background: Theme.overlay-color; }
+            ListView {
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                for stream in available-streams : TrackItem {
+                    width: streams-menu.width - 24px;
+                    x: 12px;
+                    label: stream.name;
+                    secondary-label: stream.provider
+                        + (stream.description == "" ? "" : " · " + stream.description);
+                    active: stream-name == stream.name || stream-name == stream.description;
+                    clicked => {
+                        root.close-options-hierarchy();
+                        root.switch-stream(stream.id);
+                    }
+                }
+            }
+        }
+    }
+
+    if (controls-visible && show-options-menu && show-tools-menu) : tools-menu := DropdownMenuSubSurface {
+        viewport-width: root.width;
+        viewport-height: root.height;
+        anchor-x: root.tools-anchor-x;
+        anchor-y: root.tools-anchor-y;
+        anchor-width: root.tools-anchor-width;
+        anchor-height: root.tools-anchor-height;
+        menu-width: 344px;
+        menu-height: min(560px, root.height - 48px);
+        gap: 8px;
+        collision-padding: 24px;
+        preferred-side: "left";
+        focus-content-requested: root.pending-submenu-focus == "tools";
+        background: Theme.modal-background;
+        border-radius: Theme.border-radius;
+        border-width: 0px;
+        drop-shadow-offset-y: 22px;
+        drop-shadow-blur: 43px;
+        drop-shadow-color: Theme.background-dark-40;
+        z: 182;
+
+        key-event(event) => {
+            if (event.text == Key.Escape) {
+                root.close-options-hierarchy();
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.close-options-submenu-and-restore-focus("tools");
+                return accept;
+            }
+            reject
+        }
+        changed resolved-side => { root.tools-submenu-side = self.resolved-side; }
+        changed has-hover => {
+            if (self.has-hover) {
+                submenu-close-grace.stop();
+            } else if (!self.has-focus) {
+                root.schedule-options-submenu-close();
+            }
+        }
+        changed has-focus => {
+            if (self.has-focus) {
+                submenu-close-grace.stop();
+                root.pending-submenu-focus = "";
+            } else if (!self.has-hover) {
+                root.schedule-options-submenu-close();
+            }
+        }
+
+        VerticalLayout {
+            spacing: 0px;
+
+            HorizontalLayout {
+                height: 64px;
+                padding-left: 32px;
+                padding-right: 32px;
+                alignment: center;
+                Text {
+                    text: @tr("Playback tools");
+                    color: Theme.text-primary;
+                    font-size: 16px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.overlay-color; }
+
+            ScrollView {
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                horizontal-scrollbar-policy: always-off;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    PlayerMenuOption {
+                        icon-source: @image-url("../assets/images/icons/maximize.svg");
+                        label: pip-active ? @tr("Restore from picture-in-picture") : @tr("Picture-in-picture");
+                        clicked => { root.toggle-pip(); root.close-options-hierarchy(); }
+                    }
+                    PlayerMenuOption {
+                        icon-source: @image-url("../assets/images/icons/local-import.svg");
+                        label: @tr("Capture frame");
+                        clicked => { root.capture-frame(); root.close-options-hierarchy(); }
+                    }
+                    if (last-capture-path != "") : PlayerMenuOption {
+                        icon-source: @image-url("../assets/images/icons/library.svg");
+                        label: @tr("Reveal last capture");
+                        clicked => { root.reveal-last-capture(); root.close-options-hierarchy(); }
+                    }
+                    PlayerMenuOption {
+                        icon-source: @image-url("../assets/images/icons/hdr.svg");
+                        label: @tr("HDR") + ": "
+                            + (hdr-mode == 0 ? @tr("Auto") : (hdr-mode == 1 ? @tr("Passthrough")
+                            : (hdr-mode == 2 ? @tr("Tone map") : @tr("Disabled"))))
+                            + (hdr-content ? (hdr-passthrough-available ? " · " + @tr("display supported") : " · " + @tr("tone mapping")) : "");
+                        clicked => { root.cycle-hdr-mode(); }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.overlay-color; }
+                    Text {
+                        height: 34px;
+                        text: @tr("A/B loop");
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    PlayerMenuOption {
+                        label: ab-loop-a < 0 ? @tr("Set point A") : @tr("Update point A") + " · " + round(ab-loop-a * 10) / 10 + " s";
+                        clicked => { root.set-ab-loop-point(0); }
+                    }
+                    PlayerMenuOption {
+                        label: ab-loop-b < 0 ? @tr("Set point B · at least 0.25 s after A") : @tr("Update point B") + " · " + round(ab-loop-b * 10) / 10 + " s";
+                        clicked => { root.set-ab-loop-point(1); }
+                    }
+                    if (ab-loop-a >= 0 || ab-loop-b >= 0) : PlayerMenuOption {
+                        label: @tr("Clear A/B loop");
+                        clicked => { root.set-ab-loop-point(2); }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.overlay-color; }
+                    Text {
+                        height: 34px;
+                        text: sleep-timer-label == "" ? @tr("Sleep timer") : @tr("Sleep timer") + " · " + sleep-timer-label;
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    PlayerMenuOption { label: @tr("15 minutes"); clicked => { root.set-sleep-timer(15); } }
+                    PlayerMenuOption { label: @tr("30 minutes"); clicked => { root.set-sleep-timer(30); } }
+                    PlayerMenuOption { label: @tr("45 minutes"); clicked => { root.set-sleep-timer(45); } }
+                    PlayerMenuOption { label: @tr("60 minutes"); clicked => { root.set-sleep-timer(60); } }
+                    PlayerMenuOption { label: @tr("2 hours"); clicked => { root.set-sleep-timer(120); } }
+                    PlayerMenuOption { label: @tr("3 hours"); clicked => { root.set-sleep-timer(180); } }
+                    PlayerMenuOption { label: @tr("4 hours"); clicked => { root.set-sleep-timer(240); } }
+                    PlayerMenuOption { label: @tr("6 hours"); clicked => { root.set-sleep-timer(360); } }
+                    PlayerMenuOption { label: @tr("End of current episode"); clicked => { root.set-sleep-timer(-1); } }
+                    PlayerMenuOption { label: @tr("End of next episode"); clicked => { root.set-sleep-timer(-2); } }
+                    if (sleep-timer-label != "") : PlayerMenuOption {
+                        label: @tr("Cancel sleep timer");
+                        clicked => { root.set-sleep-timer(0); }
+                    }
                 }
             }
         }
@@ -1399,7 +2073,7 @@ export component PlayerPage inherits Rectangle {
     if (controls-visible && show-subtitles-menu) : subtitles-menu := PopupMenuSurface {
         x: parent.width - subtitles-menu.width - 64px;
         y: parent.height - subtitles-menu.height - 120px;
-        width: min(784px, parent.width - 128px);
+        width: min(1040px, parent.width - 128px);
         height: min(400px, parent.height - 208px);
         background: Theme.card-background;
         border-radius: Theme.border-radius;
@@ -1526,7 +2200,7 @@ export component PlayerPage inherits Rectangle {
 
             // Official Stremio menu: per-track settings (17rem).
             VerticalLayout {
-                horizontal-stretch: 1;
+                width: 256px;
                 spacing: 0px;
 
                 HorizontalLayout {
@@ -1590,6 +2264,86 @@ export component PlayerPage inherits Rectangle {
                     }
                 }
             }
+
+            Rectangle { width: 1px; background: Theme.overlay-color; }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
+
+                HorizontalLayout {
+                    height: 56px;
+                    padding-left: 20px;
+                    Text {
+                        text: @tr("Secondary subtitles");
+                        color: Theme.surface-light;
+                        font-size: 16px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    horizontal-scrollbar-policy: always-off;
+                    mouse-drag-pan-enabled: true;
+
+                    VerticalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-bottom: 12px;
+                        spacing: 4px;
+
+                        TrackItem {
+                            label: @tr("NAVIGATION_OFF" => "Off");
+                            active: active-secondary-subtitle-idx == -1;
+                            clicked => {
+                                active-secondary-subtitle-idx = -1;
+                                change-secondary-subtitle(-1);
+                            }
+                        }
+                        for sub-name[idx] in subtitles-tracks : TrackItem {
+                            label: sub-name;
+                            secondary-label: idx == active-subtitle-idx
+                                ? @tr("Selected as primary")
+                                : subtitle-track-origins[idx];
+                            active: active-secondary-subtitle-idx == idx;
+                            available: idx != active-subtitle-idx;
+                            clicked => {
+                                active-secondary-subtitle-idx = idx;
+                                change-secondary-subtitle(idx);
+                            }
+                        }
+                        SubtitleStepper {
+                            label: @tr("SIZE" => "Size");
+                            unit: "%";
+                            value: secondary-subtitle-size-percent;
+                            step: 5.0;
+                            minimum: 50.0;
+                            maximum: 200.0;
+                            disabled: active-secondary-subtitle-idx < 0;
+                            changed(value) => {
+                                secondary-subtitle-size-percent = value;
+                                change-secondary-subtitle-size(value);
+                            }
+                        }
+                        SubtitleStepper {
+                            label: @tr("PLAYER_SUBTITLES_VERTICAL_POSITION" => "Vertical Position");
+                            unit: "%";
+                            value: secondary-subtitle-offset-percent;
+                            step: 1.0;
+                            minimum: 0.0;
+                            maximum: 100.0;
+                            disabled: active-secondary-subtitle-idx < 0;
+                            changed(value) => {
+                                secondary-subtitle-offset-percent = value;
+                                change-secondary-subtitle-offset(value);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1639,7 +2393,6 @@ export component PlayerPage inherits Rectangle {
                 vertical-stretch: 1;
                 viewport-width: self.width;
                 horizontal-scrollbar-policy: always-off;
-                mouse-drag-pan-enabled: true;
 
                 VerticalLayout {
                     padding-left: 16px;
@@ -1691,7 +2444,6 @@ export component PlayerPage inherits Rectangle {
                 vertical-stretch: 1;
                 viewport-width: self.width;
                 horizontal-scrollbar-policy: always-off;
-                mouse-drag-pan-enabled: true;
 
                 VerticalLayout {
                     padding-left: 16px;
@@ -1748,7 +2500,6 @@ export component PlayerPage inherits Rectangle {
                 vertical-stretch: 1;
                 viewport-width: self.width;
                 horizontal-scrollbar-policy: always-off;
-                mouse-drag-pan-enabled: true;
 
                 VerticalLayout {
                     width: parent.width;

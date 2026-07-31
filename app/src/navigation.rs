@@ -10,6 +10,11 @@ pub enum Tab {
     Addons,
     Settings,
     Calendar,
+    Downloads,
+    Movies,
+    Shows,
+    Anime,
+    Kids,
 }
 
 impl Tab {
@@ -21,7 +26,19 @@ impl Tab {
             Self::Addons => 3,
             Self::Settings => 4,
             Self::Calendar => 5,
+            Self::Downloads => 7,
+            Self::Movies => 8,
+            Self::Shows => 9,
+            Self::Anime => 10,
+            Self::Kids => 11,
         }
+    }
+
+    pub const fn is_discovery(self) -> bool {
+        matches!(
+            self,
+            Self::Discover | Self::Movies | Self::Shows | Self::Anime | Self::Kids
+        )
     }
 }
 
@@ -36,6 +53,11 @@ impl TryFrom<i32> for Tab {
             3 => Ok(Self::Addons),
             4 => Ok(Self::Settings),
             5 => Ok(Self::Calendar),
+            7 => Ok(Self::Downloads),
+            8 => Ok(Self::Movies),
+            9 => Ok(Self::Shows),
+            10 => Ok(Self::Anime),
+            11 => Ok(Self::Kids),
             invalid => Err(invalid),
         }
     }
@@ -131,9 +153,8 @@ impl NavigationSnapshot {
             return Some(DetailsPresentation::Full);
         }
 
-        (self.active_tab_index() == Tab::Discover.index()
-            && self.discover_preview_id.as_deref() == Some(media_id))
-        .then_some(DetailsPresentation::Preview)
+        (self.root_tab().is_discovery() && self.discover_preview_id.as_deref() == Some(media_id))
+            .then_some(DetailsPresentation::Preview)
     }
 }
 
@@ -281,7 +302,8 @@ fn reduce(state: &mut NavigationSnapshot, intent: NavigationIntent) -> bool {
     match intent {
         NavigationIntent::SelectTab(tab) => {
             let routes = vec![Route::Tab(tab)];
-            let preview = (tab == Tab::Discover)
+            let preview = tab
+                .is_discovery()
                 .then(|| state.discover_preview_id.clone())
                 .flatten();
             if state.routes == routes && state.discover_preview_id == preview {
@@ -298,7 +320,7 @@ fn reduce(state: &mut NavigationSnapshot, intent: NavigationIntent) -> bool {
             true
         }
         NavigationIntent::SelectDiscoverPreview { media_id } => {
-            if state.active_tab_index() != Tab::Discover.index()
+            if !state.root_tab().is_discovery()
                 || state.discover_preview_id.as_deref() == Some(media_id.as_str())
             {
                 return false;

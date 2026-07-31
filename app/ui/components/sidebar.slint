@@ -13,16 +13,12 @@ export component NavTabButton inherits Rectangle {
     callback double-clicked;
 
     property <length> item-size: max(3.5 * root.unit, 4.8 * root.unit);
-    // This component is explicitly positioned by Sidebar, so it needs concrete
-    // geometry. A Rectangle with only layout constraints fills its parent when
-    // it is used outside a layout, which turns the hover state into a sidebar-
-    // sized overlay.
     width: root.item-size;
-    height: root.item-size;
+    height: root.selected || button.has-hover ? root.item-size : 3.8 * root.unit;
     border-radius: Theme.border-radius;
     background: button.has-hover ? Theme.overlay-color : transparent;
 
-    animate background { duration: Theme.motion-fast; }
+    animate background, height { duration: Theme.motion-fast; }
 
     button := ButtonSurface {
         width: parent.width;
@@ -34,40 +30,32 @@ export component NavTabButton inherits Rectangle {
         double-clicked => { root.double-clicked(); }
     }
 
-    // A full-width slot avoids accumulating offsets from the rail, button,
-    // and SVG geometry. Every icon shares the exact rail centre line.
-    Rectangle {
-        x: 0px;
-        y: 0.45 * root.unit;
-        width: parent.width;
-        height: 2.4 * root.unit;
-        background: transparent;
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: root.selected || button.has-hover ? 0.5 * root.unit : (parent.height - self.height) / 2;
+        width: 2.2 * root.unit;
+        height: 2.2 * root.unit;
+        source: root.has-logo
+            ? root.logo-source
+            : (root.selected ? root.active-icon-source : root.icon-source);
+        colorize: root.has-logo
+            ? transparent
+            : (root.selected ? Theme.primary-accent : Theme.primary-foreground);
+        opacity: root.has-logo ? 1 : (root.selected ? 1 : 0.45);
+        image-fit: contain;
 
-        Image {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 2.2 * root.unit;
-            height: 2.2 * root.unit;
-            source: root.has-logo
-                ? root.logo-source
-                : (root.selected ? root.active-icon-source : root.icon-source);
-            colorize: root.has-logo
-                ? transparent
-                : (root.selected ? Theme.primary-accent : Theme.primary-foreground);
-            opacity: root.has-logo ? 1 : (root.selected ? 1 : 0.35);
-            image-fit: contain;
-        }
+        animate y { duration: Theme.motion-fast; }
     }
 
-    Text {
+    if (root.selected || button.has-hover) : Text {
         z: 10;
         x: 0.5 * root.unit;
-        y: 3.05 * root.unit;
+        y: 2.95 * root.unit;
         width: parent.width - root.unit;
         height: 1.5 * root.unit;
         text: root.label;
         color: root.selected ? Theme.primary-accent : Theme.primary-foreground;
-        opacity: root.selected ? 1 : (button.has-hover ? 0.6 : 0);
+        opacity: root.selected ? 1 : 0.7;
         font-size: 0.8 * root.unit;
         font-weight: 500;
         letter-spacing: 0.01 * root.unit;
@@ -98,15 +86,17 @@ export component Sidebar inherits Rectangle {
     callback tab-double-clicked(int);
     callback logout;
 
-    // Keep the navigation rail on the same canonical width used by the
-    // horizontal navbar. The preview unit intentionally changes by viewport,
-    // while this token remains the single source of truth for rail alignment.
     width: Theme.vertical-nav-bar-size;
     background: transparent;
 
-    NavTabButton {
+    VerticalLayout {
+        width: parent.width;
+        alignment: start;
+        padding-top: 0.8 * root.unit;
+        spacing: 0.6 * root.unit;
+
+        NavTabButton {
             x: (parent.width - self.width) / 2;
-            y: 1 * root.unit;
             unit: root.unit;
             label: @tr("Board");
             icon-source: @image-url("../assets/images/icons/home-outline.svg");
@@ -115,9 +105,8 @@ export component Sidebar inherits Rectangle {
             clicked => { root.change-tab(0); }
             double-clicked => { root.tab-double-clicked(0); }
         }
-    NavTabButton {
+        NavTabButton {
             x: (parent.width - self.width) / 2;
-            y: 6.8 * root.unit;
             unit: root.unit;
             label: @tr("Discover" => "Discover");
             icon-source: @image-url("../assets/images/icons/discover-outline.svg");
@@ -126,9 +115,8 @@ export component Sidebar inherits Rectangle {
             clicked => { root.change-tab(1); }
             double-clicked => { root.tab-double-clicked(1); }
         }
-    NavTabButton {
+        NavTabButton {
             x: (parent.width - self.width) / 2;
-            y: 12.6 * root.unit;
             unit: root.unit;
             label: @tr("Library" => "Library");
             icon-source: @image-url("../assets/images/icons/library-outline.svg");
@@ -137,9 +125,8 @@ export component Sidebar inherits Rectangle {
             clicked => { root.change-tab(2); }
             double-clicked => { root.tab-double-clicked(2); }
         }
-    NavTabButton {
+        NavTabButton {
             x: (parent.width - self.width) / 2;
-            y: 18.4 * root.unit;
             unit: root.unit;
             label: @tr("Calendar");
             icon-source: @image-url("../assets/images/icons/calendar-outline.svg");
@@ -148,9 +135,8 @@ export component Sidebar inherits Rectangle {
             clicked => { root.change-tab(5); }
             double-clicked => { root.tab-double-clicked(5); }
         }
-    NavTabButton {
+        NavTabButton {
             x: (parent.width - self.width) / 2;
-            y: 24.2 * root.unit;
             unit: root.unit;
             label: @tr("ADDONS" => "Addons");
             icon-source: @image-url("../assets/images/icons/addons-outline.svg");
@@ -159,9 +145,18 @@ export component Sidebar inherits Rectangle {
             clicked => { root.change-tab(3); }
             double-clicked => { root.tab-double-clicked(3); }
         }
-    NavTabButton {
+        NavTabButton {
             x: (parent.width - self.width) / 2;
-            y: 30 * root.unit;
+            unit: root.unit;
+            label: @tr("DOWNLOADS_TITLE" => "Downloads");
+            icon-source: @image-url("../assets/images/icons/download.svg");
+            active-icon-source: @image-url("../assets/images/icons/download.svg");
+            selected: root.active-tab == 7;
+            clicked => { root.change-tab(7); }
+            double-clicked => { root.tab-double-clicked(7); }
+        }
+        NavTabButton {
+            x: (parent.width - self.width) / 2;
             unit: root.unit;
             label: @tr("SETTINGS" => "Settings");
             icon-source: @image-url("../assets/images/icons/settings-outline.svg");
@@ -169,5 +164,6 @@ export component Sidebar inherits Rectangle {
             selected: root.active-tab == 4;
             clicked => { root.change-tab(4); }
             double-clicked => { root.tab-double-clicked(4); }
+        }
     }
 }

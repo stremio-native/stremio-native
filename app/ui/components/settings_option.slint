@@ -1,0 +1,45 @@
+import { Theme } from "../theme.slint";
+
+export component SettingsOption inherits Rectangle {
+    in property <length> unit: 16px;
+    in property <string> label;
+    in property <string> description: "";
+
+    height: root.description == "" ? 5 * root.unit : 6 * root.unit;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 2 * root.unit;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 0.35 * root.unit;
+            Text {
+                text: root.label;
+                color: Theme.text-primary;
+                font-size: root.unit;
+                font-weight: 500;
+                wrap: word-wrap;
+            }
+            if (root.description != "") : Text {
+                text: root.description;
+                color: Theme.text-primary;
+                opacity: 0.45;
+                font-size: 0.85 * root.unit;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            width: 26 * root.unit;
+            alignment: center;
+            HorizontalLayout {
+                width: 100%;
+                alignment: end;
+                @children
+            }
+        }
+    }
+}

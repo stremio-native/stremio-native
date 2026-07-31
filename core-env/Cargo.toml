@@ -21,6 +21,7 @@ base64.workspace = true
 blake3.workspace = true
 tower = { workspace = true, features = ["util"] }
 turso.workspace = true
+credential-store = { path = "../credential-store" }
 
 [features]
 default = ["stremio-core/env-future-send"]

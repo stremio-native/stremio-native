@@ -7,7 +7,7 @@ import { MetaPreview, MetaPreviewPlaceholder } from "../components/meta_preview.
 import { SelectField, SeasonSelectField } from "../components/select.slint";
 import { SearchBar } from "../components/text_input.slint";
 import { ToggleSwitch } from "../components/toggle.slint";
-import { ModalDialog } from "../components/overlays.slint";
+import { ModalDialog, ContextMenuSurface, ContextMenuOption } from "../components/overlays.slint";
 import { NumberInput } from "../components/number_input.slint";
 import { SharePrompt } from "../components/share_prompt.slint";
 
@@ -19,6 +19,10 @@ export struct StreamLink {
     thumbnail-url: string,
     thumbnail: image,
     progress: float,
+    score: int,
+    score-reasons: [string],
+    score-summary: string,
+    filtered: bool,
 }
 
 export struct EpisodeItem {
@@ -49,10 +53,15 @@ export component DetailsPage inherits Rectangle {
     in property <[string]> genres: [];
     in property <[string]> cast: [];
     in property <[string]> directors: [];
+    in property <string> enrichment-summary: "";
+    in property <string> enrichment-attribution-url: "";
+    callback open-attribution(string);
     in property <[StreamLink]> streams: [];
     in property <[string]> stream-providers: ["All"];
     in property <int> stream-loading-count: 0;
     in-out property <string> active-stream-provider: "All";
+    in-out property <string> ranking-mode: "Smart";
+    in-out property <bool> show-filtered: false;
     in property <bool> loading: false;
     in property <bool> is-in-library: false;
     in property <bool> is-watched: false;
@@ -91,8 +100,14 @@ export component DetailsPage inherits Rectangle {
     callback open-addons;
     callback share-copy(string);
     callback share-social(string, string);
+    callback ranking-mode-changed(string);
+    callback show-filtered-changed(bool);
     in property <string> share-url: "";
     in-out property <bool> share-modal-open: false;
+    private property <bool> stream-context-open: false;
+    private property <length> stream-context-x: 0px;
+    private property <length> stream-context-y: 0px;
+    private property <string> stream-context-id: "";
     in-out property <int> manual-season: root.active-season;
     in-out property <int> manual-episode: 1;
     in property <IconData> icon-play;
@@ -108,15 +123,13 @@ export component DetailsPage inherits Rectangle {
     in property <length> unit: Theme.root-font-size;
     property <length> drawer-width: 30 * root.unit;
     in-out property <bool> stream-filter-open: false;
+    in-out property <bool> ranking-filter-open: false;
     private property <int> first-season: root.available-seasons.length > 0
         ? root.available-seasons[0] : root.active-season;
     private property <int> last-season: root.available-seasons.length > 0
         ? root.available-seasons[root.available-seasons.length - 1] : root.active-season;
+    // Minimum for the season pill; it sizes to its own label beyond this.
     private property <length> season-button-width: 10 * root.unit;
-    private property <length> season-button-x: root.width - root.drawer-width
-        + 1.5 * root.unit
-        + (root.drawer-width - 3 * root.unit - root.season-button-width) / 2;
-    private property <length> season-button-y: 11.8 * root.unit;
 
     background: Theme.modal-background;
     clip: true;
@@ -168,7 +181,10 @@ export component DetailsPage inherits Rectangle {
             background: Theme.drawer-background;
 
             VerticalLayout {
-                padding: 1.5 * root.unit;
+                padding-top: 1.5 * root.unit;
+                padding-left: 1.5 * root.unit;
+                padding-right: 1.5 * root.unit;
+                padding-bottom: 0.75 * root.unit;
                 spacing: root.unit;
 
                 SkeletonBlock {
@@ -219,37 +235,120 @@ export component DetailsPage inherits Rectangle {
         }
     }
 
+    if (!root.loading && root.enrichment-summary != "") : ButtonSurface {
+        x: 4 * root.unit;
+        y: parent.height - 3.5 * root.unit;
+        width: parent.width - root.drawer-width - 8 * root.unit;
+        height: 2.5 * root.unit;
+        border-radius: 1.25 * root.unit;
+        background: self.has-hover ? Theme.overlay-hover : Theme.overlay-color;
+        accessible-name: root.enrichment-summary;
+        clicked => {
+            if (root.enrichment-attribution-url != "") {
+                root.open-attribution(root.enrichment-attribution-url);
+            }
+        }
+        Text {
+            width: parent.width - 2 * root.unit;
+            x: root.unit;
+            height: parent.height;
+            text: root.enrichment-summary;
+            color: Theme.text-secondary;
+            font-size: 0.85 * root.unit;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // `.videos-list, .streams-list { flex: 0 0 30rem; align-self: stretch }` —
+    // the web panel is a fixed-width column pinned to the full height of the
+    // content row, never sized to its own content. It sits flush against the
+    // right edge, so only the left corners are rounded.
     if (!root.loading) : Rectangle {
         x: parent.width - root.drawer-width;
         y: 6 * root.unit;
         width: root.drawer-width;
         height: parent.height - 6 * root.unit;
-        border-radius: Theme.border-radius;
+        border-top-left-radius: Theme.border-radius;
+        border-bottom-left-radius: Theme.border-radius;
         background: Theme.drawer-background;
         clip: true;
 
+        // Base inset is the web's 1rem, shared by `.videos-container`,
+        // `.streams-container` and `.select-choices-wrapper`. Sections the web
+        // insets further (notifications, search bar, seasons bar) add their own
+        // padding on top of this.
         VerticalLayout {
             padding-top: 1.5 * root.unit;
-            padding-left: 1.5 * root.unit;
-            padding-right: 1.5 * root.unit;
-            padding-bottom: root.unit;
-            spacing: root.unit;
+            padding-left: root.unit;
+            padding-right: root.unit;
+            padding-bottom: 0.75 * root.unit;
+            spacing: 0.75 * root.unit;
 
-            if (!root.is-series) : Rectangle {
+            if (!root.is-series || root.in-stream-view) : HorizontalLayout {
                 height: 2.75 * root.unit;
+                spacing: 0.75 * root.unit;
                 z: 10000;
 
-                SelectField {
-                    unit: root.unit;
-                    field-width: parent.width;
-                    value: root.active-stream-provider;
-                    options: root.stream-providers;
-                    open: root.stream-filter-open;
-                    toggle => { root.stream-filter-open = !root.stream-filter-open; }
-                    selected(provider) => {
-                        root.active-stream-provider = provider;
-                        root.stream-filter-open = false;
+                Rectangle {
+                    horizontal-stretch: 1;
+
+                    SelectField {
+                        unit: root.unit;
+                        field-width: parent.width;
+                        value: root.active-stream-provider;
+                        options: root.stream-providers;
+                        open: root.stream-filter-open;
+                        toggle => { root.stream-filter-open = !root.stream-filter-open; }
+                        selected(provider) => {
+                            root.active-stream-provider = provider;
+                            root.stream-filter-open = false;
+                        }
                     }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+
+                    SelectField {
+                        unit: root.unit;
+                        field-width: parent.width;
+                        value: root.ranking-mode;
+                        options: ["Smart", "Quality", "Smallest", "Seeders", "Original"];
+                        open: root.ranking-filter-open;
+                        toggle => { root.ranking-filter-open = !root.ranking-filter-open; }
+                        selected(mode) => {
+                            root.ranking-mode = mode;
+                            root.ranking-filter-open = false;
+                            root.ranking-mode-changed(mode);
+                        }
+                    }
+                }
+            }
+
+            if ((!root.is-series || root.in-stream-view) && root.streams.length > 0) : Rectangle {
+                height: 2.25 * root.unit;
+                background: transparent;
+
+                // Toggle rows sit at the web's 1.5rem inset: 1rem from the
+                // container plus 0.5rem here.
+                ToggleSwitch {
+                    x: 0.5 * root.unit;
+                    y: (parent.height - self.height) / 2;
+                    unit: root.unit;
+                    checked <=> root.show-filtered;
+                    toggled => { root.show-filtered-changed(root.show-filtered); }
+                }
+
+                Text {
+                    x: 4.7 * root.unit;
+                    width: parent.width - self.x - 0.5 * root.unit;
+                    height: parent.height;
+                    text: @tr("STREAM_SHOW_FILTERED" => "Show suspicious or filtered sources");
+                    color: Theme.text-secondary;
+                    font-size: 0.9 * root.unit;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
             }
 
@@ -258,7 +357,7 @@ export component DetailsPage inherits Rectangle {
                 background: transparent;
 
                 ToggleSwitch {
-                    x: 0px;
+                    x: 0.5 * root.unit;
                     y: (parent.height - self.height) / 2;
                     unit: root.unit;
                     checked <=> root.notifications-enabled;
@@ -266,9 +365,9 @@ export component DetailsPage inherits Rectangle {
                 }
 
                 Text {
-                    x: 4.2 * root.unit;
+                    x: 4.7 * root.unit;
                     y: 0px;
-                    width: parent.width - self.x;
+                    width: parent.width - self.x - 0.5 * root.unit;
                     height: parent.height;
                     text: @tr("DETAIL_RECEIVE_NOTIF_SERIES" => "Receive notifications for new episodes");
                     color: Theme.surface-light-90;
@@ -283,41 +382,46 @@ export component DetailsPage inherits Rectangle {
                 background: transparent;
                 z: 10000;
 
-                ChevronTextButton {
-                    x: 0px;
-                    y: 0.5 * root.unit;
-                    unit: root.unit;
-                    label: @tr("Prev");
-                    icon-source: @image-url("../assets/images/icons/chevron-back.svg");
-                    enabled: root.active-season != root.first-season;
-                    clicked => { root.season-step(-1); }
-                }
+                // The web's `.seasons-bar-container` is a `space-between` row
+                // inset a further 1rem (margin) inside its own 1rem padding, so
+                // the pill stays centred whatever width its label needs.
+                HorizontalLayout {
+                    padding-left: root.unit;
+                    padding-right: root.unit;
+                    padding-top: 0.5 * root.unit;
+                    padding-bottom: 0.5 * root.unit;
+                    alignment: space-between;
 
-                SeasonSelectField {
-                    x: (parent.width - self.width) / 2;
-                    y: 0.5 * root.unit;
-                    unit: root.unit;
-                    field-width: root.season-button-width;
-                    value: root.active-season;
-                    options: root.available-seasons;
-                    open: root.season-menu-open;
-                    toggle => { root.season-menu-open = !root.season-menu-open; }
-                    selected(season) => {
-                        root.active-season = season;
-                        root.season-menu-open = false;
-                        root.season-changed(season);
+                    ChevronTextButton {
+                        unit: root.unit;
+                        label: @tr("Prev");
+                        icon-source: @image-url("../assets/images/icons/chevron-back.svg");
+                        enabled: root.active-season != root.first-season;
+                        clicked => { root.season-step(-1); }
                     }
-                }
 
-                ChevronTextButton {
-                    x: parent.width - self.width;
-                    y: 0.5 * root.unit;
-                    unit: root.unit;
-                    label: @tr("Next");
-                    trailing-icon: true;
-                    icon-source: @image-url("../assets/images/icons/chevron-forward.svg");
-                    enabled: root.active-season != root.last-season;
-                    clicked => { root.season-step(1); }
+                    SeasonSelectField {
+                        unit: root.unit;
+                        field-width: root.season-button-width;
+                        value: root.active-season;
+                        options: root.available-seasons;
+                        open: root.season-menu-open;
+                        toggle => { root.season-menu-open = !root.season-menu-open; }
+                        selected(season) => {
+                            root.active-season = season;
+                            root.season-menu-open = false;
+                            root.season-changed(season);
+                        }
+                    }
+
+                    ChevronTextButton {
+                        unit: root.unit;
+                        label: @tr("Next");
+                        trailing-icon: true;
+                        icon-source: @image-url("../assets/images/icons/chevron-forward.svg");
+                        enabled: root.active-season != root.last-season;
+                        clicked => { root.season-step(1); }
+                    }
                 }
 
                 ContextMenuArea {
@@ -330,13 +434,20 @@ export component DetailsPage inherits Rectangle {
                 }
             }
 
-            if (root.is-series && !root.in-stream-view) : SearchBar {
-                horizontal-stretch: 1;
+            // `.search-bar { margin: 0 1.5rem 1rem 1.5rem }` — 0.5rem beyond the
+            // container's own inset.
+            if (root.is-series && !root.in-stream-view) : HorizontalLayout {
                 height: 3 * root.unit;
-                unit: root.unit;
-                text <=> root.episode-search-query;
-                title: @tr("SEARCH_VIDEOS" => "search videos");
-                edited => { root.episode-search-changed(root.episode-search-query); }
+                padding-left: 0.5 * root.unit;
+                padding-right: 0.5 * root.unit;
+
+                SearchBar {
+                    horizontal-stretch: 1;
+                    unit: root.unit;
+                    text <=> root.episode-search-query;
+                    title: @tr("SEARCH_VIDEOS" => "search videos");
+                    edited => { root.episode-search-changed(root.episode-search-query); }
+                }
             }
 
             if (root.is-series && root.in-stream-view) : HorizontalLayout {
@@ -364,14 +475,6 @@ export component DetailsPage inherits Rectangle {
                     font-weight: 500;
                     vertical-alignment: center;
                     overflow: elide;
-                }
-                Text {
-                    width: 4 * root.unit;
-                    text: @tr("ALL" => "All") + "  ▾";
-                    color: Theme.text-primary;
-                    opacity: 0.8;
-                    font-size: root.unit;
-                    vertical-alignment: center;
                 }
             }
 
@@ -459,7 +562,6 @@ export component DetailsPage inherits Rectangle {
             if ((!root.is-series || root.in-stream-view) && root.streams.length > 0) : ListView {
                 vertical-stretch: 1;
                 horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                mouse-drag-pan-enabled: true;
 
                 for stream in root.streams : stream-delegate := Rectangle {
                     private property <bool> matches-provider:
@@ -481,29 +583,17 @@ export component DetailsPage inherits Rectangle {
                         unit: root.unit;
                         name: stream.name;
                         description: stream.description;
+                        score-label: root.ranking-mode == "Original" ? "" : (stream.score >= 0 ? "+" + stream.score : "" + stream.score);
+                        score-details: stream.score-summary;
+                        filtered: stream.filtered;
                         thumbnail: stream.thumbnail;
                         progress: stream.progress;
                         play => { root.play-stream(stream.id); }
-                    }
-
-                    ContextMenuArea {
-                        Menu {
-                            MenuItem {
-                                title: @tr("CTX_PLAY" => "Play");
-                                activated => { root.play-stream(stream.id); }
-                            }
-                            MenuItem {
-                                title: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
-                                activated => { root.copy-stream-link(stream.id); }
-                            }
-                            MenuItem {
-                                title: @tr("CTX_COPY_MAGNET_LINK" => "Copy magnet link");
-                                activated => { root.copy-magnet-link(stream.id); }
-                            }
-                            MenuItem {
-                                title: @tr("CTX_COPY_VIDEO_DOWNLOAD_LINK" => "Copy video download link");
-                                activated => { root.copy-download-link(stream.id); }
-                            }
+                        context-requested(x, y) => {
+                            root.stream-context-x = x;
+                            root.stream-context-y = y;
+                            root.stream-context-id = stream.id;
+                            root.stream-context-open = true;
                         }
                     }
                 }
@@ -522,6 +612,71 @@ export component DetailsPage inherits Rectangle {
                     height: 0.3 * root.unit;
                     border-radius: self.height / 2;
                     background: Theme.accent;
+                }
+            }
+        }
+    }
+
+    // Anchored on window coordinates taken from the row's `absolute-position`,
+    // so it has to span the page to clamp correctly. It also must not be a child
+    // of the drawer's VerticalLayout: an overlay still claims a layout slot
+    // there, which is what left a blank band under the list.
+    if (!root.loading) : ContextMenuSurface {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        z: 100;
+        unit: root.unit;
+        open <=> root.stream-context-open;
+        requested-x: root.stream-context-x;
+        requested-y: root.stream-context-y;
+        menu-width: 22 * root.unit;
+        menu-height: 16 * root.unit;
+        close-requested => { root.stream-context-open = false; }
+
+        VerticalLayout {
+            padding: 0.5 * root.unit;
+            spacing: 0.25 * root.unit;
+
+            ContextMenuOption {
+                unit: root.unit;
+                label: @tr("CTX_PLAY" => "Play");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/play.svg");
+                clicked => {
+                    root.stream-context-open = false;
+                    root.play-stream(root.stream-context-id);
+                }
+            }
+            ContextMenuOption {
+                unit: root.unit;
+                label: @tr("CTX_COPY_STREAM_LINK" => "Copy stream link");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/link.svg");
+                clicked => {
+                    root.stream-context-open = false;
+                    root.copy-stream-link(root.stream-context-id);
+                }
+            }
+            ContextMenuOption {
+                unit: root.unit;
+                label: @tr("CTX_COPY_MAGNET_LINK" => "Copy magnet link");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/magnet-link.svg");
+                clicked => {
+                    root.stream-context-open = false;
+                    root.copy-magnet-link(root.stream-context-id);
+                }
+            }
+            ContextMenuOption {
+                unit: root.unit;
+                label: @tr("CTX_COPY_VIDEO_DOWNLOAD_LINK" => "Copy video download link");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/download.svg");
+                clicked => {
+                    root.stream-context-open = false;
+                    root.copy-download-link(root.stream-context-id);
                 }
             }
         }

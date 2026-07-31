@@ -1,0 +1,143 @@
+import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ButtonSurface, PillButton } from "button.slint";
+
+export struct ProfileItem {
+    id: string,
+    name: string,
+    avatar: string,
+    role: string,
+    has-pin: bool,
+}
+
+export component ProfilePicker inherits Rectangle {
+    in property <[ProfileItem]> profiles: [];
+    in-out property <string> selected-id: "";
+    in-out property <string> pin: "";
+    in property <string> error-message: "";
+    callback selected(string, string);
+
+    background: Theme.modal-background;
+    accessible-role: list;
+    accessible-label: @tr("Choose a profile");
+
+    VerticalLayout {
+        x: max(32px, (parent.width - self.width) / 2);
+        y: max(32px, (parent.height - self.height) / 2);
+        width: min(760px, parent.width - 64px);
+        height: min(620px, parent.height - 64px);
+        spacing: 18px;
+        alignment: center;
+
+        Text {
+            height: 50px;
+            text: @tr("Who's watching?");
+            color: Theme.text-primary;
+            font-size: 30px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Text {
+            height: 30px;
+            text: @tr("Each local profile has its own Stremio account and preferences.");
+            color: Theme.text-secondary;
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        ListView {
+            width: parent.width;
+            vertical-stretch: 1;
+            viewport-width: self.width;
+            for profile in root.profiles : ButtonSurface {
+                width: parent.width;
+                height: 76px;
+                border-radius: Theme.border-radius;
+                border-width: root.selected-id == profile.id ? 2px : 1px;
+                border-color: root.selected-id == profile.id ? Theme.accent : Theme.divider;
+                background: self.has-hover ? Theme.overlay-hover : Theme.card-background;
+                accessible-name: profile.name;
+                clicked => {
+                    root.selected-id = profile.id;
+                    root.pin = "";
+                }
+
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 14px;
+                    alignment: center;
+                    Rectangle {
+                        width: 48px;
+                        height: 48px;
+                        border-radius: 24px;
+                        background: Theme.accent.with-alpha(0.22);
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: profile.role == "Kids" ? "K" : (profile.role == "Owner" ? "O" : "S");
+                            color: Theme.text-primary;
+                            font-size: 20px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 2px;
+                        Text {
+                            text: profile.name;
+                            color: Theme.text-primary;
+                            font-size: 17px;
+                            font-weight: 650;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: profile.role + (profile.has-pin ? " · " + @tr("PIN protected") : "");
+                            color: Theme.text-secondary;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (root.selected-id != "") : Rectangle {
+            // The selected profile's PIN requirement is validated in Rust; the
+            // field remains available for every selection to avoid exposing
+            // credential state through conditional focus behavior.
+            height: 52px;
+            background: transparent;
+            LineEdit {
+                width: min(300px, parent.width);
+                x: (parent.width - self.width) / 2;
+                text <=> root.pin;
+                input-type: InputType.password;
+                placeholder-text: @tr("Profile PIN");
+                accepted => { root.selected(root.selected-id, root.pin); }
+            }
+        }
+
+        if (root.error-message != "") : Text {
+            height: 34px;
+            text: root.error-message;
+            color: Theme.danger;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+
+        PillButton {
+            width: 220px;
+            unit: 16px;
+            label: @tr("Continue");
+            enabled: root.selected-id != "";
+            clicked => { root.selected(root.selected-id, root.pin); }
+        }
+    }
+}

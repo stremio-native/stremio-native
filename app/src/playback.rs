@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::RwLock};
+use std::{
+    collections::HashMap,
+    sync::{
+        RwLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    },
+};
 
 use stremio_core::{
     models::{common::Loadable, meta_details::MetaDetails, player::Selected},
@@ -14,6 +20,9 @@ pub struct StreamSelectionView {
     pub provider: String,
     pub thumbnail: Option<String>,
     pub progress: f32,
+    pub score: i32,
+    pub score_reasons: Vec<String>,
+    pub filtered: bool,
 }
 
 #[derive(Clone)]
@@ -31,9 +40,30 @@ fn stream_selection_id(resource_index: usize, stream_index: usize) -> String {
 pub struct PlaybackSelections {
     entries: RwLock<HashMap<String, RegisteredSelection>>,
     trailer_id: RwLock<Option<String>>,
+    ranking_mode: AtomicU8,
+    show_filtered: AtomicBool,
+    source_generation: AtomicU64,
+    source_key: RwLock<String>,
+    debrid_availability: RwLock<HashMap<String, stream_ranking::DebridAvailability>>,
 }
 
 impl PlaybackSelections {
+    pub fn clear(&self) {
+        self.entries
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        *self
+            .trailer_id
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.debrid_availability
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.source_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Atomically replaces visible stream selections and returns their UI views.
     pub fn rebuild(
         &self,
@@ -50,9 +80,33 @@ impl PlaybackSelections {
                     .find(|resource| resource.request.path.eq_no_extra(&selected.meta_path))
             })
             .map(|resource| resource.request.clone());
+        let source_key = meta_request
+            .as_ref()
+            .map(|request| format!("{}:{}", request.path.r#type, request.path.id))
+            .unwrap_or_default();
+        let source_changed = {
+            let mut current = self
+                .source_key
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *current == source_key {
+                false
+            } else {
+                *current = source_key;
+                true
+            }
+        };
+        if source_changed {
+            self.source_generation.fetch_add(1, Ordering::AcqRel);
+            self.debrid_availability
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+        }
 
         let mut next_entries = HashMap::new();
         let mut views = Vec::new();
+        let mut rank_inputs = Vec::new();
         let provider_names: HashMap<&str, &str> = addons
             .iter()
             .map(|addon| (addon.transport_url.as_str(), addon.manifest.name.as_str()))
@@ -121,8 +175,8 @@ impl PlaybackSelections {
                 );
                 views.push(StreamSelectionView {
                     id,
-                    name,
-                    description,
+                    name: name.clone(),
+                    description: description.clone(),
                     thumbnail: stream.thumbnail.clone(),
                     progress: stream
                         .behavior_hints
@@ -142,9 +196,70 @@ impl PlaybackSelections {
                                 .unwrap_or("Addon")
                                 .to_owned()
                         }),
+                    score: 0,
+                    score_reasons: Vec::new(),
+                    filtered: false,
+                });
+                rank_inputs.push(stream_ranking::RankInput {
+                    id: stream_selection_id(resource_index, stream_index),
+                    name: name.clone(),
+                    description: description.clone(),
+                    addon: resource.request.base.to_string(),
+                    original_index: rank_inputs.len(),
+                    size_bytes: stream.behavior_hints.video_size,
+                    seeders: stream
+                        .behavior_hints
+                        .other
+                        .get("seeders")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|seeders| u32::try_from(seeders).ok()),
+                    debrid: self
+                        .debrid_availability
+                        .read()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(&stream_selection_id(resource_index, stream_index))
+                        .copied(),
                 });
             }
         }
+
+        let ranked = stream_ranking::rank_streams(
+            rank_inputs,
+            self.ranking_mode(),
+            self.show_filtered.load(Ordering::Acquire),
+        );
+        let ranking = ranked
+            .into_iter()
+            .enumerate()
+            .map(|(position, ranked)| {
+                let reasons = ranked
+                    .reasons
+                    .into_iter()
+                    .map(|reason| {
+                        let prefix = if reason.points > 0 { "+" } else { "" };
+                        format!("{prefix}{} {}", reason.points, reason.label)
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    ranked.input.id,
+                    (position, ranked.score, reasons, ranked.filtered),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        views.retain(|view| ranking.contains_key(&view.id));
+        for view in &mut views {
+            if let Some((_, score, reasons, filtered)) = ranking.get(&view.id) {
+                view.score = *score;
+                view.score_reasons.clone_from(reasons);
+                view.filtered = *filtered;
+            }
+        }
+        views.sort_by_key(|view| {
+            ranking
+                .get(&view.id)
+                .map(|rank| rank.0)
+                .unwrap_or(usize::MAX)
+        });
 
         match self.entries.write() {
             Ok(mut entries) => *entries = next_entries,
@@ -164,6 +279,62 @@ impl PlaybackSelections {
         }
     }
 
+    pub fn set_ranking_mode(&self, mode: stream_ranking::RankingMode) {
+        self.ranking_mode
+            .store(ranking_mode_byte(mode), Ordering::Release);
+    }
+
+    pub fn ranking_mode(&self) -> stream_ranking::RankingMode {
+        match self.ranking_mode.load(Ordering::Acquire) {
+            1 => stream_ranking::RankingMode::Quality,
+            2 => stream_ranking::RankingMode::Smallest,
+            3 => stream_ranking::RankingMode::Seeders,
+            4 => stream_ranking::RankingMode::Original,
+            _ => stream_ranking::RankingMode::Smart,
+        }
+    }
+
+    pub fn set_show_filtered(&self, show: bool) {
+        self.show_filtered.store(show, Ordering::Release);
+    }
+
+    pub fn debrid_candidates(&self) -> (u64, Vec<(String, String)>) {
+        let availability = self
+            .debrid_availability
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entries = self
+            .entries
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let candidates = entries
+            .iter()
+            .filter(|(id, _)| !availability.contains_key(*id))
+            .filter_map(|(id, entry)| match &entry.selected.stream.source {
+                stremio_core::types::resource::StreamSource::Torrent { info_hash, .. } => {
+                    Some((id.clone(), hex::encode(info_hash)))
+                }
+                _ => None,
+            })
+            .collect();
+        (self.source_generation.load(Ordering::Acquire), candidates)
+    }
+
+    pub fn apply_debrid_availability(
+        &self,
+        generation: u64,
+        availability: HashMap<String, stream_ranking::DebridAvailability>,
+    ) -> bool {
+        if self.source_generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        self.debrid_availability
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(availability);
+        true
+    }
+
     /// Resolves an opaque UI ID back to the full core selection and label.
     pub fn resolve(&self, id: &str) -> Option<(Selected, String)> {
         let entries = match self.entries.read() {
@@ -173,6 +344,16 @@ impl PlaybackSelections {
         entries
             .get(id)
             .map(|entry| (entry.selected.clone(), entry.stream_name.clone()))
+    }
+}
+
+fn ranking_mode_byte(mode: stream_ranking::RankingMode) -> u8 {
+    match mode {
+        stream_ranking::RankingMode::Smart => 0,
+        stream_ranking::RankingMode::Quality => 1,
+        stream_ranking::RankingMode::Smallest => 2,
+        stream_ranking::RankingMode::Seeders => 3,
+        stream_ranking::RankingMode::Original => 4,
     }
 }
 

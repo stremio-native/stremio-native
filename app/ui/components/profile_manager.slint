@@ -1,0 +1,73 @@
+import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { PillButton } from "button.slint";
+import { SelectField } from "select.slint";
+import { ProfileItem } from "profile_picker.slint";
+import { SettingsOption } from "settings_option.slint";
+
+export component ProfileManager inherits VerticalLayout {
+    in property <length> unit: 16px;
+    in property <[ProfileItem]> profiles: [];
+    in property <string> active-id: "";
+    in property <string> error-message: "";
+    in-out property <string> owner-pin: "";
+    in-out property <string> new-name: "";
+    in-out property <string> new-pin: "";
+    in-out property <string> new-role: "Standard";
+    in-out property <bool> role-open: false;
+    in-out property <string> pending-delete: "";
+    callback create(string, string, string, string);
+    callback delete(string, string);
+    callback close;
+
+    spacing: 0;
+    width: 100%;
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Owner PIN");
+        description: @tr("Required to add or delete local profiles.");
+        LineEdit {
+            width: 16 * root.unit;
+            height: 3.5 * root.unit;
+            text <=> root.owner-pin;
+            input-type: InputType.password;
+            placeholder-text: @tr("Owner PIN");
+        }
+    }
+
+    for profile in root.profiles : SettingsOption {
+        unit: root.unit;
+        label: profile.name;
+        description: profile.role + (profile.id == root.active-id ? " · " + @tr("Active Profile") : "");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: root.pending-delete == profile.id ? @tr("Confirm Delete") : @tr("Delete");
+            outlined: true;
+            enabled: profile.id != root.active-id;
+            clicked => {
+                if (root.pending-delete == profile.id) {
+                    root.delete(profile.id, root.owner-pin);
+                    root.pending-delete = "";
+                } else {
+                    root.pending-delete = profile.id;
+                }
+            }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Add Local Profile");
+        description: root.error-message != "" ? root.error-message : @tr("Create a new standard or kids profile.");
+        PillButton {
+            width: 16 * root.unit;
+            unit: root.unit;
+            label: @tr("Create Profile");
+            outlined: true;
+            enabled: root.new-name != "";
+            clicked => { root.create(root.new-name, root.new-role, root.new-pin, root.owner-pin); }
+        }
+    }
+}

@@ -18,6 +18,7 @@ pub(crate) struct AppPaths {
     mpv: PathBuf,
     plugins: PathBuf,
     updates: PathBuf,
+    downloads: PathBuf,
 }
 
 impl AppPaths {
@@ -32,6 +33,7 @@ impl AppPaths {
             mpv: root.join("mpv"),
             plugins: root.join("plugins"),
             updates: root.join("updates"),
+            downloads: root.join("downloads"),
             root,
         }
     }
@@ -55,6 +57,7 @@ impl AppPaths {
             &self.mpv,
             &self.plugins,
             &self.updates,
+            &self.downloads,
         ] {
             std::fs::create_dir_all(directory)
                 .with_context(|| format!("failed to create {}", directory.display()))?;
@@ -90,12 +93,17 @@ impl AppPaths {
         &self.mpv
     }
 
+    #[cfg(any(feature = "plugins", test))]
     pub(crate) fn plugins(&self) -> &Path {
         &self.plugins
     }
 
     pub(crate) fn updates(&self) -> &Path {
         &self.updates
+    }
+
+    pub(crate) fn downloads(&self) -> &Path {
+        &self.downloads
     }
 }
 
@@ -145,6 +153,7 @@ mod tests {
             paths.mpv(),
             paths.plugins(),
             paths.updates(),
+            paths.downloads(),
         ];
 
         assert!(
