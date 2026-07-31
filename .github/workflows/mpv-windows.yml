@@ -28,7 +28,7 @@ env:
 jobs:
   windows:
     name: Windows x64
-    runs-on: windows-2022
+    runs-on: blacksmith-4vcpu-windows-2025
     env:
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     steps:
@@ -107,7 +107,7 @@ jobs:
 
   linux:
     name: Linux x64
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7
         with:
@@ -152,7 +152,7 @@ jobs:
   arch:
     name: Arch Linux x64
     needs: linux
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     container: archlinux:latest
     steps:
       - uses: actions/checkout@v7
@@ -204,7 +204,7 @@ jobs:
   fedora:
     name: Fedora x64
     needs: linux
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     container: fedora:latest
     steps:
       - uses: actions/checkout@v7
@@ -272,7 +272,7 @@ jobs:
   release:
     name: Publish tagged release
     needs: [windows, linux, arch, fedora]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
