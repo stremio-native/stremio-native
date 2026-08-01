@@ -159,6 +159,35 @@ jobs:
           @("stremio-native.exe", "libmpv-2.dll", "licenses/mpv/LICENSE.GPL", "licenses/mpv/LICENSE.LGPL") | ForEach-Object {
             if (-not (Test-Path (Join-Path $root $_))) { throw "Missing release artifact: $_" }
           }
+      - name: Provide Inno Setup for the installer
+        shell: pwsh
+        run: |
+          # create_setup.cmd needs ISCC.exe. GitHub's Windows images ship Inno
+          # Setup; the Blacksmith one does not, so install it when missing and
+          # hand the script an explicit ISCC_EXE instead of letting it probe.
+          $roots = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6",
+            "$env:ProgramFiles\Inno Setup 6"
+          )
+          function Find-Iscc {
+            foreach ($root in $roots) {
+              $candidate = Join-Path $root 'ISCC.exe'
+              if (Test-Path $candidate) { return $candidate }
+            }
+            return $null
+          }
+
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            Write-Output 'Inno Setup not present on the image; installing'
+            choco install innosetup --no-progress --yes
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc) {
+            throw "ISCC.exe not found after installing Inno Setup; searched: $($roots -join '; ')"
+          }
+          Write-Output "Using Inno Setup at $iscc"
+          "ISCC_EXE=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Build installer and updater archive
         shell: cmd
         run: |
