@@ -84,6 +84,45 @@ jobs:
           key: Windows-vcpkg-x86-64-v3-static-md-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
           restore-keys: |
             Windows-vcpkg-x86-64-v3-static-md-release-v1-
+      - name: Prepare vcpkg with retries
+        shell: pwsh
+        run: |
+          # Reaching github.com from the Windows runners times out
+          # intermittently: both run-vcpkg's clone and its bootstrap download of
+          # vcpkg.exe have died on a ~21s connect timeout, failing a whole
+          # release build. run-vcpkg has no retry of its own, so do the two
+          # network steps here and hand it a directory already at the pinned
+          # commit with vcpkg.exe built -- it then skips straight to install.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'vcpkg'
+          $commit = '84bab45d415d22042bd0b9081aea57f362da3f35'
+
+          function Invoke-WithRetry {
+            param([string] $What, [scriptblock] $Action)
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              & $Action
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Output "$What failed with exit $LASTEXITCODE (attempt $attempt of 5)"
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+            throw "$What did not succeed after 5 attempts"
+          }
+
+          if (-not (Test-Path (Join-Path $dir '.git'))) {
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            Invoke-WithRetry 'vcpkg clone' {
+              git clone https://github.com/microsoft/vcpkg.git -n $dir
+            }
+          }
+          Invoke-WithRetry 'vcpkg checkout' { git -C $dir checkout --force $commit }
+          if (-not (Test-Path (Join-Path $dir 'vcpkg.exe'))) {
+            Invoke-WithRetry 'vcpkg bootstrap' {
+              & (Join-Path $dir 'bootstrap-vcpkg.bat')
+            }
+          }
+          Write-Output "vcpkg ready at $commit"
       - name: Install optimized static libtorrent
         uses: lukka/run-vcpkg@v11
         with:
