@@ -2,12 +2,12 @@
 
 ### A faster, lighter desktop client for Stremio — built from scratch in Rust.
 
-[![Desktop release builds](https://github.com/perpetus/stremio-native/actions/workflows/release.yml/badge.svg)](https://github.com/perpetus/stremio-native/actions/workflows/release.yml)
-[![Clippy](https://github.com/perpetus/stremio-native/actions/workflows/clippy.yml/badge.svg)](https://github.com/perpetus/stremio-native/actions/workflows/clippy.yml)
-[![Latest Release](https://img.shields.io/github/v/release/perpetus/stremio-native?color=7c3aed&label=release)](https://github.com/perpetus/stremio-native/releases)
+[![Desktop release builds](https://github.com/stremio-native/stremio-native/actions/workflows/release.yml/badge.svg)](https://github.com/stremio-native/stremio-native/actions/workflows/release.yml)
+[![Clippy](https://github.com/stremio-native/stremio-native/actions/workflows/clippy.yml/badge.svg)](https://github.com/stremio-native/stremio-native/actions/workflows/clippy.yml)
+[![Latest Release](https://img.shields.io/github/v/release/stremio-native/stremio-native?color=7c3aed&label=release)](https://github.com/stremio-native/stremio-native/releases)
 ![Rust](https://img.shields.io/badge/rust-2024_stable-orange.svg?logo=rust)
 ![Slint UI](https://img.shields.io/badge/UI-Slint_1.17-blue.svg?logo=slint)
-![License](https://img.shields.io/github/license/perpetus/stremio-native?color=informational)
+![License](https://img.shields.io/github/license/stremio-native/stremio-native?color=informational)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
 
 <!-- SEO Meta Tags & Keywords -->
@@ -33,7 +33,7 @@ The official Stremio desktop app runs on Electron-style WebViews backed by a sep
 See the [changelog](CHANGELOG.md) for the current build's implementation notes and known limitations.
 
 > [!IMPORTANT]
-> **⚠️ Full UI Rewrite & Feedback Notice**: Stremio Native is a complete ground-up rewrite in Rust & Slint UI. As a result, some features may not be fully implemented or might not work as intended in all scenarios. If you encounter any bugs, unexpected behavior, or missing features, please [raise an issue on GitHub](https://github.com/perpetus/stremio-native/issues) so the developer can look into it!
+> **⚠️ Full UI Rewrite & Feedback Notice**: Stremio Native is a complete ground-up rewrite in Rust & Slint UI. As a result, some features may not be fully implemented or might not work as intended in all scenarios. If you encounter any bugs, unexpected behavior, or missing features, please [raise an issue on GitHub](https://github.com/stremio-native/stremio-native/issues) so the developer can look into it!
 >
 > **💻 Modern Hardware Requirements**: Current precompiled release binaries require a **modern CPU** (`x86-64-v3` architecture baseline with AVX2/BMI2 instruction support) and a **modern GPU** (OpenGL 3.3+ support for Skia UI rendering & Anime4K/FSR upscaler shaders, with hardware GPU video decoding for H.264, HEVC, AV1, and VP9).
 
@@ -43,12 +43,12 @@ See the [changelog](CHANGELOG.md) for the current build's implementation notes a
 
 | Platform | Format | Link |
 | :--- | :--- | :--- |
-| **Windows** | Installer | [StremioSetup-v1.0.5-x64.exe](https://github.com/perpetus/stremio-native/releases/download/v1.0.5/StremioSetup-v1.0.5-x64.exe) |
-| **Windows** | Updater ZIP | [stremio-native-v1.0.5-x86_64-pc-windows-msvc.zip](https://github.com/perpetus/stremio-native/releases/download/v1.0.5/stremio-native-v1.0.5-x86_64-pc-windows-msvc.zip) |
-| **Arch Linux** | Pacman `.pkg.tar.zst` | [stremio-native-1.0.5-1-x86_64.pkg.tar.zst](https://github.com/perpetus/stremio-native/releases/download/v1.0.5/stremio-native-1.0.5-1-x86_64.pkg.tar.zst) |
-| **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.5-1_amd64.deb](https://github.com/perpetus/stremio-native/releases/download/v1.0.5/stremio-native_1.0.5-1_amd64.deb) |
-| **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.5-1.fc44.x86_64.rpm](https://github.com/perpetus/stremio-native/releases/download/v1.0.5/stremio-native-1.0.5-1.fc44.x86_64.rpm) |
-| **Linux** | Standalone binary | [stremio-native-v1.0.5-x86_64-unknown-linux-gnu](https://github.com/perpetus/stremio-native/releases/download/v1.0.5/stremio-native-v1.0.5-x86_64-unknown-linux-gnu) |
+| **Windows** | Installer | [StremioSetup-v1.0.5-x64.exe](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/StremioSetup-v1.0.5-x64.exe) |
+| **Windows** | Updater ZIP | [stremio-native-v1.0.5-x86_64-pc-windows-msvc.zip](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-v1.0.5-x86_64-pc-windows-msvc.zip) |
+| **Arch Linux** | Pacman `.pkg.tar.zst` | [stremio-native-1.0.5-1-x86_64.pkg.tar.zst](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-1.0.5-1-x86_64.pkg.tar.zst) |
+| **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.5-1_amd64.deb](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native_1.0.5-1_amd64.deb) |
+| **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.5-1.fc44.x86_64.rpm](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-1.0.5-1.fc44.x86_64.rpm) |
+| **Linux** | Standalone binary | [stremio-native-v1.0.5-x86_64-unknown-linux-gnu](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-v1.0.5-x86_64-unknown-linux-gnu) |
 
 ---
 

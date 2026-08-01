@@ -73,7 +73,7 @@ pub fn fetch_github_changelog(ui: &MainWindow) {
         let mut raw_changelog = String::new();
 
         // 1. Try fetching releases from GitHub API
-        let releases_url = "https://api.github.com/repos/perpetus/stremio-native/releases";
+        let releases_url = "https://api.github.com/repos/stremio-native/stremio-native/releases";
         if let Ok(res) = client
             .get(releases_url)
             .header("Accept", "application/vnd.github.v3+json")
@@ -97,7 +97,7 @@ pub fn fetch_github_changelog(ui: &MainWindow) {
         // 2. Fallback: If no releases published yet, fetch recent git commits from GitHub API
         if raw_changelog.trim().is_empty() {
             let commits_url =
-                "https://api.github.com/repos/perpetus/stremio-native/commits?per_page=12";
+                "https://api.github.com/repos/stremio-native/stremio-native/commits?per_page=12";
             if let Ok(res) = client
                 .get(commits_url)
                 .header("Accept", "application/vnd.github.v3+json")

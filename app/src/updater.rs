@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 
 use crate::{AppTray, MainWindow};
 
-const REPOSITORY_OWNER: &str = "perpetus";
+const REPOSITORY_OWNER: &str = "stremio-native";
 const REPOSITORY_NAME: &str = "stremio-native";
 const WINDOWS_ASSET_IDENTIFIER: &str = "stremio-native";
 const WINDOWS_INSTALLER_NAME: &str = "stremio-installer";

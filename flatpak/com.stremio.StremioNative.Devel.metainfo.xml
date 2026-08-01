@@ -15,11 +15,12 @@
     </p>
   </description>
   <launchable type="desktop-id">com.stremio.StremioNative.Devel.desktop</launchable>
-  <url type="homepage">https://github.com/perpetus/stremio-native</url>
+  <url type="homepage">https://github.com/stremio-native/stremio-native</url>
+  <url type="bugtracker">https://github.com/stremio-native/stremio-native/issues</url>
   <screenshots>
     <screenshot type="default">
       <caption>Main Interface</caption>
-      <image>https://raw.githubusercontent.com/perpetus/stremio-native/main/docs/screenshot.png</image>
+      <image>https://raw.githubusercontent.com/stremio-native/stremio-native/main/docs/screenshot.png</image>
     </screenshot>
   </screenshots>
 </component>

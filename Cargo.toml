@@ -14,7 +14,7 @@ exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core"]
 
 [workspace.package]
 authors = ["perpetus <perpetus.github@gmail.com>"]
-repository = "https://github.com/perpetus/stremio-native"
+repository = "https://github.com/stremio-native/stremio-native"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]
