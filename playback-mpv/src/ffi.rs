@@ -381,6 +381,16 @@ impl MpvApi {
         Ok(Arc::new(api))
     }
 
+    // `c_ulong` is 64-bit on LP64 targets and 32-bit on Windows, so widening it
+    // to `u64` is a no-op on one target and load-bearing on the other. No
+    // expression satisfies Clippy on both: `as u64` trips `unnecessary_cast` on
+    // Linux, and `u64::from` trips `useless_conversion` there instead. This is
+    // `allow` rather than `expect` because the lint genuinely does not fire on
+    // Windows, where `expect` would itself warn as unfulfilled.
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "c_ulong is already u64 on LP64 targets but u32 on Windows"
+    )]
     pub fn api_version(&self) -> ApiVersion {
         // SAFETY: The imported function uses the pinned client.h signature.
         ApiVersion::decode(unsafe { (self.client_api_version)() } as u64)

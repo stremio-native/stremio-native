@@ -38,6 +38,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           target: x86_64-pc-windows-msvc
+      - name: Provide libclang for autocxx bindings
+        shell: pwsh
+        run: |
+          # async-sevenz and async-rar run autocxx-bindgen, which needs
+          # libclang. The Linux job gets it from libclang-dev; on Windows it is
+          # only there when the runner image happens to ship LLVM, and the
+          # Blacksmith image does not. Prefer a copy already on the image (VS
+          # Build Tools bundles one), install LLVM only as a fallback, and pin
+          # LIBCLANG_PATH so clang-sys does not have to guess.
+          $roots = @(
+            'C:\Program Files\LLVM\bin',
+            'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin',
+            'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin'
+          )
+          function Find-LibClang {
+            foreach ($root in $roots) {
+              if (Test-Path (Join-Path $root 'libclang.dll')) { return $root }
+            }
+            return $null
+          }
+
+          $llvmBin = Find-LibClang
+          if (-not $llvmBin) {
+            Write-Output 'libclang.dll not present on the image; installing LLVM'
+            choco install llvm --no-progress --yes
+            $llvmBin = Find-LibClang
+          }
+          if (-not $llvmBin) {
+            throw "libclang.dll not found after installing LLVM; searched: $($roots -join '; ')"
+          }
+          Write-Output "Using libclang from $llvmBin"
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Export GitHub Actions cache environment for vcpkg
         uses: actions/github-script@v9
         with:

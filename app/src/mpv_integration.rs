@@ -501,6 +501,10 @@ fn send_external_subtitles(
     subtitles: Vec<ExternalSubtitle>,
     ui: &slint::Weak<MainWindow>,
 ) {
+    // Recorded here rather than at the call sites: subtitles reach MPV both
+    // from `sync_player` and from the file-loaded handler, and only tracks whose
+    // origin was registered can show their add-on name in the menu.
+    record_subtitle_origins(&subtitles);
     for subtitle in subtitles {
         send_or_show(
             controller,
@@ -1468,7 +1472,6 @@ impl NativePlaybackBridge {
             session.register_subtitles(collect_player_subtitles(player, addon_names));
             session.take_pending_subtitles()
         };
-        record_subtitle_origins(&pending_subtitles);
         send_external_subtitles(&self.controller, pending_subtitles, ui);
     }
 
