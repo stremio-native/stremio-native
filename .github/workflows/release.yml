@@ -204,7 +204,7 @@ jobs:
       - name: Build release
         run: cargo build --locked --release --package stremio-native
       - name: Install cargo-deb
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.4
         with:
           tool: cargo-deb
       - name: Build DEB Package
