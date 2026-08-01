@@ -5,6 +5,8 @@
   <project_license>GPL-3.0</project_license>
   <name>Stremio Native (Devel)</name>
   <summary>Ultra-Fast & Lightweight Native Stremio Desktop Client</summary>
+  <developer_name>perpetus</developer_name>
+  <update_contact>perpetus.github@gmail.com</update_contact>
   <description>
     <p>
       Stremio Native is an ultra-fast, lightweight, and modern desktop client for Stremio.

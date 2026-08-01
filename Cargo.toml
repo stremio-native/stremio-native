@@ -12,6 +12,11 @@ members = [
 ]
 exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core"]
 
+[workspace.package]
+authors = ["perpetus <perpetus.github@gmail.com>"]
+repository = "https://github.com/perpetus/stremio-native"
+license = "GPL-3.0-only"
+
 [workspace.dependencies]
 anyhow = "1.0.104"
 argon2 = "0.5.3"

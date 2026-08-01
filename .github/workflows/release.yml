@@ -270,7 +270,7 @@ jobs:
           pkgver=$(grep -m1 'version = ' app/Cargo.toml | cut -d '"' -f2)
           mkdir -p pkg
           cat > pkg/PKGBUILD << EOF
-          # Maintainer: stremio-native maintainers
+          # Maintainer: perpetus <perpetus.github@gmail.com>
           pkgname=stremio-native
           pkgver=${pkgver}
           pkgrel=1
@@ -355,7 +355,7 @@ jobs:
           %{_bindir}/stremio-native
 
           %changelog
-          * Sun Jul 19 2026 stremio-native maintainers <stremio-native@example.com> - __VERSION__-1
+          * Sun Jul 19 2026 perpetus <perpetus.github@gmail.com> - __VERSION__-1
           - Initial release
           SPEC
           sed -i "s/__VERSION__/$pkgver/g" rpmbuild/SPECS/stremio-native.spec

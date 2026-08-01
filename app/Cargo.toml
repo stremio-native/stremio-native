@@ -1,6 +1,7 @@
 [package]
 name = "stremio-native"
 version = "1.0.5"
+authors = ["perpetus <perpetus.github@gmail.com>"]
 edition = "2024"
 license = "GPL-3.0-only"
 
@@ -92,8 +93,8 @@ in-process = ["core-env/in-process", "server-connector/in-process"]
 plugins = ["dep:mlua"]
 
 [package.metadata.deb]
-maintainer = "stremio-native maintainers <stremio-native@example.com>"
-copyright = "2026 stremio-native maintainers"
+maintainer = "perpetus <perpetus.github@gmail.com>"
+copyright = "2026 perpetus <perpetus.github@gmail.com>"
 extended-description = "High-performance native Stremio client built with Rust and Slint"
 depends = "$auto, libmpv2 | libmpv1, libssl3 | libssl1.1, libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcursor1, libgtk-3-0, libayatana-appindicator3-1"
 section = "video"
