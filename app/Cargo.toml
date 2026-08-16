@@ -71,7 +71,7 @@ hotpath = { version = "0.23.2", default-features = false }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 # Ergonomic COM for the taskbar thumbnail toolbar (ITaskbarList3) and the
 # notification-area tray host, plus D3D11 for the background GPU-driver pre-warm.
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",

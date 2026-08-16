@@ -9969,7 +9969,7 @@ dependencies = [
  "url",
  "uuid 1.24.0",
  "walkdir",
- "windows 0.61.3",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "winres",
  "zip 8.6.0",
