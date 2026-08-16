@@ -9943,7 +9943,7 @@ dependencies = [
  "open",
  "percent-encoding",
  "playback-mpv",
- "rand 0.9.5",
+ "rand 0.10.2",
  "reqwest 0.13.4",
  "rodio",
  "self_update",
