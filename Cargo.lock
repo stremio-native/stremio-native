@@ -661,7 +661,7 @@ dependencies = [
 [[package]]
 name = "async-rar"
 version = "0.1.8"
-source = "git+https://github.com/stremio-native/stream-server.git?rev=3b809ac24f8a81314cc6ae794721c061cfcc6e61#3b809ac24f8a81314cc6ae794721c061cfcc6e61"
+source = "git+https://github.com/stremio-native/stream-server.git?rev=f585ab6eda9b1411034548c131bb0dc30c6f5f9e#f585ab6eda9b1411034548c131bb0dc30c6f5f9e"
 dependencies = [
  "autocxx",
  "autocxx-build",
@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "async-sevenz"
 version = "0.1.8"
-source = "git+https://github.com/stremio-native/stream-server.git?rev=3b809ac24f8a81314cc6ae794721c061cfcc6e61#3b809ac24f8a81314cc6ae794721c061cfcc6e61"
+source = "git+https://github.com/stremio-native/stream-server.git?rev=f585ab6eda9b1411034548c131bb0dc30c6f5f9e#f585ab6eda9b1411034548c131bb0dc30c6f5f9e"
 dependencies = [
  "autocxx",
  "autocxx-build",
@@ -2951,7 +2951,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 [[package]]
 name = "enginefs"
 version = "0.1.8"
-source = "git+https://github.com/stremio-native/stream-server.git?rev=3b809ac24f8a81314cc6ae794721c061cfcc6e61#3b809ac24f8a81314cc6ae794721c061cfcc6e61"
+source = "git+https://github.com/stremio-native/stream-server.git?rev=f585ab6eda9b1411034548c131bb0dc30c6f5f9e#f585ab6eda9b1411034548c131bb0dc30c6f5f9e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5665,7 +5665,7 @@ dependencies = [
 [[package]]
 name = "libtorrent-sys"
 version = "0.1.8"
-source = "git+https://github.com/stremio-native/stream-server.git?rev=3b809ac24f8a81314cc6ae794721c061cfcc6e61#3b809ac24f8a81314cc6ae794721c061cfcc6e61"
+source = "git+https://github.com/stremio-native/stream-server.git?rev=f585ab6eda9b1411034548c131bb0dc30c6f5f9e#f585ab6eda9b1411034548c131bb0dc30c6f5f9e"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -9191,7 +9191,7 @@ dependencies = [
 [[package]]
 name = "server"
 version = "0.1.8"
-source = "git+https://github.com/stremio-native/stream-server.git?rev=3b809ac24f8a81314cc6ae794721c061cfcc6e61#3b809ac24f8a81314cc6ae794721c061cfcc6e61"
+source = "git+https://github.com/stremio-native/stream-server.git?rev=f585ab6eda9b1411034548c131bb0dc30c6f5f9e#f585ab6eda9b1411034548c131bb0dc30c6f5f9e"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -9277,7 +9277,7 @@ dependencies = [
 [[package]]
 name = "settings-gui"
 version = "0.1.8"
-source = "git+https://github.com/stremio-native/stream-server.git?rev=3b809ac24f8a81314cc6ae794721c061cfcc6e61#3b809ac24f8a81314cc6ae794721c061cfcc6e61"
+source = "git+https://github.com/stremio-native/stream-server.git?rev=f585ab6eda9b1411034548c131bb0dc30c6f5f9e#f585ab6eda9b1411034548c131bb0dc30c6f5f9e"
 dependencies = [
  "anyhow",
  "async-trait",

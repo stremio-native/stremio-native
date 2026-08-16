@@ -53,8 +53,8 @@ This file records notable changes to Stremio Native relative to the initial sour
 
 ### Build and developer tooling
 
-- Pinned the embedded stream-server dependency to the tested and pushed `3b809ac` revision in the canonical organization repository, replacing the temporary sibling checkout used for Windows integration testing.
-- Upgraded the embedded server to libtorrent 2.1.1 and its ABI 100 APIs, including current torrent loading, file layout, peer endpoint, resume-data, magnet, disk-status, and disk-buffer ownership interfaces; Linux CI now builds the checksum-verified static release and Windows uses the matching vcpkg overlay.
+- Pinned the embedded stream-server dependency to the tested and pushed `f585ab6` revision in the canonical organization repository, replacing the temporary sibling checkout used for Windows integration testing.
+- Upgraded the embedded server to libtorrent 2.1.1 and its ABI 100 APIs, including current torrent loading, file layout, peer endpoint, resume-data, magnet, disk-status, and disk-buffer ownership interfaces; Linux CI now builds the checksum-verified static release with matching header-only Boost.Asio configuration, and Windows uses the matching vcpkg overlay.
 - Corrected Arch and Fedora runtime dependency names and made both package jobs install and validate their generated runtime dependency lists before producing artifacts.
 - Added manual Windows and Linux libmpv runtime workflows that apply the Omniphony decoder/overlay patch and the AVX stack-alignment workaround, audit generated binaries for unsafe aligned vector spills, publish checksums, and upload runtime artifacts plus build logs.
 - Switched Windows linking to `rust-lld` with the required static-ICU duplicate-symbol compatibility flags, and moved release builds from serial fat LTO to parallel ThinLTO with optimized build scripts for substantially shorter link and code-generation times.

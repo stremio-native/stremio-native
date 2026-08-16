@@ -1,6 +1,6 @@
 //! The non-Windows tray backend: Slint's native `SystemTrayIcon` menu.
 
-use slint::{ComponentHandle, SharedString, Weak};
+use slint::{SharedString, Weak};
 
 use super::TrayActions;
 use crate::AppTray;
@@ -23,12 +23,12 @@ pub(super) fn create(actions: TrayActions) -> anyhow::Result<Tray> {
         install_update,
         quit,
     } = actions;
-    tray.on_open_window(move || open_window());
-    tray.on_open_settings(move || open_settings());
-    tray.on_open_logs(move || open_logs());
-    tray.on_check_update(move || check_update());
-    tray.on_install_update(move || install_update());
-    tray.on_quit(move || quit());
+    tray.on_open_window(open_window);
+    tray.on_open_settings(open_settings);
+    tray.on_open_logs(open_logs);
+    tray.on_check_update(check_update);
+    tray.on_install_update(install_update);
+    tray.on_quit(quit);
 
     tray.show()?;
     Ok(Tray(tray))

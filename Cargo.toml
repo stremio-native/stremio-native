@@ -44,7 +44,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 slint = { version = "1.17.1", default-features = false }
 slint-build = "1.17.1"
 stremio-core = { git = "https://github.com/perpetus/stremio-core.git", rev = "4562b37be8ea788801e12c608a6aa3e43c646123", features = ["derive", "analytics", "env-future-send"] }
-stream-server = { git = "https://github.com/stremio-native/stream-server.git", rev = "3b809ac24f8a81314cc6ae794721c061cfcc6e61", package = "server" }
+stream-server = { git = "https://github.com/stremio-native/stream-server.git", rev = "f585ab6eda9b1411034548c131bb0dc30c6f5f9e", package = "server" }
 sys-locale = "0.3.2"
 thiserror = "2.0.20"
 tokio = "1.53.1"
