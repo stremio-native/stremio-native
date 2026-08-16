@@ -3,6 +3,16 @@ use std::sync::{OnceLock, RwLock};
 
 static APP_CONFIG: OnceLock<RwLock<AppConfig>> = OnceLock::new();
 
+/// How long the pointer must rest on a card before its trailer opens.
+///
+/// Shared with the migration below so the shipped default and the value an
+/// existing profile is moved to cannot drift apart.
+pub const DEFAULT_HOVER_PREVIEW_DELAY_MS: u32 = 1200;
+
+/// The threshold this shipped with originally. It fires while the pointer is
+/// still crossing a grid, so profiles still holding it are moved forward.
+const LEGACY_HOVER_PREVIEW_DELAY_MS: u32 = 500;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -22,15 +32,25 @@ pub struct AppConfig {
     pub active_shader_preset: u8,
     #[serde(alias = "thumbfast_enabled")]
     pub thumbnail_previews_enabled: bool,
+    pub hover_trailer_previews_enabled: bool,
+    /// How long the pointer must rest on a card before its trailer opens.
+    pub hover_trailer_preview_delay_ms: u32,
     pub onboarding_completed: bool,
     pub download_bandwidth_limit_bps: u64,
     pub region: String,
     pub home_row_order: Vec<String>,
 }
 
+fn default_font_family() -> String {
+    "Plus Jakarta Sans".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
+    pub active_preset_idx: i32,
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
     pub background: String,
     pub secondary_background: String,
     pub sidebar_background: String,
@@ -57,11 +77,31 @@ pub struct ThemeConfig {
     pub text_muted: String,
     pub skeleton_base: String,
     pub skeleton_shimmer: String,
+    /// Palette the colour picker's "Saved" row offers, newest last.
+    pub saved_colors: Vec<String>,
+    pub saved_gradients: Vec<SavedGradientConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedGradientConfig {
+    pub angle: f32,
+    pub start: String,
+    pub end: String,
+}
+
+fn saved_gradient(angle: f32, start: &str, end: &str) -> SavedGradientConfig {
+    SavedGradientConfig {
+        angle,
+        start: start.to_string(),
+        end: end.to_string(),
+    }
 }
 
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
+            active_preset_idx: 0,
+            font_family: "Plus Jakarta Sans".to_string(),
             background: "#0c0b11".to_string(),
             secondary_background: "#1a173e".to_string(),
             sidebar_background: "#0f0d2099".to_string(),
@@ -88,6 +128,21 @@ impl Default for ThemeConfig {
             text_muted: "#ffffff66".to_string(),
             skeleton_base: "#1a1828".to_string(),
             skeleton_shimmer: "#2a2838".to_string(),
+            saved_colors: [
+                "#10b981", "#3b82f6", "#6366f1", "#8b5cf6", "#d946ef", "#f43f5e", "#ef4444",
+                "#f97316", "#7b5bf5",
+            ]
+            .iter()
+            .map(|hex| hex.to_string())
+            .collect(),
+            saved_gradients: vec![
+                saved_gradient(135.0, "#7b5bf5", "#1a173e"),
+                saved_gradient(135.0, "#3b82f6", "#1c2541"),
+                saved_gradient(135.0, "#10b981", "#047857"),
+                saved_gradient(135.0, "#f43f5e", "#881337"),
+                saved_gradient(135.0, "#a855f7", "#121212"),
+                saved_gradient(135.0, "#f97316", "#431407"),
+            ],
         }
     }
 }
@@ -95,7 +150,7 @@ impl Default for ThemeConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            config_version: 2,
+            config_version: 3,
             server_url: "http://127.0.0.1:11470".to_string(),
             active_tab: 0,
             auto_launch_player: true,
@@ -110,6 +165,8 @@ impl Default for AppConfig {
             shaders_enabled: true,
             active_shader_preset: 0,
             thumbnail_previews_enabled: true,
+            hover_trailer_previews_enabled: true,
+            hover_trailer_preview_delay_ms: DEFAULT_HOVER_PREVIEW_DELAY_MS,
             onboarding_completed: false,
             download_bandwidth_limit_bps: 0,
             region: "US".to_owned(),
@@ -145,6 +202,16 @@ impl AppConfig {
         if self.config_version < 2 {
             self.config_version = 2;
         }
+        if self.config_version < 3 {
+            // The delay is persisted, so raising the shipped default alone
+            // leaves every existing profile on the old threshold. Only the
+            // value this used to ship with is moved, which keeps a delay the
+            // user picked deliberately.
+            if self.hover_trailer_preview_delay_ms == LEGACY_HOVER_PREVIEW_DELAY_MS {
+                self.hover_trailer_preview_delay_ms = DEFAULT_HOVER_PREVIEW_DELAY_MS;
+            }
+            self.config_version = 3;
+        }
         self.config_version != original_version
     }
 }
@@ -154,7 +221,7 @@ pub async fn init_config() {
 
     // 1. Try to load from database settings table
     let mut loaded_from_db = false;
-    if let Ok(conn) = crate::db::get_conn()
+    if let Ok(conn) = crate::db::get_conn().await
         && let Ok(mut rows) = conn
             .query("SELECT value FROM settings WHERE key = 'app_config'", ())
             .await
@@ -169,7 +236,7 @@ pub async fn init_config() {
     // A clean install starts from database-backed defaults. Legacy working-
     // directory files are intentionally left untouched for manual recovery.
     if !loaded_from_db
-        && let Ok(conn) = crate::db::get_conn()
+        && let Ok(conn) = crate::db::get_conn().await
         && let Ok(serialized) = serde_json::to_string(&config)
     {
         let _ = conn
@@ -183,7 +250,7 @@ pub async fn init_config() {
     let migrated = config.migrate();
     if migrated
         && loaded_from_db
-        && let Ok(conn) = crate::db::get_conn()
+        && let Ok(conn) = crate::db::get_conn().await
         && let Ok(serialized) = serde_json::to_string(&config)
     {
         let _ = conn
@@ -224,7 +291,7 @@ pub fn save_config(config: &AppConfig) {
 
     let config_cloned = config.clone();
     tokio::spawn(async move {
-        if let Ok(conn) = crate::db::get_conn()
+        if let Ok(conn) = crate::db::get_conn().await
             && let Ok(serialized) = serde_json::to_string(&config_cloned)
         {
             let _ = conn
@@ -244,7 +311,7 @@ pub async fn save_config_async(config: &AppConfig) -> anyhow::Result<()> {
         *guard = config.clone();
     }
     let serialized = serde_json::to_string(config)?;
-    let conn = crate::db::get_conn()?;
+    let conn = crate::db::get_conn().await?;
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_config', ?)",
         [serialized],
@@ -295,7 +362,7 @@ mod tests {
         let mut config = legacy_config();
 
         assert!(config.migrate());
-        assert_eq!(config.config_version, 2);
+        assert_eq!(config.config_version, 3);
         assert_eq!(config.theme.background, "#0c0b11");
         assert_eq!(config.theme.secondary_background, "#1a173e");
         assert_eq!(config.theme.success, "#22b365");
@@ -307,9 +374,39 @@ mod tests {
         config.theme.accent = "#ff3366".to_string();
 
         assert!(config.migrate());
-        assert_eq!(config.config_version, 2);
+        assert_eq!(config.config_version, 3);
         assert_eq!(config.theme.background, "#08070d");
         assert_eq!(config.theme.accent, "#ff3366");
+    }
+
+    #[test]
+    fn migration_moves_the_shipped_hover_delay_forward() {
+        // A stored value shadows the default, so without this the threshold
+        // stays at 500ms however the default is edited.
+        let mut config = AppConfig {
+            config_version: 2,
+            hover_trailer_preview_delay_ms: LEGACY_HOVER_PREVIEW_DELAY_MS,
+            ..Default::default()
+        };
+
+        assert!(config.migrate());
+        assert_eq!(config.config_version, 3);
+        assert_eq!(
+            config.hover_trailer_preview_delay_ms,
+            DEFAULT_HOVER_PREVIEW_DELAY_MS
+        );
+    }
+
+    #[test]
+    fn migration_keeps_a_deliberately_chosen_hover_delay() {
+        let mut config = AppConfig {
+            config_version: 2,
+            hover_trailer_preview_delay_ms: 250,
+            ..Default::default()
+        };
+
+        assert!(config.migrate());
+        assert_eq!(config.hover_trailer_preview_delay_ms, 250);
     }
 
     #[test]

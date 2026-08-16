@@ -1,17 +1,52 @@
 use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{Arc, LazyLock},
+    time::Duration,
 };
 
 use async_trait::async_trait;
 use credential_store::{CredentialError, CredentialRef, CredentialStore};
+use moka::future::Cache;
 use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const CACHE_CAPACITY: u64 = 4_096;
+const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 2;
+const IDLE_POOL_TIMEOUT: Duration = Duration::from_secs(30);
+
+static HTTP_CLIENT: LazyLock<Result<Client, DebridError>> = LazyLock::new(|| {
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
+        .pool_idle_timeout(IDLE_POOL_TIMEOUT)
+        .user_agent("Stremio-Native/1")
+        .build()
+        .map_err(|_| DebridError::Unavailable)
+});
+static REQUEST_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(4));
+static AVAILABILITY_CACHE: LazyLock<Cache<AvailabilityCacheKey, DebridAvailability>> =
+    LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(CACHE_CAPACITY)
+            .time_to_live(CACHE_TTL)
+            .build()
+    });
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct AvailabilityCacheKey {
+    provider: ProviderKind,
+    credential_ref: CredentialRef,
+    hash: String,
+}
+
+/// Invalidates all cached debrid availability annotations.
+///
+/// Call this after credentials are changed or their owning profile is deleted.
+pub fn invalidate_availability_cache() {
+    AVAILABILITY_CACHE.invalidate_all();
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -105,8 +140,6 @@ pub struct HttpDebridProvider {
     credential_ref: CredentialRef,
     credentials: Arc<dyn CredentialStore>,
     client: Client,
-    permits: Arc<Semaphore>,
-    cache: Arc<Mutex<HashMap<String, (Instant, DebridAvailability)>>>,
 }
 
 impl HttpDebridProvider {
@@ -115,18 +148,12 @@ impl HttpDebridProvider {
         credential_ref: CredentialRef,
         credentials: Arc<dyn CredentialStore>,
     ) -> Result<Self, DebridError> {
-        let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .user_agent("Stremio-Native/1")
-            .build()
-            .map_err(|_| DebridError::Unavailable)?;
+        let client = HTTP_CLIENT.as_ref().map_err(Clone::clone)?.clone();
         Ok(Self {
             kind,
             credential_ref,
             credentials,
             client,
-            permits: Arc::new(Semaphore::new(4)),
-            cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -136,8 +163,7 @@ impl HttpDebridProvider {
     }
 
     async fn send(&self, request: RequestBuilder) -> Result<serde_json::Value, DebridError> {
-        let _permit = self
-            .permits
+        let _permit = REQUEST_PERMITS
             .acquire()
             .await
             .map_err(|_| DebridError::Unavailable)?;
@@ -188,38 +214,38 @@ impl DebridProvider for HttpDebridProvider {
 
     async fn availability(&self, hash: &str) -> Result<DebridAvailability, DebridError> {
         let hash = normalized_hash(hash)?;
-        if let Some((cached_at, availability)) = self.cache.lock().await.get(&hash).copied()
-            && cached_at.elapsed() < CACHE_TTL
-        {
-            return Ok(availability);
-        }
-        let token = self.token().await?;
-        let request = match self.kind {
-            ProviderKind::RealDebrid => self.authorized_request(
-                Method::GET,
-                &format!("/torrents/instantAvailability/{hash}"),
-                &token,
-            ),
-            ProviderKind::AllDebrid => self
-                .authorized_request(Method::GET, "/magnet/instant", &token)
-                .query(&[("agent", "StremioNative"), ("magnets[]", hash.as_str())]),
-            ProviderKind::Premiumize => self
-                .authorized_request(Method::GET, "/cache/check", &token)
-                .query(&[("items[]", hash.as_str())]),
-            ProviderKind::DebridLink => self
-                .authorized_request(Method::POST, "/seedbox/cached", &token)
-                .form(&[("url", format!("magnet:?xt=urn:btih:{hash}"))]),
-            ProviderKind::TorBox => self
-                .authorized_request(Method::GET, "/torrents/checkcached", &token)
-                .query(&[("hash", hash.as_str())]),
+        let key = AvailabilityCacheKey {
+            provider: self.kind,
+            credential_ref: self.credential_ref.clone(),
+            hash: hash.clone(),
         };
-        let value = self.send(request).await?;
-        let availability = parse_availability(self.kind, &hash, &value);
-        self.cache
-            .lock()
+        AVAILABILITY_CACHE
+            .try_get_with(key, async {
+                let token = self.token().await?;
+                let request = match self.kind {
+                    ProviderKind::RealDebrid => self.authorized_request(
+                        Method::GET,
+                        &format!("/torrents/instantAvailability/{hash}"),
+                        &token,
+                    ),
+                    ProviderKind::AllDebrid => self
+                        .authorized_request(Method::GET, "/magnet/instant", &token)
+                        .query(&[("agent", "StremioNative"), ("magnets[]", hash.as_str())]),
+                    ProviderKind::Premiumize => self
+                        .authorized_request(Method::GET, "/cache/check", &token)
+                        .query(&[("items[]", hash.as_str())]),
+                    ProviderKind::DebridLink => self
+                        .authorized_request(Method::POST, "/seedbox/cached", &token)
+                        .form(&[("url", format!("magnet:?xt=urn:btih:{hash}"))]),
+                    ProviderKind::TorBox => self
+                        .authorized_request(Method::GET, "/torrents/checkcached", &token)
+                        .query(&[("hash", hash.as_str())]),
+                };
+                let value = self.send(request).await?;
+                Ok::<DebridAvailability, DebridError>(parse_availability(self.kind, &hash, &value))
+            })
             .await
-            .insert(hash, (Instant::now(), availability));
-        Ok(availability)
+            .map_err(|error| (*error).clone())
     }
 
     async fn resolve(&self, source: &str) -> Result<ResolvedLink, DebridError> {
@@ -343,6 +369,8 @@ fn parse_resolved_link(value: &serde_json::Value) -> Option<ResolvedLink> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     #[test]
@@ -364,5 +392,99 @@ mod tests {
             ),
             DebridAvailability::Cached
         );
+    }
+
+    #[test]
+    fn availability_cache_key_isolates_providers_and_credentials() {
+        let hash = "a".repeat(40);
+        let first = AvailabilityCacheKey {
+            provider: ProviderKind::RealDebrid,
+            credential_ref: CredentialRef::new("debrid/profile-a").expect("valid reference"),
+            hash: hash.clone(),
+        };
+        let other_provider = AvailabilityCacheKey {
+            provider: ProviderKind::AllDebrid,
+            ..first.clone()
+        };
+        let other_credential = AvailabilityCacheKey {
+            credential_ref: CredentialRef::new("debrid/profile-b").expect("valid reference"),
+            ..first.clone()
+        };
+
+        assert_ne!(first, other_provider);
+        assert_ne!(first, other_credential);
+    }
+
+    #[test]
+    fn availability_cache_uses_balanced_policy() {
+        let policy = AVAILABILITY_CACHE.policy();
+
+        assert_eq!(policy.max_capacity(), Some(CACHE_CAPACITY));
+        assert_eq!(policy.time_to_live(), Some(CACHE_TTL));
+    }
+
+    #[tokio::test]
+    async fn identical_availability_lookups_are_single_flight() {
+        let cache = Cache::builder().max_capacity(16).build();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let key = AvailabilityCacheKey {
+            provider: ProviderKind::TorBox,
+            credential_ref: CredentialRef::new("debrid/single-flight").expect("valid ref"),
+            hash: "a".repeat(40),
+        };
+        let first_requests = requests.clone();
+        let second_requests = requests.clone();
+        let first = cache.try_get_with(key.clone(), async move {
+            first_requests.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            Ok::<_, DebridError>(DebridAvailability::Cached)
+        });
+        let second = cache.try_get_with(key, async move {
+            second_requests.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, DebridError>(DebridAvailability::Uncached)
+        });
+
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.expect("first"), second.expect("second"));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_availability_lookup_is_not_cached() {
+        let cache = Cache::builder().max_capacity(16).build();
+        let key = AvailabilityCacheKey {
+            provider: ProviderKind::Premiumize,
+            credential_ref: CredentialRef::new("debrid/error-retry").expect("valid ref"),
+            hash: "b".repeat(40),
+        };
+        let first = cache
+            .try_get_with(key.clone(), async {
+                Err::<DebridAvailability, _>(DebridError::Unavailable)
+            })
+            .await;
+        let second = cache
+            .try_get_with(key, async {
+                Ok::<_, DebridError>(DebridAvailability::Cached)
+            })
+            .await;
+
+        assert!(first.is_err());
+        assert_eq!(second.expect("retry result"), DebridAvailability::Cached);
+    }
+
+    #[tokio::test]
+    async fn availability_cache_can_be_invalidated_after_credential_changes() {
+        let key = AvailabilityCacheKey {
+            provider: ProviderKind::DebridLink,
+            credential_ref: CredentialRef::new("debrid/invalidation").expect("valid ref"),
+            hash: "c".repeat(40),
+        };
+        AVAILABILITY_CACHE
+            .insert(key.clone(), DebridAvailability::Cached)
+            .await;
+
+        invalidate_availability_cache();
+
+        assert!(AVAILABILITY_CACHE.get(&key).await.is_none());
     }
 }

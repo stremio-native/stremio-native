@@ -17,7 +17,7 @@ export component StreamRow inherits Rectangle {
     callback play;
     callback context-requested(length, length);
 
-    height: 5.4 * root.unit;
+    height: 5.6 * root.unit;
     border-radius: Theme.border-radius;
     background: root.selected || area.has-hover ? Theme.overlay-hover : transparent;
 
@@ -93,15 +93,19 @@ export component StreamRow inherits Rectangle {
             }
         }
 
-        Text {
+        VerticalLayout {
             horizontal-stretch: 1;
-            text: root.description;
-            color: Theme.text-primary;
-            opacity: 0.86;
-            font-size: 0.95 * root.unit;
-            wrap: word-wrap;
-            overflow: elide;
-            vertical-alignment: center;
+            alignment: center;
+            spacing: 0.2 * root.unit;
+
+            Text {
+                text: root.description;
+                color: Theme.text-primary;
+                opacity: 0.88;
+                font-size: 0.95 * root.unit;
+                wrap: word-wrap;
+                overflow: elide;
+            }
         }
 
         if (root.score-label != "") : Rectangle {
@@ -322,7 +326,7 @@ export component EpisodeRow inherits Rectangle {
                     width: 6.5 * root.unit;
                     height: parent.height;
                     border-radius: 0.3 * root.unit;
-                    background: #143d2b;
+                    background: Theme.secondary-accent.with-alpha(0.2);
 
                     Text {
                         width: parent.width;

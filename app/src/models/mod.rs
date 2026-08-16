@@ -539,6 +539,11 @@ pub(crate) fn refresh_cached_media_images(ui: &MainWindow, urls: &[String]) -> u
         ui.set_detail_poster(poster.clone());
         updated += 1;
     }
+    let detail_logo_url = ui.get_detail_logo_url();
+    if let Some(logo) = images.get(detail_logo_url.as_str()) {
+        ui.set_detail_logo(logo.clone());
+        updated += 1;
+    }
     let detail_background_url = ui.get_detail_background_url();
     if let Some(background) = images.get(detail_background_url.as_str()) {
         ui.set_detail_background(background.clone());
@@ -547,6 +552,16 @@ pub(crate) fn refresh_cached_media_images(ui: &MainWindow, urls: &[String]) -> u
     let discover_preview_poster_url = ui.get_discover_preview_poster_url();
     if let Some(poster) = images.get(discover_preview_poster_url.as_str()) {
         ui.set_discover_preview_poster(poster.clone());
+        updated += 1;
+    }
+    let discover_preview_logo_url = ui.get_discover_preview_logo_url();
+    if let Some(logo) = images.get(discover_preview_logo_url.as_str()) {
+        ui.set_discover_preview_logo(logo.clone());
+        updated += 1;
+    }
+    let player_series_logo_url = ui.get_player_series_logo_url();
+    if let Some(logo) = images.get(player_series_logo_url.as_str()) {
+        ui.set_player_series_logo(logo.clone());
         updated += 1;
     }
 

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(not(feature = "profiling"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -37,8 +38,10 @@ use stremio_core::{
 use core_env::DesktopEnv;
 
 pub mod backup;
+mod color_picker;
 pub mod community_addons;
 mod config;
+pub mod crash_handler;
 pub mod customization;
 pub mod db;
 mod deep_link;
@@ -49,6 +52,7 @@ pub mod image_cache;
 pub mod integrations;
 pub mod local_library;
 pub mod localization;
+mod lock_handler;
 mod media_session;
 pub mod metadata_enrichment;
 mod models;
@@ -60,13 +64,16 @@ mod playback;
 mod player_features;
 #[cfg(feature = "plugins")]
 mod plugins;
+mod preview_player;
 pub mod profiles;
+pub mod ratings;
 pub mod runtime_host;
 pub mod secure_settings;
 mod shaders;
 mod shortcuts;
 mod single_instance;
 mod taskbar_media;
+mod theme_studio;
 mod thumbnail_preview;
 mod tray;
 mod window_events;
@@ -89,6 +96,7 @@ pub use discord::DiscordRpc;
 pub use navigation::{DetailsPresentation, NavigationController, NavigationIntent, Tab};
 
 #[tokio::main]
+#[cfg_attr(feature = "profiling", hotpath::main)]
 async fn main() -> anyhow::Result<()> {
     let startup_started = Instant::now();
     // Core callbacks may originate on native threads (notably libmpv's actor),
@@ -154,6 +162,8 @@ async fn run_app(
 
     // Apply Dynamic Theme to Slint Global Theme Singleton
     apply_theme(&ui, &initial_config);
+    color_picker::install(&ui);
+    theme_studio::install(&ui);
 
     // Set initial configuration parameters
     let navigation = NavigationController::new(initial_config.active_tab);
@@ -254,7 +264,7 @@ struct AppSession {
     server_handle: stream_server::ServerHandle,
     native_playback: Option<mpv_integration::NativePlayback>,
     command_task: tokio::task::JoinHandle<()>,
-    tray: Option<AppTray>,
+    tray: Option<tray::Tray>,
     updater: updater::UpdaterHandle,
     download_ui_task: tokio::task::JoinHandle<()>,
 }
@@ -282,6 +292,11 @@ impl AppSession {
             Some(source) => tracing::info!(?source, "stream-server stopped"),
             None => tracing::info!("stream-server stopped"),
         }
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                db::close_and_checkpoint_db().await;
+            });
+        });
         Ok(())
     }
 }
@@ -322,6 +337,10 @@ fn apply_theme(ui: &MainWindow, config: &config::AppConfig) {
     set_color!(&config.theme.text_muted, set_text_muted);
     set_color!(&config.theme.skeleton_base, set_skeleton_base);
     set_color!(&config.theme.skeleton_shimmer, set_skeleton_shimmer);
+    if !config.theme.font_family.is_empty() {
+        theme.set_font_family(config.theme.font_family.as_str().into());
+    }
+    theme.set_active_preset_idx(config.theme.active_preset_idx);
 }
 
 async fn finish_startup(
@@ -329,13 +348,13 @@ async fn finish_startup(
     navigation: NavigationController,
     initial_command: Option<single_instance::AppCommand>,
     commands: tokio::sync::mpsc::UnboundedReceiver<single_instance::AppCommand>,
-    tray: Option<AppTray>,
+    tray: Option<tray::Tray>,
     updater: updater::UpdaterHandle,
     media_session: Arc<media_session::MediaSession>,
 ) -> anyhow::Result<AppSession> {
     let ui_weak = ui.as_weak();
 
-    db::init_db(paths::get().database()).await?;
+    lock_handler::init_db_with_lock_handling(paths::get().database()).await?;
     let credential_store: Arc<dyn credential_store::CredentialStore> =
         Arc::new(credential_store::PlatformCredentialStore::default());
     core_env::install_credential_store(credential_store.clone());
@@ -616,6 +635,27 @@ async fn finish_startup(
     let native_playback_bridge = native_playback
         .as_ref()
         .map(mpv_integration::NativePlayback::bridge);
+
+    // The hover popup is only offered when the secondary preview engine came
+    // up with native playback; without it the card would never fill in.
+    match native_playback_bridge.as_ref() {
+        Some(bridge) => {
+            let previews = bridge.previews();
+            ui.set_hover_preview_enabled(previews.is_enabled());
+            ui.set_hover_preview_delay_ms(
+                i32::try_from(config.hover_trailer_preview_delay_ms)
+                    .unwrap_or(crate::config::DEFAULT_HOVER_PREVIEW_DELAY_MS as i32),
+            );
+            event_loop::install_hover_preview_callbacks(
+                &ui,
+                runtime.clone(),
+                playback_selections.clone(),
+                previews,
+                navigation.clone(),
+            );
+        }
+        None => ui.set_hover_preview_enabled(false),
+    }
 
     event_loop::start_event_loop(
         rx,
@@ -1025,7 +1065,7 @@ fn setup_integration_management(ui: &MainWindow) {
                             )
                             .await?,
                         ),
-                        "TMDB" | "OMDb" | "Fanart.tv" | "RPDB" => {
+                        "TMDB" | "OMDb" | "MDBList" | "Fanart.tv" | "RPDB" => {
                             integrations::configure_metadata_provider(
                                 profile.as_str(),
                                 metadata_provider_kind(&provider)
@@ -1120,7 +1160,7 @@ fn setup_integration_management(ui: &MainWindow) {
                             )
                             .await?
                         }
-                        "TMDB" | "OMDb" | "Fanart.tv" | "RPDB" => {
+                        "TMDB" | "OMDb" | "MDBList" | "Fanart.tv" | "RPDB" => {
                             integrations::disconnect_metadata_provider(
                                 profile.as_str(),
                                 metadata_provider_kind(&provider).expect("matched provider"),
@@ -1172,6 +1212,7 @@ fn metadata_provider_kind(name: &str) -> Option<media_integrations::ProviderKind
     match name {
         "TMDB" => Some(media_integrations::ProviderKind::Tmdb),
         "OMDb" => Some(media_integrations::ProviderKind::Omdb),
+        "MDBList" => Some(media_integrations::ProviderKind::Mdblist),
         "Fanart.tv" => Some(media_integrations::ProviderKind::Fanart),
         "RPDB" => Some(media_integrations::ProviderKind::Rpdb),
         _ => None,
@@ -1270,17 +1311,14 @@ fn setup_operations(ui: &MainWindow, downloads: Arc<downloads::DownloadManager>)
             let confirmation = confirmation.clone();
             let ui_weak = ui_weak.clone();
             tokio::spawn(async move {
-                let path_for_read = path.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    backup::preview_restore(&path_for_read).and_then(|preview| {
-                        if preview.manifest.includes_secrets {
-                            backup::read_secret_export(&path_for_read, &passphrase)?;
-                        }
-                        Ok(preview)
-                    })
-                })
-                .await
-                .unwrap_or(Err(backup::BackupError::Filesystem));
+                let result = async {
+                    let preview = backup::preview_restore(&path).await?;
+                    if preview.manifest.includes_secrets {
+                        backup::read_secret_export(&path, &passphrase).await?;
+                    }
+                    Ok::<_, backup::BackupError>(preview)
+                }
+                .await;
                 match result {
                     Ok(preview) => {
                         *confirmation
@@ -1321,12 +1359,15 @@ fn setup_operations(ui: &MainWindow, downloads: Arc<downloads::DownloadManager>)
             let ui_weak = ui_weak.clone();
             tokio::spawn(async move {
                 let result = async {
-                    let preview = backup::preview_restore(&path)?;
-                    if expected.as_ref() != Some(&(path.clone(), preview.manifest.payload_checksum.clone())) {
+                    let Some((confirmed_path, expected_checksum)) = expected else {
+                        return Err(anyhow::anyhow!("restore confirmation expired; preview the archive again"));
+                    };
+                    if confirmed_path != path {
                         return Err(anyhow::anyhow!("restore confirmation expired; preview the archive again"));
                     }
+                    let preview = backup::preview_restore(&path).await?;
                     let secrets = if preview.manifest.includes_secrets {
-                        Some(backup::read_secret_export(&path, &passphrase)?)
+                        Some(backup::read_secret_export(&path, &passphrase).await?)
                     } else {
                         None
                     };
@@ -1335,7 +1376,7 @@ fn setup_operations(ui: &MainWindow, downloads: Arc<downloads::DownloadManager>)
                         .join("backups")
                         .join(format!("pre-restore-{}.zip", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
                     backup::create_backup(&safety, None).await?;
-                    let restored = backup::restore(&path).await?;
+                    let restored = backup::restore(&path, &expected_checksum).await?;
                     if let Some(secrets) = secrets {
                         integrations::restore_secrets(secrets).await?;
                     }

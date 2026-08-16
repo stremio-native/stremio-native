@@ -82,6 +82,11 @@ export component BoardPage inherits Rectangle {
     in property <bool> loading: false;
     in property <bool> show-server-warning: false;
 
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
+
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
     callback item-selected(string, string, string);
     callback play-clicked(string);
     callback remove-continue-watching(string);
@@ -165,6 +170,12 @@ export component BoardPage inherits Rectangle {
                 library-context-menu: section.is-continue-watching;
                 continue-watching-context-menu: section.is-continue-watching;
                 show-watched-context-action: false;
+                enable-hover-preview: root.enable-hover-preview;
+                hover-preview-delay: root.hover-preview-delay;
+                hover-preview-requested(id, media-type, x, y, width, height) => {
+                    root.hover-preview-requested(id, media-type, x, y, width, height);
+                }
+                hover-preview-dismissed => { root.hover-preview-dismissed(); }
                 see-all-requested => {
                     if (section.is-continue-watching) {
                         root.see-all-continue-watching();

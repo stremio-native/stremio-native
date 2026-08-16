@@ -26,7 +26,7 @@ component BrandHeader inherits Rectangle {
         width: parent.width;
         height: 3.6 * root.unit;
         text: @tr("WEBSITE_FREEDOM_TO_STREAM" => "Freedom to Stream");
-        color: Theme.text-primary;
+        color: #ffffff;
         font-size: 3 * root.unit;
         font-weight: 600;
         horizontal-alignment: root.left-aligned ? left : center;
@@ -38,8 +38,7 @@ component BrandHeader inherits Rectangle {
         width: parent.width;
         height: 1.8 * root.unit;
         text: @tr("All the video content you enjoy in one place");
-        color: Theme.text-primary;
-        opacity: 0.6;
+        color: #ffffff99;
         font-size: 1.5 * root.unit;
         font-weight: 400;
         horizontal-alignment: root.left-aligned ? left : center;
@@ -69,8 +68,9 @@ component FormSection inherits VerticalLayout {
         unit: root.unit;
         height: 3.2 * root.unit;
         border-radius: 0.75 * root.unit;
-        surface-color: Theme.overlay;
-        focus-color: Theme.overlay;
+        surface-color: #ffffff14;
+        focus-color: #ffffff40;
+        text-color: #ffffff;
         text <=> root.email;
         placeholder-text: @tr("EMAIL" => "Email");
         accepted => { password-input.focus-input(); }
@@ -81,8 +81,9 @@ component FormSection inherits VerticalLayout {
         unit: root.unit;
         height: 3.2 * root.unit;
         border-radius: 0.75 * root.unit;
-        surface-color: Theme.overlay;
-        focus-color: Theme.overlay;
+        surface-color: #ffffff14;
+        focus-color: #ffffff40;
+        text-color: #ffffff;
         text <=> root.password;
         placeholder-text: @tr("Password");
         input-type: InputType.password;
@@ -98,8 +99,9 @@ component FormSection inherits VerticalLayout {
         unit: root.unit;
         height: 3.2 * root.unit;
         border-radius: 0.75 * root.unit;
-        surface-color: Theme.overlay;
-        focus-color: Theme.overlay;
+        surface-color: #ffffff14;
+        focus-color: #ffffff40;
+        text-color: #ffffff;
         text <=> root.confirm-password;
         placeholder-text: @tr("Confirm password");
         input-type: InputType.password;
@@ -114,7 +116,7 @@ component FormSection inherits VerticalLayout {
             x: parent.width - self.width;
             height: parent.height;
             text: @tr("Forgot password?");
-            color: Theme.text-primary;
+            color: #ffffffcc;
             font-size: root.unit;
             vertical-alignment: center;
 
@@ -131,6 +133,7 @@ component FormSection inherits VerticalLayout {
         Checkbox {
             unit: root.unit;
             checked <=> root.tos-accepted;
+            text-color: #ffffffcc;
             label: @tr("I have read and agree with the Stremio");
             link-label: @tr("Terms and Conditions");
             has-link: true;
@@ -140,6 +143,7 @@ component FormSection inherits VerticalLayout {
         Checkbox {
             unit: root.unit;
             checked <=> root.privacy-accepted;
+            text-color: #ffffffcc;
             label: @tr("I have read and agree with the Stremio");
             link-label: @tr("PRIVACY_POLICY" => "Privacy Policy");
             has-link: true;
@@ -149,6 +153,7 @@ component FormSection inherits VerticalLayout {
         Checkbox {
             unit: root.unit;
             checked <=> root.marketing-accepted;
+            text-color: #ffffffcc;
             label: @tr("I agree to receive marketing communications from Stremio");
             toggled(_checked) => { root.edited(); }
         }
@@ -169,10 +174,10 @@ component FormSection inherits VerticalLayout {
         enabled: !root.loading;
         outlined: true;
         surface-color: transparent;
-        hover-color: Theme.text-primary;
-        foreground-color: Theme.text-primary;
-        hover-foreground-color: Theme.background;
-        outline-color: Theme.text-primary;
+        hover-color: #ffffff;
+        foreground-color: #ffffff;
+        hover-foreground-color: #0c0b11;
+        outline-color: #ffffff40;
         clicked => { root.submit(); }
     }
 }
@@ -204,7 +209,7 @@ component OptionsSection inherits VerticalLayout {
         hover-color: transparent;
         outline-color: Theme.facebook;
         hover-outline-color: Theme.facebook;
-        foreground-color: Theme.text-primary;
+        foreground-color: #ffffff;
         hover-foreground-color: Theme.facebook;
         clicked => { root.facebook-login(); }
     }
@@ -217,12 +222,12 @@ component OptionsSection inherits VerticalLayout {
         show-icon: true;
         icon: root.apple-icon;
         icon-source: @image-url("../assets/images/icons/macos.svg");
-        surface-color: Theme.text-primary;
-        hover-color: transparent;
-        outline-color: Theme.text-primary;
-        hover-outline-color: Theme.text-primary;
-        foreground-color: Theme.background;
-        hover-foreground-color: Theme.text-primary;
+        surface-color: #ffffff1f;
+        hover-color: #ffffff;
+        outline-color: #ffffff40;
+        hover-outline-color: #ffffff;
+        foreground-color: #ffffff;
+        hover-foreground-color: #000000;
         clicked => { root.apple-login(); }
     }
 
@@ -233,10 +238,10 @@ component OptionsSection inherits VerticalLayout {
         enabled: !root.loading;
         outlined: true;
         surface-color: transparent;
-        hover-color: Theme.text-primary;
-        foreground-color: Theme.text-primary;
-        hover-foreground-color: Theme.background;
-        outline-color: Theme.text-primary;
+        hover-color: #ffffff;
+        foreground-color: #ffffff;
+        hover-foreground-color: #0c0b11;
+        outline-color: #ffffff40;
         clicked => { root.toggle-mode(); }
     }
 
@@ -247,10 +252,10 @@ component OptionsSection inherits VerticalLayout {
         enabled: !root.loading;
         outlined: true;
         surface-color: transparent;
-        hover-color: Theme.text-primary;
-        foreground-color: Theme.text-primary;
-        hover-foreground-color: Theme.background;
-        outline-color: Theme.text-primary;
+        hover-color: #ffffff;
+        foreground-color: #ffffff;
+        hover-foreground-color: #0c0b11;
+        outline-color: #ffffff40;
         clicked => { root.guest-login(); }
     }
 }

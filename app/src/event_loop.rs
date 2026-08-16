@@ -7,11 +7,14 @@ use crate::{
 };
 use core_env::DesktopEnv;
 use futures::StreamExt;
-use slint::{Model, ModelRc};
+use slint::{ComponentHandle, Model, ModelRc};
 use std::sync::Arc;
 use stremio_core::{
     models::common::Loadable,
-    runtime::{Runtime, RuntimeEvent, msg::Event},
+    runtime::{
+        Runtime, RuntimeAction, RuntimeEvent,
+        msg::{Action, ActionCtx, Event},
+    },
 };
 
 fn update_vec_model<T: Clone + 'static>(
@@ -150,6 +153,112 @@ fn schedule_debrid_annotations(
     });
 }
 
+/// Wires the hover trailer preview popup to the catalog metadata and the
+/// secondary MPV preview engine.
+///
+/// The requested/dismissed pair is driven by the pointer, so both handlers stay
+/// synchronous on the UI thread: resolution only reads catalogs the core has
+/// already loaded, and anything slower would show up as popup latency.
+pub fn install_hover_preview_callbacks(
+    ui: &MainWindow,
+    runtime: Arc<Runtime<DesktopEnv, AppModel>>,
+    playback_selections: Arc<PlaybackSelections>,
+    preview: crate::preview_player::PreviewPlayer,
+    navigation: NavigationController,
+) {
+    let ui_weak = ui.as_weak();
+
+    ui.on_hover_preview_requested({
+        let ui_weak = ui_weak.clone();
+        let runtime = runtime.clone();
+        let playback_selections = playback_selections.clone();
+        let preview = preview.clone();
+        move |meta_id, _media_type| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Some(trailer) = resolve_trailer(&runtime, &playback_selections, meta_id.as_str())
+            else {
+                tracing::debug!(meta_id = %meta_id, "no catalog metadata for the hovered item");
+                ui.invoke_hover_preview_close();
+                return;
+            };
+            preview.begin(&ui, &trailer);
+        }
+    });
+
+    ui.on_hover_preview_dismissed({
+        let preview = preview.clone();
+        move || preview.dismiss()
+    });
+
+    ui.on_hover_preview_toggle_muted({
+        let preview = preview.clone();
+        move || {
+            let muted = preview.toggle_muted();
+            tracing::debug!(muted, "hover trailer preview mute toggled");
+        }
+    });
+
+    ui.on_hover_preview_play({
+        let ui_weak = ui_weak.clone();
+        let runtime = runtime.clone();
+        let preview = preview.clone();
+        move || {
+            let (Some(ui), Some(meta_id)) = (ui_weak.upgrade(), preview.active_id()) else {
+                return;
+            };
+            preview.dismiss();
+            crate::models::details::open_details_route(&ui, &runtime, &navigation, &meta_id);
+        }
+    });
+
+    ui.on_hover_preview_toggle_library({
+        let ui_weak = ui_weak.clone();
+        let runtime = runtime.clone();
+        let playback_selections = playback_selections.clone();
+        let preview = preview.clone();
+        move || {
+            let Some(meta_id) = preview.active_id() else {
+                return;
+            };
+            let Some(trailer) = resolve_trailer(&runtime, &playback_selections, &meta_id) else {
+                return;
+            };
+            let action = if trailer.in_library {
+                Some(ActionCtx::RemoveFromLibrary(trailer.meta_id.clone()))
+            } else {
+                trailer.preview.clone().map(ActionCtx::AddToLibrary)
+            };
+            let Some(action) = action else {
+                tracing::debug!(
+                    meta_id = %meta_id,
+                    "hovered item cannot be added without catalog metadata"
+                );
+                return;
+            };
+            // The library projection arrives asynchronously; the popup may be
+            // gone by then, so reflect the toggle straight away.
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_hover_preview_in_library(!trailer.in_library);
+            }
+            runtime.dispatch(RuntimeAction {
+                field: None,
+                action: Action::Ctx(action),
+            });
+        }
+    });
+}
+
+fn resolve_trailer(
+    runtime: &Runtime<DesktopEnv, AppModel>,
+    playback_selections: &PlaybackSelections,
+    meta_id: &str,
+) -> Option<crate::playback::TrailerPreview> {
+    let model = runtime.model().ok()?;
+    playback_selections.resolve_trailer_for_meta_id(&model, meta_id)
+}
+
 pub fn start_event_loop(
     mut rx: futures::channel::mpsc::Receiver<RuntimeEvent<DesktopEnv, AppModel>>,
     runtime: Arc<Runtime<DesktopEnv, AppModel>>,
@@ -189,7 +298,14 @@ pub fn start_event_loop(
                             Err(_) => break,
                         }
                     }
-                    let _state_span = tracing::info_span!("NewState", ?fields).entered();
+                    // `debug_span!`, not `info_span!`: this fires on every core
+                    // state update, and span attributes are formatted when the
+                    // span is created, so `?fields` would Debug-format the
+                    // changed-field set on each one. The subscriber emits no
+                    // span events, so that work produces no output. Release
+                    // builds cap tracing at INFO, which compiles this out while
+                    // leaving the info/warn/error events intact.
+                    let _state_span = tracing::debug_span!("NewState", ?fields).entered();
                     #[cfg(debug_assertions)]
                     let state_started = std::time::Instant::now();
                     #[cfg(debug_assertions)]
@@ -383,7 +499,7 @@ pub fn start_event_loop(
 
                     first_render = false;
 
-                    let _clone_span = tracing::info_span!("clone_model_state").entered();
+                    let _clone_span = tracing::debug_span!("clone_model_state").entered();
                     // Clone core submodels for thread-safe UI thread updates (only if needed)
                     let continue_watching_cloned = if board_sync_needed {
                         Some(model.continue_watching_preview.clone())
@@ -582,13 +698,13 @@ pub fn start_event_loop(
                         }
                         let patch_started = std::time::Instant::now();
                         #[cfg(debug_assertions)]
-                        let _ui_span = tracing::info_span!(
+                        let _ui_span = tracing::debug_span!(
                             "UI_Thread_Sync",
                             queue_delay_ms = dispatch_queued.elapsed().as_millis()
                         )
                         .entered();
                         #[cfg(not(debug_assertions))]
-                        let _ui_span = tracing::info_span!("UI_Thread_Sync").entered();
+                        let _ui_span = tracing::debug_span!("UI_Thread_Sync").entered();
                         if let Some(ui) = ui_weak_clone.upgrade() {
                             if let Some((email, avatar_url)) = auth_update.as_ref() {
                                 let current_username = ui.get_username().to_string();

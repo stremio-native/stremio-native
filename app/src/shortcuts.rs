@@ -1,14 +1,16 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
+    rc::Rc,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
 use slint::{
-    ComponentHandle, Model,
+    ComponentHandle, Model, Timer, TimerMode,
     winit_030::{EventResult, WinitWindowAccessor, winit},
 };
 
@@ -296,9 +298,10 @@ struct HotkeyDispatcher {
     modifiers: winit::keyboard::ModifiersState,
     ime_editing: bool,
     pressed: HashSet<HotkeyAction>,
-    active_keys: HashMap<String, HotkeyAction>,
+    active_keys: HashMap<winit::keyboard::PhysicalKey, HotkeyAction>,
+    hold_timer: Timer,
+    hold_active: Rc<Cell<bool>>,
     double_speed_restore: Option<f32>,
-    double_speed_started_at: Option<Instant>,
     last_subtitle_index: i32,
 }
 
@@ -318,68 +321,93 @@ impl HotkeyDispatcher {
         &mut self,
         ui: &MainWindow,
         binding: &HotkeyBinding,
-        key: &winit::keyboard::Key,
+        physical_key: winit::keyboard::PhysicalKey,
         repeat: bool,
     ) {
         if repeat {
+            if binding.behavior == HotkeyBehavior::Press && repeats_while_held(binding.action) {
+                invoke_action(ui, binding.action, &mut self.last_subtitle_index);
+            }
             return;
         }
-        let Some(key) = normalized_key(key) else {
-            return;
-        };
         if !self.pressed.insert(binding.action) {
             return;
         }
-        self.active_keys.insert(key, binding.action);
+        self.active_keys.insert(physical_key, binding.action);
 
         if binding.behavior == HotkeyBehavior::Hold {
             self.double_speed_restore = Some(ui.get_player_playback_speed());
-            self.double_speed_started_at = Some(Instant::now());
-            ui.set_player_playback_speed(2.0);
-            ui.invoke_player_change_speed(2.0);
+            self.hold_active.set(false);
+            let action = binding.action;
+            let hold_active = self.hold_active.clone();
+            let weak = ui.as_weak();
+            self.hold_timer.start(
+                TimerMode::SingleShot,
+                Duration::from_millis(400),
+                move || {
+                    let Some(ui) = weak.upgrade() else {
+                        return;
+                    };
+                    if !ui.get_show_player() || ui.get_player_menu_open() {
+                        return;
+                    }
+                    if begin_hold_action(&ui, action) {
+                        hold_active.set(true);
+                    }
+                },
+            );
             return;
         }
         invoke_action(ui, binding.action, &mut self.last_subtitle_index);
     }
 
-    fn take_active_action(&mut self, key: &str) -> Option<HotkeyAction> {
+    fn take_active_action(&mut self, key: &winit::keyboard::PhysicalKey) -> Option<HotkeyAction> {
         self.active_keys.remove(key)
     }
 
-    fn release_key(&mut self, ui: &MainWindow, key: &winit::keyboard::Key) -> bool {
-        let Some(key) = normalized_key(key) else {
+    fn release_key(&mut self, ui: &MainWindow, key: &winit::keyboard::PhysicalKey) -> bool {
+        let Some(action) = self.take_active_action(key) else {
             return false;
         };
-        let Some(action) = self.take_active_action(&key) else {
-            return false;
-        };
-        self.release(ui, action);
+        self.release(ui, action, true);
         true
     }
 
-    fn release(&mut self, ui: &MainWindow, action: HotkeyAction) {
+    fn release(&mut self, ui: &MainWindow, action: HotkeyAction, allow_tap_action: bool) {
         if !self.pressed.remove(&action) {
             return;
         }
         if action == HotkeyAction::TemporaryDoubleSpeed {
-            let restore = self.double_speed_restore.take().unwrap_or(1.0);
-            let quick_tap = self
-                .double_speed_started_at
-                .take()
-                .is_some_and(|started| started.elapsed() < Duration::from_millis(400));
-            ui.set_player_playback_speed(restore);
-            ui.invoke_player_change_speed(restore);
-            if quick_tap {
+            self.hold_timer.stop();
+            if self.hold_active.replace(false) {
+                let restore = self.double_speed_restore.take().unwrap_or(1.0);
+                ui.set_player_playback_speed(restore);
+                ui.invoke_player_change_speed(restore);
+            } else if allow_tap_action && ui.get_show_player() && !ui.get_player_menu_open() {
+                self.double_speed_restore = None;
                 ui.invoke_player_toggle_pause();
+            } else {
+                self.double_speed_restore = None;
             }
         }
     }
 
     fn release_all(&mut self, ui: &MainWindow) {
         for action in std::mem::take(&mut self.active_keys).into_values() {
-            self.release(ui, action);
+            self.release(ui, action, false);
         }
         self.pressed.clear();
+    }
+}
+
+fn begin_hold_action(ui: &MainWindow, action: HotkeyAction) -> bool {
+    match action {
+        HotkeyAction::TemporaryDoubleSpeed => {
+            ui.set_player_playback_speed(2.0);
+            ui.invoke_player_change_speed(2.0);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -389,9 +417,28 @@ fn should_dispatch(binding: &HotkeyBinding, player_menu_open: bool) -> bool {
         || binding.action == HotkeyAction::CloseOverlayOrPlayer
 }
 
+fn repeats_while_held(action: HotkeyAction) -> bool {
+    matches!(
+        action,
+        HotkeyAction::SeekBackward
+            | HotkeyAction::SeekBackwardShort
+            | HotkeyAction::SeekForward
+            | HotkeyAction::SeekForwardShort
+            | HotkeyAction::VolumeUp
+            | HotkeyAction::VolumeDown
+            | HotkeyAction::SubtitleSizeDown
+            | HotkeyAction::SubtitleSizeUp
+            | HotkeyAction::SubtitleDelayDown
+            | HotkeyAction::SubtitleDelayUp
+            | HotkeyAction::SpeedDown
+            | HotkeyAction::SpeedUp
+    )
+}
+
 fn normalized_key(key: &winit::keyboard::Key) -> Option<String> {
     use winit::keyboard::{Key, NamedKey};
     match key {
+        Key::Character(character) if character.as_str() == " " => Some("space".to_owned()),
         Key::Character(character) => Some(character.to_lowercase()),
         Key::Named(named) => Some(
             match named {
@@ -662,7 +709,7 @@ pub fn install_platform_shortcuts(ui: &MainWindow, media_session: Arc<MediaSessi
                     return EventResult::PreventDefault;
                 }
                 if event.state == winit::event::ElementState::Released
-                    && dispatcher.release_key(&ui, &event.logical_key)
+                    && dispatcher.release_key(&ui, &event.physical_key)
                 {
                     return EventResult::PreventDefault;
                 }
@@ -698,9 +745,11 @@ pub fn install_platform_shortcuts(ui: &MainWindow, media_session: Arc<MediaSessi
                 }
                 match event.state {
                     winit::event::ElementState::Pressed => {
-                        dispatcher.press(&ui, &binding, &event.logical_key, event.repeat)
+                        dispatcher.press(&ui, &binding, event.physical_key, event.repeat)
                     }
-                    winit::event::ElementState::Released => dispatcher.release(&ui, binding.action),
+                    winit::event::ElementState::Released => {
+                        dispatcher.release(&ui, binding.action, true)
+                    }
                 }
                 EventResult::PreventDefault
             }
@@ -940,16 +989,44 @@ mod tests {
     }
 
     #[test]
-    fn active_action_is_recovered_by_base_key() {
+    fn active_action_is_recovered_by_physical_key() {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+
         let mut dispatcher = HotkeyDispatcher::default();
+        let key = PhysicalKey::Code(KeyCode::ArrowRight);
         dispatcher
             .active_keys
-            .insert("arrow-right".to_owned(), HotkeyAction::SeekForwardShort);
+            .insert(key, HotkeyAction::SeekForwardShort);
 
         assert_eq!(
-            dispatcher.take_active_action("arrow-right"),
+            dispatcher.take_active_action(&key),
             Some(HotkeyAction::SeekForwardShort)
         );
+    }
+
+    #[test]
+    fn character_space_normalizes_to_the_default_hold_binding() {
+        use winit::keyboard::Key;
+
+        assert_eq!(
+            normalized_key(&Key::Character(" ".into())),
+            Some("space".to_owned())
+        );
+    }
+
+    #[test]
+    fn continuous_adjustments_repeat_while_held() {
+        assert!(repeats_while_held(HotkeyAction::SeekForward));
+        assert!(repeats_while_held(HotkeyAction::VolumeDown));
+        assert!(repeats_while_held(HotkeyAction::SubtitleDelayUp));
+        assert!(repeats_while_held(HotkeyAction::SpeedDown));
+    }
+
+    #[test]
+    fn one_shot_actions_do_not_repeat_while_held() {
+        assert!(!repeats_while_held(HotkeyAction::TogglePause));
+        assert!(!repeats_while_held(HotkeyAction::OpenSubtitles));
+        assert!(!repeats_while_held(HotkeyAction::NextEpisode));
     }
 
     #[test]

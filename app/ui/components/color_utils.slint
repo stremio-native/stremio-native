@@ -1,0 +1,123 @@
+// Colour formatting/parsing helpers shared by the colour picker.
+//
+// Formatting is implemented in Slint so the picker renders correct values even
+// when the native side never wires this global up. Parsing needs per-character
+// access to a string, which the Slint language doesn't offer, so it's a
+// callback the host implements; when unimplemented it reports `valid: false`
+// and the picker simply refuses the typed value.
+
+export struct ParsedColor {
+    valid: bool,
+    value: color,
+}
+
+export struct CursorSample {
+    valid: bool,
+    value: color,
+    pressed: bool,
+}
+
+export struct SavedGradient {
+    angle: angle,
+    start: color,
+    end: color,
+}
+
+export global ColorUtils {
+    // 0: hex, 1: rgb, 2: hsl. Kept as an int so it round-trips through the
+    // picker's tab-like selector without a dedicated enum.
+    public pure function format-name(mode: int) -> string {
+        if (mode == 1) { return "RGB"; }
+        if (mode == 2) { return "HSL"; }
+        return "Hex";
+    }
+
+    public pure function hex-nibble(value: int) -> string {
+        if (value <= 0) { return "0"; }
+        if (value == 1) { return "1"; }
+        if (value == 2) { return "2"; }
+        if (value == 3) { return "3"; }
+        if (value == 4) { return "4"; }
+        if (value == 5) { return "5"; }
+        if (value == 6) { return "6"; }
+        if (value == 7) { return "7"; }
+        if (value == 8) { return "8"; }
+        if (value == 9) { return "9"; }
+        if (value == 10) { return "A"; }
+        if (value == 11) { return "B"; }
+        if (value == 12) { return "C"; }
+        if (value == 13) { return "D"; }
+        if (value == 14) { return "E"; }
+        return "F";
+    }
+
+    public pure function hex-byte(value: int) -> string {
+        return ColorUtils.hex-nibble(Math.floor(Math.clamp(value, 0, 255) / 16))
+            + ColorUtils.hex-nibble(Math.mod(Math.clamp(value, 0, 255), 16));
+    }
+
+    // #RRGGBB. Opacity is edited through its own field, mirroring the reference
+    // design, so the common representation deliberately omits the alpha byte.
+    public pure function hex(value: color) -> string {
+        return "#" + ColorUtils.hex-byte(value.red) + ColorUtils.hex-byte(value.green) + ColorUtils.hex-byte(value.blue);
+    }
+
+    public pure function hex-with-alpha(value: color) -> string {
+        return ColorUtils.hex(value) + ColorUtils.hex-byte(value.alpha);
+    }
+
+    public pure function rgb-text(value: color) -> string {
+        return value.red + ", " + value.green + ", " + value.blue;
+    }
+
+    public pure function hsl-text(value: color) -> string {
+        return Math.round(value.to-hsv().hue) + ", "
+            + Math.round(ColorUtils.hsl-saturation(value) * 100) + "%, "
+            + Math.round(ColorUtils.hsl-lightness(value) * 100) + "%";
+    }
+
+    public pure function hsl-lightness(value: color) -> float {
+        return value.to-hsv().value * (1 - value.to-hsv().saturation / 2);
+    }
+
+    public pure function hsl-saturation(value: color) -> float {
+        if (ColorUtils.hsl-lightness(value) <= 0 || ColorUtils.hsl-lightness(value) >= 1) {
+            return 0;
+        }
+        return (value.to-hsv().value - ColorUtils.hsl-lightness(value))
+            / Math.min(ColorUtils.hsl-lightness(value), 1 - ColorUtils.hsl-lightness(value));
+    }
+
+    public pure function format-text(value: color, mode: int) -> string {
+        if (mode == 1) { return ColorUtils.rgb-text(value); }
+        if (mode == 2) { return ColorUtils.hsl-text(value); }
+        return ColorUtils.hex(value);
+    }
+
+    // Implemented by the host. `mode` matches `format-text`, so whatever the
+    // field currently displays is also what can be typed back into it.
+    pure callback parse(text: string, mode: int) -> ParsedColor;
+
+    // Screen colour sampling. `available` stays false on platforms without an
+    // implementation and the eyedropper button hides itself accordingly.
+    in property <bool> eyedropper-available: false;
+    callback sample-cursor() -> CursorSample;
+
+    // Palettes are owned by the host: Slint arrays can't grow from the language
+    // side, and the host is where they get persisted anyway. The values below
+    // are the fallback shown when nothing has been loaded yet.
+    in-out property <[color]> saved-colors: [
+        #10b981, #3b82f6, #6366f1, #8b5cf6, #d946ef, #f43f5e, #ef4444, #f97316, #7b5bf5,
+    ];
+    in-out property <[SavedGradient]> saved-gradients: [
+        { angle: 135deg, start: #7b5bf5, end: #1a173e },
+        { angle: 135deg, start: #3b82f6, end: #1c2541 },
+        { angle: 135deg, start: #10b981, end: #047857 },
+        { angle: 135deg, start: #f43f5e, end: #881337 },
+        { angle: 135deg, start: #a855f7, end: #121212 },
+        { angle: 135deg, start: #f97316, end: #431407 },
+    ];
+
+    callback save-color(color);
+    callback save-gradient(SavedGradient);
+}

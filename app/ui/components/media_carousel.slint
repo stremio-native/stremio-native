@@ -23,6 +23,8 @@ export component MediaCatalogRow inherits MetaRow {
     in property <bool> library-context-menu: false;
     in property <bool> continue-watching-context-menu: false;
     in property <bool> show-watched-context-action: true;
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
     callback item-selected(string, string, string);
     callback remove-clicked(string);
     callback play-clicked(string);
@@ -30,6 +32,8 @@ export component MediaCatalogRow inherits MetaRow {
     callback context-requested(string, length, length);
     callback dismiss-clicked(string);
     callback poster-requested(string);
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
 
     content-width: max(root.width, (root.loading ? 8 : root.items.length) * root.card-width);
     content-height: root.card-height;
@@ -82,6 +86,8 @@ export component MediaCatalogRow inherits MetaRow {
         library-context-menu: root.library-context-menu;
         continue-watching-context-menu: root.continue-watching-context-menu;
         show-watched-context-action: root.show-watched-context-action;
+        enable-hover-preview: root.enable-hover-preview;
+        hover-preview-delay: root.hover-preview-delay;
         is-visible: !root.loading && (!root.enable-lazy-loading
             || (self.x + root.content-scroll-offset + self.width >= -root.card-width
                 && self.x + root.content-scroll-offset <= root.width + root.card-width));
@@ -94,6 +100,10 @@ export component MediaCatalogRow inherits MetaRow {
         context-requested(x, y) => { root.context-requested(card-item.id, x, y); }
         dismiss-requested => { root.dismiss-clicked(card-item.id); }
         poster-requested(url) => { root.poster-requested(url); }
+        hover-preview-requested(id, media-type, x, y, width, height) => {
+            root.hover-preview-requested(id, media-type, x, y, width, height);
+        }
+        hover-preview-dismissed => { root.hover-preview-dismissed(); }
     }
 }
 
@@ -110,6 +120,8 @@ export component MediaCardGridRow inherits Rectangle {
     in property <bool> library-context-menu: false;
     in property <bool> continue-watching-context-menu: false;
     in property <bool> show-watched-context-action: true;
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
     callback item-selected(string, string, string);
     callback item-activated(string, string, string);
     callback poster-requested(string);
@@ -118,6 +130,8 @@ export component MediaCardGridRow inherits Rectangle {
     callback library-remove-requested(string);
     callback play-clicked(string);
     callback dismiss-requested(string);
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
 
     height: root.card-height;
     background: transparent;
@@ -133,6 +147,8 @@ export component MediaCardGridRow inherits Rectangle {
         library-context-menu: root.library-context-menu;
         continue-watching-context-menu: root.continue-watching-context-menu;
         show-watched-context-action: root.show-watched-context-action;
+        enable-hover-preview: root.enable-hover-preview;
+        hover-preview-delay: root.hover-preview-delay;
         show-play-button: card-item.can-play;
         clicked => {
             root.item-selected(card-item.id, card-item.media-type, card-item.video-id);
@@ -152,6 +168,10 @@ export component MediaCardGridRow inherits Rectangle {
         library-remove-requested => { root.library-remove-requested(card-item.id); }
         play-clicked => { root.play-clicked(card-item.id); }
         dismiss-requested => { root.dismiss-requested(card-item.id); }
+        hover-preview-requested(id, media-type, x, y, width, height) => {
+            root.hover-preview-requested(id, media-type, x, y, width, height);
+        }
+        hover-preview-dismissed => { root.hover-preview-dismissed(); }
     }
 }
 

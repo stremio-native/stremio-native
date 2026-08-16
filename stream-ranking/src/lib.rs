@@ -92,18 +92,35 @@ pub fn rank_streams(
                 .then_with(|| left.input.original_index.cmp(&right.input.original_index))
         }),
         RankingMode::Smallest => streams.sort_by(|left, right| {
-            left.input
+            let left_size = left
+                .input
                 .size_bytes
+                .or_else(|| parse_size_bytes_from_text(&left.input.description))
+                .or_else(|| parse_size_bytes_from_text(&left.input.name));
+            let right_size = right
+                .input
+                .size_bytes
+                .or_else(|| parse_size_bytes_from_text(&right.input.description))
+                .or_else(|| parse_size_bytes_from_text(&right.input.name));
+            left_size
                 .unwrap_or(u64::MAX)
-                .cmp(&right.input.size_bytes.unwrap_or(u64::MAX))
+                .cmp(&right_size.unwrap_or(u64::MAX))
                 .then_with(|| left.input.original_index.cmp(&right.input.original_index))
         }),
         RankingMode::Seeders => streams.sort_by(|left, right| {
-            right
+            let left_seeds = left
                 .input
                 .seeders
+                .or_else(|| parse_seeders_from_text(&left.input.description))
+                .or_else(|| parse_seeders_from_text(&left.input.name));
+            let right_seeds = right
+                .input
+                .seeders
+                .or_else(|| parse_seeders_from_text(&right.input.description))
+                .or_else(|| parse_seeders_from_text(&right.input.name));
+            right_seeds
                 .unwrap_or_default()
-                .cmp(&left.input.seeders.unwrap_or_default())
+                .cmp(&left_seeds.unwrap_or_default())
                 .then_with(|| left.input.original_index.cmp(&right.input.original_index))
         }),
         RankingMode::Smart => streams.sort_by(|left, right| {
@@ -188,7 +205,11 @@ fn rank_one(input: RankInput) -> RankedStream {
         };
         reason(ReasonKind::Positive, format!("{audio} audio"), points);
     }
-    if let Some(seeders) = input.seeders {
+    let effective_seeders = input
+        .seeders
+        .or_else(|| parse_seeders_from_text(&input.description))
+        .or_else(|| parse_seeders_from_text(&input.name));
+    if let Some(seeders) = effective_seeders {
         let points = match seeders {
             500.. => 18,
             100..=499 => 14,
@@ -207,7 +228,11 @@ fn rank_one(input: RankInput) -> RankedStream {
             points,
         );
     }
-    if let Some(size) = input.size_bytes {
+    let effective_size = input
+        .size_bytes
+        .or_else(|| parse_size_bytes_from_text(&input.description))
+        .or_else(|| parse_size_bytes_from_text(&input.name));
+    if let Some(size) = effective_size {
         let gib = size as f64 / 1_073_741_824.0;
         let points = if gib <= 0.15 {
             -10
@@ -365,6 +390,209 @@ pub fn parse_stream(input: &RankInput) -> ParsedStream {
     }
 }
 
+pub fn parse_size_bytes_from_text(text: &str) -> Option<u64> {
+    if let Some(idx) = text.find('💾') {
+        let after = &text[idx + '💾'.len_utf8()..];
+        if let Some(bytes) = parse_first_size(after) {
+            return Some(bytes);
+        }
+    }
+    parse_first_size(text)
+}
+
+fn parse_first_size(text: &str) -> Option<u64> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        let clean_word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.');
+        if let Some(bytes) = parse_size_token(clean_word) {
+            return Some(bytes);
+        }
+        if let Ok(num) = clean_word.parse::<f64>()
+            && let Some(unit) = words.get(i + 1)
+            && let Some(multiplier) =
+                unit_multiplier(unit.trim_matches(|c: char| !c.is_ascii_alphabetic()))
+        {
+            return Some((num * multiplier) as u64);
+        }
+    }
+    None
+}
+
+fn unit_multiplier(unit: &str) -> Option<f64> {
+    match unit.to_ascii_uppercase().as_str() {
+        "TB" | "TIB" => Some(1_099_511_627_776.0),
+        "GB" | "GIB" => Some(1_073_741_824.0),
+        "MB" | "MIB" => Some(1_048_576.0),
+        "KB" | "KIB" => Some(1_024.0),
+        "B" | "BYTES" => Some(1.0),
+        _ => None,
+    }
+}
+
+fn parse_size_token(token: &str) -> Option<u64> {
+    let upper = token.to_ascii_uppercase();
+    for (unit, mult) in [
+        ("TIB", 1_099_511_627_776.0),
+        ("TB", 1_099_511_627_776.0),
+        ("GIB", 1_073_741_824.0),
+        ("GB", 1_073_741_824.0),
+        ("MIB", 1_048_576.0),
+        ("MB", 1_048_576.0),
+        ("KIB", 1_024.0),
+        ("KB", 1_024.0),
+    ] {
+        if let Some(num_part) = upper.strip_suffix(unit)
+            && let Ok(num) = num_part.parse::<f64>()
+        {
+            return Some((num * mult) as u64);
+        }
+    }
+    None
+}
+
+pub fn parse_seeders_from_text(text: &str) -> Option<u32> {
+    if let Some(idx) = text.find('👤') {
+        let after = &text[idx + '👤'.len_utf8()..];
+        let num_str: String = after
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(val) = num_str.parse::<u32>() {
+            return Some(val);
+        }
+    }
+    let upper = text.to_ascii_uppercase();
+    for part in upper.split(['\n', '/', '|', '•', ',', ';']) {
+        let tokens: Vec<&str> = part.split_whitespace().collect();
+        for (i, token) in tokens.iter().enumerate() {
+            let clean = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            if matches!(clean, "S" | "SEEDS" | "SEEDERS")
+                && let Some(next) = tokens.get(i + 1)
+                && let Ok(val) = next
+                    .trim_matches(|c: char| !c.is_ascii_digit())
+                    .parse::<u32>()
+            {
+                return Some(val);
+            }
+            if clean.ends_with("SEEDS") || clean.ends_with("SEEDERS") {
+                let num_part = clean.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+                if let Ok(val) = num_part.parse::<u32>() {
+                    return Some(val);
+                }
+            }
+            if let Ok(val) = clean.parse::<u32>()
+                && tokens.get(i + 1).is_some_and(|next| {
+                    matches!(
+                        next.trim_matches(|c: char| !c.is_ascii_alphabetic()),
+                        "SEEDS" | "SEEDERS" | "PEERS" | "S"
+                    )
+                })
+            {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+pub fn format_size(bytes: u64) -> String {
+    let gib = bytes as f64 / 1_073_741_824.0;
+    if gib >= 1.0 {
+        format!("{:.2} GB", gib)
+    } else {
+        let mib = bytes as f64 / 1_048_576.0;
+        format!("{:.1} MB", mib)
+    }
+}
+
+pub fn format_stream_description(
+    name: &str,
+    description: &str,
+    size_bytes: Option<u64>,
+    seeders: Option<u32>,
+) -> String {
+    let seeders = seeders
+        .or_else(|| parse_seeders_from_text(description))
+        .or_else(|| parse_seeders_from_text(name));
+    let size_bytes = size_bytes
+        .or_else(|| parse_size_bytes_from_text(description))
+        .or_else(|| parse_size_bytes_from_text(name));
+
+    let raw_lines: Vec<&str> = description
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if raw_lines.is_empty() {
+        let mut stats = Vec::new();
+        if let Some(s) = seeders {
+            stats.push(format!("👤 {s}"));
+        }
+        if let Some(sz) = size_bytes {
+            stats.push(format!("💾 {}", format_size(sz)));
+        }
+        return stats.join(" ");
+    }
+
+    let mut title_lines = Vec::new();
+    let mut meta_lines = Vec::new();
+
+    for line in &raw_lines {
+        let is_meta = line.contains('👤')
+            || line.contains('💾')
+            || line.contains('⚙')
+            || line.contains('≡')
+            || line.contains('🗓')
+            || line.contains('📺')
+            || line.contains('⚡')
+            || line.to_ascii_uppercase().contains("SEEDERS")
+            || line.to_ascii_uppercase().contains("SEEDS");
+        if is_meta {
+            meta_lines.push((*line).to_string());
+        } else {
+            title_lines.push((*line).to_string());
+        }
+    }
+
+    let title = if title_lines.is_empty() {
+        raw_lines[0].to_string()
+    } else {
+        title_lines[0].clone()
+    };
+
+    let mut meta_line = meta_lines.join(" ");
+    let meta_upper = meta_line.to_ascii_uppercase();
+    if let Some(s) = seeders
+        && !meta_line.contains('👤')
+        && !meta_upper.contains("SEED")
+    {
+        if !meta_line.is_empty() {
+            meta_line.push(' ');
+        }
+        meta_line.push_str(&format!("👤 {s}"));
+    }
+    if let Some(sz) = size_bytes
+        && !meta_line.contains('💾')
+        && !meta_upper.contains("GB")
+        && !meta_upper.contains("MB")
+        && !meta_upper.contains("GIB")
+        && !meta_upper.contains("MIB")
+    {
+        if !meta_line.is_empty() {
+            meta_line.push(' ');
+        }
+        meta_line.push_str(&format!("💾 {}", format_size(sz)));
+    }
+
+    if meta_line.is_empty() {
+        title
+    } else {
+        format!("{title}\n{meta_line}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +660,33 @@ mod tests {
             rank_streams([unavailable], RankingMode::Smart, false)[0].score,
             rank_streams([unknown], RankingMode::Smart, false)[0].score
         );
+    }
+
+    #[test]
+    fn parses_seeders_and_size_correctly() {
+        let desc = "Musafir.Cafe.2026.S01.1080p.NF.WEB-DL.Multi..DD+.5.1.Atmos.x264-KiN\nMusafir Cafe-S01E01-Arrival.1080p.Multi.WEB-DL.DD+.5.1.Atmos.x264-KiN..mkv\n👤 5 💾 1.24 GB ≡ EZTV";
+        assert_eq!(parse_seeders_from_text(desc), Some(5));
+        assert_eq!(
+            parse_size_bytes_from_text(desc),
+            Some((1.24 * 1_073_741_824.0) as u64)
+        );
+
+        let formatted = format_stream_description("Torrentio 1080p", desc, None, None);
+        assert!(formatted.contains("👤 5"));
+        assert!(formatted.contains("💾 1.24 GB"));
+        assert_eq!(formatted.lines().count(), 2);
+    }
+
+    #[test]
+    fn ensures_seeds_and_size_when_only_in_behavior_hints() {
+        let formatted = format_stream_description(
+            "HTTP Stream",
+            "Big Buck Bunny 1080p",
+            Some(1_331_691_520),
+            Some(12),
+        );
+        assert!(formatted.contains("👤 12"));
+        assert!(formatted.contains("💾 1.24 GB"));
+        assert_eq!(formatted.lines().count(), 2);
     }
 }

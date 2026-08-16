@@ -228,6 +228,11 @@ export component MetaPreview inherits Rectangle {
     in property <string> runtime: "";
     in property <string> release-info: "";
     in property <string> imdb-label: "";
+    in property <string> rt-rating: "";
+    in property <string> metacritic-rating: "";
+    in property <string> letterboxd-rating: "";
+    in property <string> anilist-rating: "";
+    in property <string> kitsu-rating: "";
     in property <string> description: "";
     in property <[MetaLinkGroup]> link-groups: [];
     in property <[string]> genres: [];
@@ -292,6 +297,7 @@ export component MetaPreview inherits Rectangle {
                     height: parent.height;
                     source: root.logo;
                     image-fit: contain;
+                    horizontal-alignment: left;
                 }
                 if (!root.has-logo) : Text {
                     width: parent.width;
@@ -311,7 +317,7 @@ export component MetaPreview inherits Rectangle {
                 background: transparent;
 
                 HorizontalLayout {
-                    spacing: root.compact ? 0.8 * root.unit : 3 * root.unit;
+                    spacing: root.compact ? 0.8 * root.unit : 1.5 * root.unit;
                     alignment: root.compact ? space-between : start;
 
                     if (root.runtime != "") : Text {
@@ -329,22 +335,16 @@ export component MetaPreview inherits Rectangle {
                         vertical-alignment: center;
                     }
                     if (root.imdb-label != "") : imdb-button := ButtonSurface {
-                        width: imdb-measure.preferred-width + 5 * root.unit;
+                        width: imdb-measure.preferred-width + 4.2 * root.unit;
                         height: 3 * root.unit;
                         border-width: 0px;
                         background: transparent;
                         accessible-name: "IMDb " + root.imdb-label;
                         clicked => { root.imdb-requested(); }
 
-                        imdb-measure := Text {
-                            visible: false;
-                            text: root.imdb-label;
-                            font-size: 1.25 * root.unit;
-                            font-weight: 600;
-                        }
-
                         Text {
-                            x: 0.5 * root.unit;
+                            x: 0px;
+                            y: 0px;
                             width: imdb-measure.preferred-width;
                             height: parent.height;
                             text: root.imdb-label;
@@ -354,13 +354,181 @@ export component MetaPreview inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Image {
-                            x: 1.5 * root.unit + imdb-measure.preferred-width;
+                            x: imdb-measure.preferred-width + 0.6 * root.unit;
                             y: (parent.height - self.height) / 2;
-                            width: 3 * root.unit;
-                            height: 3 * root.unit;
+                            width: 2.8 * root.unit;
+                            height: 2.8 * root.unit;
                             source: @image-url("../assets/images/icons/imdb.svg");
                             colorize: Theme.imdb;
                             image-fit: contain;
+                        }
+
+                        imdb-measure := Text {
+                            visible: false;
+                            text: root.imdb-label;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                        }
+                    }
+
+                    if (root.rt-rating != "") : Rectangle {
+                        width: rt-measure.preferred-width + 2.0 * root.unit;
+                        height: 3 * root.unit;
+                        background: transparent;
+
+                        Text {
+                            x: 0px;
+                            y: 0px;
+                            width: rt-measure.preferred-width;
+                            height: parent.height;
+                            text: root.rt-rating;
+                            color: Theme.primary-foreground;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Image {
+                            x: rt-measure.preferred-width + 0.6 * root.unit;
+                            y: (parent.height - self.height) / 2 + 0.15 * root.unit;
+                            width: 1.35 * root.unit;
+                            height: 1.35 * root.unit;
+                            source: @image-url("../assets/images/icons/rotten-tomatoes.svg");
+                            image-fit: contain;
+                        }
+                        rt-measure := Text {
+                            visible: false;
+                            text: root.rt-rating;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                        }
+                    }
+
+                    if (root.metacritic-rating != "") : Rectangle {
+                        width: mc-measure.preferred-width + 2.0 * root.unit;
+                        height: 3 * root.unit;
+                        background: transparent;
+
+                        Text {
+                            x: 0px;
+                            y: 0px;
+                            width: mc-measure.preferred-width;
+                            height: parent.height;
+                            text: root.metacritic-rating;
+                            color: Theme.primary-foreground;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Image {
+                            x: mc-measure.preferred-width + 0.6 * root.unit;
+                            y: (parent.height - self.height) / 2 + 0.15 * root.unit;
+                            width: 1.35 * root.unit;
+                            height: 1.35 * root.unit;
+                            source: @image-url("../assets/images/icons/metacritic.svg");
+                            colorize: Theme.metacritic;
+                            image-fit: contain;
+                        }
+                        mc-measure := Text {
+                            visible: false;
+                            text: root.metacritic-rating;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                        }
+                    }
+
+                    if (root.letterboxd-rating != "") : Rectangle {
+                        width: lb-measure.preferred-width + 2.2 * root.unit;
+                        height: 3 * root.unit;
+                        background: transparent;
+
+                        Text {
+                            x: 0px;
+                            y: 0px;
+                            width: lb-measure.preferred-width;
+                            height: parent.height;
+                            text: root.letterboxd-rating;
+                            color: Theme.primary-foreground;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Image {
+                            x: lb-measure.preferred-width + 0.6 * root.unit;
+                            y: (parent.height - self.height) / 2 + 0.15 * root.unit;
+                            width: 1.5 * root.unit;
+                            height: 1.25 * root.unit;
+                            source: @image-url("../assets/images/icons/letterboxd.svg");
+                            image-fit: contain;
+                        }
+                        lb-measure := Text {
+                            visible: false;
+                            text: root.letterboxd-rating;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                        }
+                    }
+
+                    if (root.anilist-rating != "") : Rectangle {
+                        width: ani-measure.preferred-width + 2.0 * root.unit;
+                        height: 3 * root.unit;
+                        background: transparent;
+
+                        Text {
+                            x: 0px;
+                            y: 0px;
+                            width: ani-measure.preferred-width;
+                            height: parent.height;
+                            text: root.anilist-rating;
+                            color: Theme.primary-foreground;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Image {
+                            x: ani-measure.preferred-width + 0.6 * root.unit;
+                            y: (parent.height - self.height) / 2 + 0.18 * root.unit;
+                            width: 1.35 * root.unit;
+                            height: 1.35 * root.unit;
+                            source: @image-url("../assets/images/icons/anilist.svg");
+                            image-fit: contain;
+                        }
+                        ani-measure := Text {
+                            visible: false;
+                            text: root.anilist-rating;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                        }
+                    }
+
+                    if (root.kitsu-rating != "") : Rectangle {
+                        width: kit-measure.preferred-width + 2.0 * root.unit;
+                        height: 3 * root.unit;
+                        background: transparent;
+
+                        Text {
+                            x: 0px;
+                            y: 0px;
+                            width: kit-measure.preferred-width;
+                            height: parent.height;
+                            text: root.kitsu-rating;
+                            color: Theme.primary-foreground;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Image {
+                            x: kit-measure.preferred-width + 0.6 * root.unit;
+                            y: (parent.height - self.height) / 2 + 0.18 * root.unit;
+                            width: 1.35 * root.unit;
+                            height: 1.35 * root.unit;
+                            source: @image-url("../assets/images/icons/kitsu.svg");
+                            image-fit: contain;
+                        }
+                        kit-measure := Text {
+                            visible: false;
+                            text: root.kitsu-rating;
+                            font-size: 1.25 * root.unit;
+                            font-weight: 600;
                         }
                     }
                 }

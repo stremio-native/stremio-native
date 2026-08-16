@@ -44,12 +44,18 @@ export component DetailsPage inherits Rectangle {
     width: 1280px;
     height: 720px;
     in property <string> item-title: "";
+    in property <image> logo;
     in property <string> description: "";
     in property <image> poster;
     in property <image> background-image;
     in property <string> release-year: "";
     in property <string> runtime: "";
     in property <string> rating: "";
+    in property <string> rt-rating: "";
+    in property <string> metacritic-rating: "";
+    in property <string> letterboxd-rating: "";
+    in property <string> anilist-rating: "";
+    in property <string> kitsu-rating: "";
     in property <[string]> genres: [];
     in property <[string]> cast: [];
     in property <[string]> directors: [];
@@ -215,9 +221,15 @@ export component DetailsPage inherits Rectangle {
             height: parent.height - 7.5 * root.unit;
             unit: root.unit;
             name: root.item-title;
+            logo: root.logo;
             runtime: root.runtime;
             release-info: root.release-year;
             imdb-label: root.rating;
+            rt-rating: root.rt-rating;
+            metacritic-rating: root.metacritic-rating;
+            letterboxd-rating: root.letterboxd-rating;
+            anilist-rating: root.anilist-rating;
+            kitsu-rating: root.kitsu-rating;
             description: root.description;
             genres: root.genres;
             cast: root.cast;
@@ -504,7 +516,7 @@ export component DetailsPage inherits Rectangle {
                 vertical-stretch: 1;
                 padding-top: root.unit;
                 padding-bottom: root.unit;
-                spacing: root.unit;
+                spacing: 1.25 * root.unit;
                 alignment: center;
 
                 if (root.is-series) : HorizontalLayout {
@@ -513,7 +525,7 @@ export component DetailsPage inherits Rectangle {
                     alignment: center;
 
                     NumberInput {
-                        width: 9 * root.unit;
+                        width: 12.5 * root.unit;
                         unit: root.unit;
                         label: @tr("SEASON" => "Season");
                         value <=> root.manual-season;
@@ -522,7 +534,7 @@ export component DetailsPage inherits Rectangle {
                         minimum: 0;
                     }
                     NumberInput {
-                        width: 9 * root.unit;
+                        width: 12.5 * root.unit;
                         unit: root.unit;
                         label: @tr("EPISODE" => "Episode");
                         value <=> root.manual-episode;
@@ -543,7 +555,7 @@ export component DetailsPage inherits Rectangle {
                 }
 
                 EmptyState {
-                    height: 8 * root.unit;
+                    height: 16 * root.unit;
                     unit: root.unit;
                     icon-source: @image-url("../assets/images/icons/addons-outline.svg");
                     title: @tr("NO_STREAM" => "No streams were found");
@@ -570,7 +582,7 @@ export component DetailsPage inherits Rectangle {
                     width: parent.width;
                     // The additional 0.1rem preserves the web row gap while
                     // allowing ListView to virtualize off-screen streams.
-                    height: self.matches-provider ? 5.5 * root.unit : 0px;
+                    height: self.matches-provider ? 5.8 * root.unit : 0px;
                     clip: true;
                     background: transparent;
 
@@ -579,7 +591,7 @@ export component DetailsPage inherits Rectangle {
                         x: 0px;
                         y: 0px;
                         width: parent.width;
-                        height: 5.4 * root.unit;
+                        height: 5.6 * root.unit;
                         unit: root.unit;
                         name: stream.name;
                         description: stream.description;

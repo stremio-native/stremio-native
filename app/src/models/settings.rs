@@ -1,10 +1,14 @@
 use crate::config::AppConfig;
 use crate::mpv_integration::NativePlaybackBridge;
-use crate::{AppModel, AppModelField, MainWindow};
+use crate::{
+    AppModel, AppModelField, MainWindow, OmniphonyAudioSettings as SlintOmniphonyAudioSettings,
+};
 use core_env::DesktopEnv;
+use playback_mpv::{OmniphonyAudioSettings as PlaybackOmniphonyAudioSettings, SpatialAudioMode};
+use serde::{Deserialize, Serialize};
 use server_connector::{AppServerConnector, ServerConnector};
 use slint::ComponentHandle;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use stremio_core::{
     models::{common::Loadable, data_export::DataExport},
     runtime::{
@@ -16,6 +20,290 @@ use stremio_core::{
         streaming_server::Settings as StreamingServerSettings,
     },
 };
+
+const SPATIAL_AUDIO_MODE_SETTING: &str = "spatial_audio_mode";
+const OMNIPHONY_AUDIO_SETTING: &str = "omniphony_audio_settings";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+struct StoredOmniphonyAudioSettings {
+    headphones: bool,
+    hrir_source: String,
+    sofa_path: String,
+    pinna_preset: String,
+    pinna_d_scale_pct: u16,
+    pinna_depth_pct: u16,
+    prtf_frequency_scale_pct: u16,
+    prtf_depth_pct: u16,
+    unit_scale_m: f32,
+    head_radius_m: f32,
+    reflections_enabled: bool,
+    reflection_level: f32,
+    room_width_m: f32,
+    room_depth_m: f32,
+    room_height_m: f32,
+    reverb_enabled: bool,
+    reverb_level: f32,
+    reverb_rt60_s: f32,
+    reverb_predelay_ms: f32,
+    air_absorption: bool,
+    tracking_address: String,
+    tracking_format: String,
+    tracking_smoothing: f32,
+    tracking_invert: bool,
+    osc_rx_port: u16,
+}
+
+impl Default for StoredOmniphonyAudioSettings {
+    fn default() -> Self {
+        let defaults = PlaybackOmniphonyAudioSettings::default();
+        Self {
+            headphones: defaults.headphones,
+            hrir_source: defaults.hrir_source,
+            sofa_path: defaults.sofa_path,
+            pinna_preset: defaults.pinna_preset,
+            pinna_d_scale_pct: defaults.pinna_d_scale_pct,
+            pinna_depth_pct: defaults.pinna_depth_pct,
+            prtf_frequency_scale_pct: defaults.prtf_frequency_scale_pct,
+            prtf_depth_pct: defaults.prtf_depth_pct,
+            unit_scale_m: defaults.unit_scale_m,
+            head_radius_m: defaults.head_radius_m,
+            reflections_enabled: defaults.reflections_enabled,
+            reflection_level: defaults.reflection_level,
+            room_width_m: defaults.room_width_m,
+            room_depth_m: defaults.room_depth_m,
+            room_height_m: defaults.room_height_m,
+            reverb_enabled: defaults.reverb_enabled,
+            reverb_level: defaults.reverb_level,
+            reverb_rt60_s: defaults.reverb_rt60_s,
+            reverb_predelay_ms: defaults.reverb_predelay_ms,
+            air_absorption: defaults.air_absorption,
+            tracking_address: defaults.tracking_address,
+            tracking_format: defaults.tracking_format,
+            tracking_smoothing: defaults.tracking_smoothing,
+            tracking_invert: defaults.tracking_invert,
+            osc_rx_port: defaults.osc_rx_port,
+        }
+    }
+}
+
+impl StoredOmniphonyAudioSettings {
+    fn sanitize(mut self) -> Self {
+        let playback: PlaybackOmniphonyAudioSettings = self.clone().into();
+        let playback = playback.sanitized();
+        self = playback.into();
+        self
+    }
+}
+
+impl From<StoredOmniphonyAudioSettings> for PlaybackOmniphonyAudioSettings {
+    fn from(value: StoredOmniphonyAudioSettings) -> Self {
+        Self {
+            headphones: value.headphones,
+            hrir_source: value.hrir_source,
+            sofa_path: value.sofa_path,
+            pinna_preset: value.pinna_preset,
+            pinna_d_scale_pct: value.pinna_d_scale_pct,
+            pinna_depth_pct: value.pinna_depth_pct,
+            prtf_frequency_scale_pct: value.prtf_frequency_scale_pct,
+            prtf_depth_pct: value.prtf_depth_pct,
+            unit_scale_m: value.unit_scale_m,
+            head_radius_m: value.head_radius_m,
+            reflections_enabled: value.reflections_enabled,
+            reflection_level: value.reflection_level,
+            room_width_m: value.room_width_m,
+            room_depth_m: value.room_depth_m,
+            room_height_m: value.room_height_m,
+            reverb_enabled: value.reverb_enabled,
+            reverb_level: value.reverb_level,
+            reverb_rt60_s: value.reverb_rt60_s,
+            reverb_predelay_ms: value.reverb_predelay_ms,
+            air_absorption: value.air_absorption,
+            tracking_address: value.tracking_address,
+            tracking_format: value.tracking_format,
+            tracking_smoothing: value.tracking_smoothing,
+            tracking_invert: value.tracking_invert,
+            osc_rx_port: value.osc_rx_port,
+        }
+    }
+}
+
+impl From<PlaybackOmniphonyAudioSettings> for StoredOmniphonyAudioSettings {
+    fn from(value: PlaybackOmniphonyAudioSettings) -> Self {
+        Self {
+            headphones: value.headphones,
+            hrir_source: value.hrir_source,
+            sofa_path: value.sofa_path,
+            pinna_preset: value.pinna_preset,
+            pinna_d_scale_pct: value.pinna_d_scale_pct,
+            pinna_depth_pct: value.pinna_depth_pct,
+            prtf_frequency_scale_pct: value.prtf_frequency_scale_pct,
+            prtf_depth_pct: value.prtf_depth_pct,
+            unit_scale_m: value.unit_scale_m,
+            head_radius_m: value.head_radius_m,
+            reflections_enabled: value.reflections_enabled,
+            reflection_level: value.reflection_level,
+            room_width_m: value.room_width_m,
+            room_depth_m: value.room_depth_m,
+            room_height_m: value.room_height_m,
+            reverb_enabled: value.reverb_enabled,
+            reverb_level: value.reverb_level,
+            reverb_rt60_s: value.reverb_rt60_s,
+            reverb_predelay_ms: value.reverb_predelay_ms,
+            air_absorption: value.air_absorption,
+            tracking_address: value.tracking_address,
+            tracking_format: value.tracking_format,
+            tracking_smoothing: value.tracking_smoothing,
+            tracking_invert: value.tracking_invert,
+            osc_rx_port: value.osc_rx_port,
+        }
+    }
+}
+
+impl From<&StoredOmniphonyAudioSettings> for SlintOmniphonyAudioSettings {
+    fn from(value: &StoredOmniphonyAudioSettings) -> Self {
+        Self {
+            headphones: value.headphones,
+            hrir_source: value.hrir_source.clone().into(),
+            sofa_path: value.sofa_path.clone().into(),
+            pinna_preset: value.pinna_preset.clone().into(),
+            pinna_d_scale_pct: f32::from(value.pinna_d_scale_pct),
+            pinna_depth_pct: f32::from(value.pinna_depth_pct),
+            prtf_frequency_scale_pct: f32::from(value.prtf_frequency_scale_pct),
+            prtf_depth_pct: f32::from(value.prtf_depth_pct),
+            unit_scale_m: value.unit_scale_m,
+            head_radius_cm: value.head_radius_m * 100.0,
+            reflections_enabled: value.reflections_enabled,
+            reflection_level: value.reflection_level,
+            room_width_m: value.room_width_m,
+            room_depth_m: value.room_depth_m,
+            room_height_m: value.room_height_m,
+            reverb_enabled: value.reverb_enabled,
+            reverb_level: value.reverb_level,
+            reverb_rt60_s: value.reverb_rt60_s,
+            reverb_predelay_ms: value.reverb_predelay_ms,
+            air_absorption: value.air_absorption,
+            tracking_address: value.tracking_address.clone().into(),
+            tracking_format: value.tracking_format.clone().into(),
+            tracking_smoothing: value.tracking_smoothing,
+            tracking_invert: value.tracking_invert,
+            osc_rx_port: i32::from(value.osc_rx_port),
+        }
+    }
+}
+
+fn spatial_audio_mode_from_value(value: &str) -> Option<SpatialAudioMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "disabled" => Some(SpatialAudioMode::Disabled),
+        "omniphony" | "omniphony 3d" | "omniphony-spatial" => {
+            Some(SpatialAudioMode::OmniphonySpatial)
+        }
+        "binaural-hrtf" | "binaural hrtf" => Some(SpatialAudioMode::BinauralHrtf),
+        "surround-matrix" | "7.1 virtual surround" => Some(SpatialAudioMode::SurroundMatrix),
+        _ => None,
+    }
+}
+
+fn spatial_audio_mode_id(mode: SpatialAudioMode) -> &'static str {
+    match mode {
+        SpatialAudioMode::Disabled => "disabled",
+        SpatialAudioMode::OmniphonySpatial => "omniphony",
+        SpatialAudioMode::BinauralHrtf => "binaural-hrtf",
+        SpatialAudioMode::SurroundMatrix => "surround-matrix",
+    }
+}
+
+fn spatial_audio_mode_label(mode: SpatialAudioMode) -> &'static str {
+    match mode {
+        SpatialAudioMode::Disabled => "Disabled",
+        SpatialAudioMode::OmniphonySpatial => "Omniphony 3D",
+        SpatialAudioMode::BinauralHrtf => "Binaural HRTF",
+        SpatialAudioMode::SurroundMatrix => "7.1 Virtual Surround",
+    }
+}
+
+fn mutate_omniphony_settings(
+    state: &Arc<Mutex<StoredOmniphonyAudioSettings>>,
+    update: impl FnOnce(&mut StoredOmniphonyAudioSettings),
+) -> StoredOmniphonyAudioSettings {
+    let mut settings = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    update(&mut settings);
+    *settings = settings.clone().sanitize();
+    settings.clone()
+}
+
+fn apply_omniphony_settings(
+    settings: StoredOmniphonyAudioSettings,
+    ui: Option<&MainWindow>,
+    playback: Option<&NativePlaybackBridge>,
+) {
+    if let Some(ui) = ui {
+        ui.set_settings_omniphony_audio((&settings).into());
+        ui.set_settings_spatial_audio_status("Applying Omniphony settings…".into());
+    }
+    if let Some(playback) = playback {
+        playback.configure_omniphony_audio(settings.clone().into());
+    }
+    tokio::spawn(async move {
+        let serialized = match serde_json::to_string(&settings) {
+            Ok(serialized) => serialized,
+            Err(error) => {
+                tracing::warn!(%error, "could not serialize Omniphony audio settings");
+                return;
+            }
+        };
+        if let Err(error) = crate::db::set_setting(OMNIPHONY_AUDIO_SETTING, &serialized).await {
+            tracing::warn!(%error, "could not persist Omniphony audio settings");
+        }
+    });
+}
+
+fn change_omniphony_string(settings: &mut StoredOmniphonyAudioSettings, key: &str, value: &str) {
+    match key {
+        "hrir_source" => settings.hrir_source = value.to_owned(),
+        "sofa_path" => settings.sofa_path = value.trim().to_owned(),
+        "pinna_preset" => settings.pinna_preset = value.to_owned(),
+        "tracking_address" => settings.tracking_address = value.trim().to_owned(),
+        "tracking_format" => settings.tracking_format = value.to_owned(),
+        _ => tracing::warn!(key, "ignored unknown Omniphony string setting"),
+    }
+}
+
+fn change_omniphony_number(settings: &mut StoredOmniphonyAudioSettings, key: &str, value: f32) {
+    match key {
+        "pinna_d_scale_pct" => settings.pinna_d_scale_pct = value.round() as u16,
+        "pinna_depth_pct" => settings.pinna_depth_pct = value.round() as u16,
+        "prtf_frequency_scale_pct" => {
+            settings.prtf_frequency_scale_pct = value.round() as u16;
+        }
+        "prtf_depth_pct" => settings.prtf_depth_pct = value.round() as u16,
+        "unit_scale_m" => settings.unit_scale_m = value,
+        "head_radius_cm" => settings.head_radius_m = value / 100.0,
+        "reflection_level" => settings.reflection_level = value,
+        "room_width_m" => settings.room_width_m = value,
+        "room_depth_m" => settings.room_depth_m = value,
+        "room_height_m" => settings.room_height_m = value,
+        "reverb_level" => settings.reverb_level = value,
+        "reverb_rt60_s" => settings.reverb_rt60_s = value,
+        "reverb_predelay_ms" => settings.reverb_predelay_ms = value,
+        "tracking_smoothing" => settings.tracking_smoothing = value,
+        "osc_rx_port" => settings.osc_rx_port = value.round().clamp(1.0, 65_535.0) as u16,
+        _ => tracing::warn!(key, "ignored unknown Omniphony numeric setting"),
+    }
+}
+
+fn change_omniphony_bool(settings: &mut StoredOmniphonyAudioSettings, key: &str, value: bool) {
+    match key {
+        "headphones" => settings.headphones = value,
+        "reflections_enabled" => settings.reflections_enabled = value,
+        "reverb_enabled" => settings.reverb_enabled = value,
+        "air_absorption" => settings.air_absorption = value,
+        "tracking_invert" => settings.tracking_invert = value,
+        _ => tracing::warn!(key, "ignored unknown Omniphony boolean setting"),
+    }
+}
 
 pub(crate) fn update_profile_settings(
     runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
@@ -480,6 +768,85 @@ pub fn setup(
 ) {
     ui.set_settings_interface_language_options(interface_language_options());
     ui.set_settings_thumbnail_previews(config.thumbnail_previews_enabled);
+    let omniphony_decoder_available =
+        native_playback.is_some_and(NativePlaybackBridge::omniphony_decoder_available);
+    ui.set_settings_omniphony_audio_available(omniphony_decoder_available);
+    let default_omniphony_settings = StoredOmniphonyAudioSettings::default();
+    let omniphony_settings = Arc::new(Mutex::new(default_omniphony_settings.clone()));
+    ui.set_settings_omniphony_audio((&default_omniphony_settings).into());
+    if let Some(playback) = native_playback {
+        playback.configure_omniphony_audio(default_omniphony_settings.clone().into());
+    }
+
+    let initial_spatial_audio_mode = runtime
+        .model()
+        .ok()
+        .filter(|model| model.ctx.profile.settings.surround_sound)
+        .map_or(SpatialAudioMode::Disabled, |_| {
+            SpatialAudioMode::SurroundMatrix
+        });
+    ui.set_settings_spatial_audio_mode(spatial_audio_mode_label(initial_spatial_audio_mode).into());
+    ui.set_settings_spatial_audio_status("Checking spatial audio support…".into());
+    if let Some(playback) = native_playback {
+        playback.set_spatial_audio_mode(initial_spatial_audio_mode);
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let native_playback = native_playback.cloned();
+        let omniphony_settings = omniphony_settings.clone();
+        tokio::spawn(async move {
+            let stored = match crate::db::get_setting(SPATIAL_AUDIO_MODE_SETTING).await {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(%error, "could not load spatial audio preference");
+                    None
+                }
+            };
+            let mode = stored
+                .as_deref()
+                .and_then(spatial_audio_mode_from_value)
+                .unwrap_or(initial_spatial_audio_mode);
+            if stored.is_none()
+                && let Err(error) =
+                    crate::db::set_setting(SPATIAL_AUDIO_MODE_SETTING, spatial_audio_mode_id(mode))
+                        .await
+            {
+                tracing::warn!(%error, "could not initialize spatial audio preference");
+            }
+            let stored_omniphony = match crate::db::get_setting(OMNIPHONY_AUDIO_SETTING).await {
+                Ok(Some(value)) => {
+                    match serde_json::from_str::<StoredOmniphonyAudioSettings>(&value) {
+                        Ok(settings) => settings.sanitize(),
+                        Err(error) => {
+                            tracing::warn!(%error, "could not parse Omniphony audio settings");
+                            StoredOmniphonyAudioSettings::default()
+                        }
+                    }
+                }
+                Ok(None) => StoredOmniphonyAudioSettings::default(),
+                Err(error) => {
+                    tracing::warn!(%error, "could not load Omniphony audio settings");
+                    StoredOmniphonyAudioSettings::default()
+                }
+            };
+            {
+                let mut current = omniphony_settings
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *current = stored_omniphony.clone();
+            }
+            if let Some(playback) = native_playback.as_ref() {
+                playback.configure_omniphony_audio(stored_omniphony.clone().into());
+                playback.set_spatial_audio_mode(mode);
+            }
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_settings_spatial_audio_mode(spatial_audio_mode_label(mode).into());
+                    ui.set_settings_omniphony_audio((&stored_omniphony).into());
+                }
+            });
+        });
+    }
 
     let server_url = runtime
         .model()
@@ -973,9 +1340,84 @@ pub fn setup(
             });
         }
     });
-    ui.on_settings_change_surround_sound({
+    ui.on_settings_change_spatial_audio_mode({
         let runtime = runtime.clone();
-        move |value| update_profile_settings(&runtime, |settings| settings.surround_sound = value)
+        let native_playback = native_playback.cloned();
+        let ui_weak = ui.as_weak();
+        move |value| {
+            let Some(mode) = spatial_audio_mode_from_value(value.as_str()) else {
+                return;
+            };
+            if mode == SpatialAudioMode::OmniphonySpatial && !omniphony_decoder_available {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_settings_spatial_audio_status(
+                        "Omniphony 3D requires the patched libmpv runtime".into(),
+                    );
+                }
+                return;
+            }
+            update_profile_settings(&runtime, |settings| {
+                settings.surround_sound = mode == SpatialAudioMode::SurroundMatrix;
+            });
+            if let Some(playback) = native_playback.as_ref() {
+                playback.set_spatial_audio_mode(mode);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_settings_spatial_audio_status("Applying spatial audio mode…".into());
+            }
+            tokio::spawn(async move {
+                if let Err(error) =
+                    crate::db::set_setting(SPATIAL_AUDIO_MODE_SETTING, spatial_audio_mode_id(mode))
+                        .await
+                {
+                    tracing::warn!(%error, "could not persist spatial audio preference");
+                }
+            });
+        }
+    });
+    ui.on_settings_change_omniphony_string({
+        let state = omniphony_settings.clone();
+        let native_playback = native_playback.cloned();
+        let ui_weak = ui.as_weak();
+        move |key, value| {
+            let settings = mutate_omniphony_settings(&state, |settings| {
+                change_omniphony_string(settings, key.as_str(), value.as_str());
+            });
+            let ui = ui_weak.upgrade();
+            apply_omniphony_settings(settings, ui.as_ref(), native_playback.as_ref());
+        }
+    });
+    ui.on_settings_change_omniphony_number({
+        let state = omniphony_settings.clone();
+        let native_playback = native_playback.cloned();
+        let ui_weak = ui.as_weak();
+        move |key, value| {
+            let settings = mutate_omniphony_settings(&state, |settings| {
+                change_omniphony_number(settings, key.as_str(), value);
+            });
+            let ui = ui_weak.upgrade();
+            apply_omniphony_settings(settings, ui.as_ref(), native_playback.as_ref());
+        }
+    });
+    ui.on_settings_change_omniphony_bool({
+        let state = omniphony_settings.clone();
+        let native_playback = native_playback.cloned();
+        let ui_weak = ui.as_weak();
+        move |key, value| {
+            let settings = mutate_omniphony_settings(&state, |settings| {
+                change_omniphony_bool(settings, key.as_str(), value);
+            });
+            let ui = ui_weak.upgrade();
+            apply_omniphony_settings(settings, ui.as_ref(), native_playback.as_ref());
+        }
+    });
+    ui.on_settings_recenter_omniphony_head({
+        let native_playback = native_playback.cloned();
+        move || {
+            if let Some(playback) = native_playback.as_ref() {
+                playback.recenter_omniphony_head();
+            }
+        }
     });
     ui.on_settings_change_ass_subtitles_styling({
         let runtime = runtime.clone();
@@ -1277,7 +1719,6 @@ pub fn sync(
             .unwrap_or_else(|| "English".to_owned())
             .into(),
     );
-    ui.set_settings_surround_sound(settings.surround_sound);
     ui.set_settings_ass_subtitles_styling(settings.ass_subtitles_styling);
     if let Some(color) = crate::config::parse_color(&settings.subtitles_text_color) {
         ui.set_settings_subtitles_text_color(color);

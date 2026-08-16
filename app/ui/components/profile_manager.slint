@@ -1,9 +1,10 @@
-import { ListView, LineEdit } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { PillButton } from "button.slint";
 import { SelectField } from "select.slint";
 import { ProfileItem } from "profile_picker.slint";
 import { SettingsOption } from "settings_option.slint";
+import { NativeTextField } from "text_input.slint";
 
 export component ProfileManager inherits VerticalLayout {
     in property <length> unit: 16px;
@@ -21,15 +22,14 @@ export component ProfileManager inherits VerticalLayout {
     callback close;
 
     spacing: 0;
-    width: 100%;
 
     SettingsOption {
         unit: root.unit;
         label: @tr("Owner PIN");
         description: @tr("Required to add or delete local profiles.");
-        LineEdit {
+        NativeTextField {
+            unit: root.unit;
             width: 16 * root.unit;
-            height: 3.5 * root.unit;
             text <=> root.owner-pin;
             input-type: InputType.password;
             placeholder-text: @tr("Owner PIN");
@@ -59,15 +59,63 @@ export component ProfileManager inherits VerticalLayout {
 
     SettingsOption {
         unit: root.unit;
+        label: @tr("New Profile Name");
+        description: @tr("Enter a name for the new local profile.");
+        NativeTextField {
+            unit: root.unit;
+            width: 16 * root.unit;
+            text <=> root.new-name;
+            placeholder-text: @tr("Profile Name");
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Profile Role");
+        description: @tr("Select whether this profile is Standard or Kids.");
+        SelectField {
+            width: 16 * root.unit;
+            unit: root.unit;
+            field-width: 16 * root.unit;
+            value: root.new-role;
+            options: ["Standard", "Kids"];
+            open: root.role-open;
+            toggle => { root.role-open = !root.role-open; }
+            selected(val) => {
+                root.new-role = val;
+                root.role-open = false;
+            }
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
+        label: @tr("Profile PIN (Optional)");
+        description: @tr("Optional 4-digit PIN for profile access.");
+        NativeTextField {
+            unit: root.unit;
+            width: 16 * root.unit;
+            text <=> root.new-pin;
+            input-type: InputType.password;
+            placeholder-text: @tr("Optional PIN");
+        }
+    }
+
+    SettingsOption {
+        unit: root.unit;
         label: @tr("Add Local Profile");
-        description: root.error-message != "" ? root.error-message : @tr("Create a new standard or kids profile.");
+        description: root.error-message != "" ? root.error-message : @tr("Create a new profile with the options above.");
         PillButton {
             width: 16 * root.unit;
             unit: root.unit;
             label: @tr("Create Profile");
             outlined: true;
             enabled: root.new-name != "";
-            clicked => { root.create(root.new-name, root.new-role, root.new-pin, root.owner-pin); }
+            clicked => {
+                root.create(root.new-name, root.new-role, root.new-pin, root.owner-pin);
+                root.new-name = "";
+                root.new-pin = "";
+            }
         }
     }
 }

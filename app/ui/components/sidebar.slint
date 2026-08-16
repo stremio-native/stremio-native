@@ -41,7 +41,7 @@ export component NavTabButton inherits Rectangle {
         colorize: root.has-logo
             ? transparent
             : (root.selected ? Theme.primary-accent : Theme.primary-foreground);
-        opacity: root.has-logo ? 1 : (root.selected ? 1 : 0.45);
+        opacity: root.has-logo ? 1 : (root.selected ? 1 : (button.has-hover ? 0.95 : 0.80));
         image-fit: contain;
 
         animate y { duration: Theme.motion-fast; }
@@ -55,7 +55,7 @@ export component NavTabButton inherits Rectangle {
         height: 1.5 * root.unit;
         text: root.label;
         color: root.selected ? Theme.primary-accent : Theme.primary-foreground;
-        opacity: root.selected ? 1 : 0.7;
+        opacity: root.selected ? 1 : 0.9;
         font-size: 0.8 * root.unit;
         font-weight: 500;
         letter-spacing: 0.01 * root.unit;
@@ -161,7 +161,7 @@ export component Sidebar inherits Rectangle {
             label: @tr("SETTINGS" => "Settings");
             icon-source: @image-url("../assets/images/icons/settings-outline.svg");
             active-icon-source: @image-url("../assets/images/icons/settings.svg");
-            selected: root.active-tab == 4;
+            selected: root.active-tab == 4 || root.active-tab == 10;
             clicked => { root.change-tab(4); }
             double-clicked => { root.tab-double-clicked(4); }
         }

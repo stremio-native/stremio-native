@@ -178,6 +178,7 @@ impl ThumbnailPreview {
         self.schedule_frame(update);
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub fn begin_load(&self, generation: u64) {
         let projection = {
             let mut coordinator = lock_coordinator(&self.coordinator);
@@ -202,6 +203,7 @@ impl ThumbnailPreview {
         self.schedule_projection(projection);
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub fn prewarm(&self, source: ThumbnailSource) {
         let should_load = {
             let mut coordinator = lock_coordinator(&self.coordinator);

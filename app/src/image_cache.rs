@@ -38,6 +38,7 @@ static REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
 static MAINTENANCE_STARTED: AtomicBool = AtomicBool::new(false);
 
 const MEMORY_CAPACITY_BYTES: u64 = 32 * 1024 * 1024;
+const REQUIRED_IMAGE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 const REQUIRED_IMAGE_IDLE_TTL: Duration = Duration::from_secs(60);
 const DISK_CAPACITY_BYTES: u64 = 1536 * 1024 * 1024;
 const DISK_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -72,6 +73,7 @@ pub fn get_poster_image(
     get_poster_image_ref(url.as_ref(), _ui_weak)
 }
 
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 pub fn get_poster_image_ref(
     url: Option<&Url>,
     _ui_weak: &slint::Weak<crate::MainWindow>,
@@ -85,6 +87,7 @@ pub fn get_poster_image_ref(
 
 /// Returns an already-decoded image without initiating I/O. This is used while
 /// building virtualized models; the visible Slint delegates request misses.
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 pub fn get_cached_image(url: &Option<Url>) -> slint::Image {
     let Some(url) = url else {
         return slint::Image::default();
@@ -132,6 +135,13 @@ fn get_image(url: &str, request_on_miss: bool) -> slint::Image {
 fn required_image_cache() -> &'static Cache<String, ImageEntry> {
     REQUIRED_IMAGE_CACHE.get_or_init(|| {
         Cache::builder()
+            .max_capacity(REQUIRED_IMAGE_CAPACITY_BYTES)
+            .weigher(|_key: &String, value: &ImageEntry| {
+                value
+                    .width()
+                    .saturating_mul(value.height())
+                    .saturating_mul(4)
+            })
             .time_to_idle(REQUIRED_IMAGE_IDLE_TTL)
             .build()
     })
@@ -724,8 +734,9 @@ fn finish_ui_refresh() {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_RESPONSE_BYTES, MEMORY_CAPACITY_BYTES, REQUIRED_IMAGE_IDLE_TTL, cache_path,
-        decode_image, sanitized_url_for_log,
+        MAX_RESPONSE_BYTES, MEMORY_CAPACITY_BYTES, REQUIRED_IMAGE_CAPACITY_BYTES,
+        REQUIRED_IMAGE_IDLE_TTL, cache_path, decode_image, required_image_cache,
+        sanitized_url_for_log,
     };
     use image::ImageEncoder as _;
 
@@ -745,7 +756,16 @@ mod tests {
     #[test]
     fn decoded_cache_has_a_small_base_and_temporary_growth_window() {
         assert_eq!(MEMORY_CAPACITY_BYTES, 32 * 1024 * 1024);
+        assert_eq!(REQUIRED_IMAGE_CAPACITY_BYTES, 64 * 1024 * 1024);
         assert!(!REQUIRED_IMAGE_IDLE_TTL.is_zero());
+    }
+
+    #[test]
+    fn required_decoded_image_cache_uses_the_balanced_policy() {
+        let policy = required_image_cache().policy();
+
+        assert_eq!(policy.max_capacity(), Some(REQUIRED_IMAGE_CAPACITY_BYTES));
+        assert_eq!(policy.time_to_idle(), Some(REQUIRED_IMAGE_IDLE_TTL));
     }
 
     #[test]

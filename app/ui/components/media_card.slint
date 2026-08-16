@@ -35,6 +35,8 @@ export component MediaCard inherits Rectangle {
     in property <bool> library-context-menu: false;
     in property <bool> continue-watching-context-menu: false;
     in property <bool> show-watched-context-action: true;
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
 
     callback clicked;
     callback double-clicked;
@@ -46,6 +48,10 @@ export component MediaCard inherits Rectangle {
     callback library-remove-requested;
     callback dismiss-requested;
     callback poster-requested(string);
+    // Window-space anchor geometry travels with the request so the floating
+    // popup can position itself without knowing which page owns this card.
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
 
     function request-poster-if-needed() {
         if ((!root.enable-lazy-loading || root.is-visible)
@@ -76,6 +82,47 @@ export component MediaCard inherits Rectangle {
             : root.poster-width * Theme.poster-shape-ratio);
     property <bool> highlighted: card-button.has-hover || card-button.has-focus
         || root.selected || root.menu-open;
+
+    private property <bool> preview-armed: root.enable-hover-preview
+        && card-button.has-hover
+        && root.item.id != "";
+    private property <bool> preview-emitted: false;
+
+    // Driven imperatively rather than by binding `running` to `preview-armed`.
+    // Re-enabling a Slint timer only marks it active again: the deadline from
+    // the previous hover is kept, so a card the pointer had already rested on
+    // would open its popup with no delay at all. `restart()` recomputes the
+    // deadline from now, which is what makes the threshold hold on every hover.
+    hover-preview-timer := Timer {
+        interval: root.hover-preview-delay;
+        running: false;
+        triggered => {
+            // One-shot: Slint timers repeat until stopped.
+            self.stop();
+            root.preview-emitted = true;
+            root.hover-preview-requested(
+                root.item.id,
+                root.item.media-type,
+                root.absolute-position.x,
+                root.absolute-position.y,
+                root.width,
+                root.height,
+            );
+        }
+    }
+
+    changed preview-armed => {
+        if (root.preview-armed) {
+            hover-preview-timer.start();
+            hover-preview-timer.restart();
+        } else {
+            hover-preview-timer.stop();
+            if (root.preview-emitted) {
+                root.preview-emitted = false;
+                root.hover-preview-dismissed();
+            }
+        }
+    }
 
     background: transparent;
     height: root.poster-height + 6 * root.unit;

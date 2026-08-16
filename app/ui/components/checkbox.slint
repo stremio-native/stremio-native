@@ -9,6 +9,7 @@ export component Checkbox inherits Rectangle {
     in property <string> label: "";
     in property <string> link-label: "";
     in property <bool> has-link: false;
+    in property <brush> text-color: Theme.primary-foreground;
     in property <bool> enabled: true;
     in-out property <bool> checked: false;
     in property <bool> error: false;
@@ -81,7 +82,7 @@ export component Checkbox inherits Rectangle {
 
         Text {
             text: root.label;
-            color: Theme.primary-foreground;
+            color: root.text-color;
             opacity: 0.6;
             font-size: 0.9 * root.unit;
             vertical-alignment: center;

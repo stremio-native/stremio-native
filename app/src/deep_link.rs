@@ -453,6 +453,7 @@ fn open_details(
     load_meta_details_for_video(runtime, media_id, Some(media_type), video_id);
 }
 
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 fn open_player(
     ui: &MainWindow,
     runtime: &Arc<Runtime<DesktopEnv, AppModel>>,
@@ -470,11 +471,14 @@ fn open_player(
         );
     }
 
-    let title = player
-        .selected
-        .stream
-        .name
+    let initial_library_title = runtime.model().ok().and_then(|model| {
+        let media_id = player.media_id.as_deref()?;
+        let lib_item = model.ctx.library.items.get(media_id)?;
+        Some(lib_item.name.clone())
+    });
+    let title = initial_library_title
         .as_deref()
+        .or(player.selected.stream.name.as_deref())
         .or(player.media_id.as_deref())
         .unwrap_or("Stremio stream");
     let stream_name = player
@@ -506,6 +510,7 @@ fn open_player(
 /// Open the exact stream persisted for a library/Continue Watching item.
 /// This is the native equivalent of following `LibraryItemDeepLinks.player`
 /// in the web client, without encoding and reparsing a Stremio URL.
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 pub(crate) fn open_saved_stream(
     ui: &MainWindow,
     runtime: &Arc<Runtime<DesktopEnv, AppModel>>,

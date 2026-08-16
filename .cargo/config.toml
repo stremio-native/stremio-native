@@ -14,6 +14,26 @@ VCPKG_INSTALLED_DIR = { value = "vcpkg_installed", relative = true }
 rustflags = [
     "-C",
     "target-cpu=x86-64-v3",
+    # rust-lld links this tree far faster than MSVC link.exe, but it enforces
+    # duplicate symbols strictly where link.exe does not. Skia bundles a static
+    # ICU (`skunicode_icu.lib`) while the `windows` crate emits a raw-dylib
+    # import library for the system `icuuc.dll`, and 20 ICU symbols are defined
+    # by both. link.exe accepts this by design (LNK4006, "second definition
+    # ignored"); lld rejects it. The duplicate cannot be removed at the source:
+    # Slint's renderer needs skia's `textlayout`, and `Win32_Globalization` is
+    # requested independently by `accesskit_windows` and `tao`.
+    "-C",
+    "linker=rust-lld",
+    # Restores link.exe's behaviour of taking the first definition. Verify after
+    # a toolchain or skia bump that `icuuc.dll` is still absent from the built
+    # executable's import table -- its absence is what proves Skia's static ICU
+    # won. If it ever appears, Skia's text shaping is calling the system ICU
+    # instead, which shows up as wrong grapheme/line breaking in non-Latin
+    # scripts rather than as a crash.
+    "-C",
+    "link-arg=/FORCE:MULTIPLE",
+    "-C",
+    "link-arg=/IGNORE:4006",
     # stream-server's standalone cdylib produces a very large full-debug PDB.
     # MSVC's default 4 KiB page can exhaust an individual PDB stream and fail
     # nondeterministically with LNK1318 LIMIT (12).

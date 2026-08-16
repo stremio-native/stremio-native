@@ -28,7 +28,7 @@ impl ProfileMode {
         self != Self::Off
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "profiling"))]
     pub fn includes_target(self, target: &str) -> bool {
         match self {
             Self::Off => false,

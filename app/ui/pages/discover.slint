@@ -40,6 +40,7 @@ export component DiscoverPage inherits Rectangle {
 
     in property <bool> has-preview: false;
     in property <string> preview-title: "";
+    in property <image> preview-logo;
     in property <string> preview-description: "";
     in property <string> preview-rating: "";
     in property <string> preview-year: "";
@@ -52,7 +53,11 @@ export component DiscoverPage inherits Rectangle {
     in property <bool> preview-is-watched: false;
     in property <bool> preview-has-trailer: false;
     in property <string> preview-trailer-selection-id: "";
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
 
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
     callback type-changed(string);
     callback catalog-changed(string);
     callback genre-changed(string);
@@ -282,6 +287,8 @@ export component DiscoverPage inherits Rectangle {
                         card-width: root.card-width;
                         card-height: root.card-height;
                         spacing: 0.5 * root.unit;
+                        enable-hover-preview: root.enable-hover-preview;
+                        hover-preview-delay: root.hover-preview-delay;
                         item-selected(id, media-type, video-id) => {
                             root.item-selected(id, media-type, video-id);
                         }
@@ -289,6 +296,10 @@ export component DiscoverPage inherits Rectangle {
                             root.item-activated(id, media-type, video-id);
                         }
                         poster-requested(url) => { root.poster-requested(url); }
+                        hover-preview-requested(id, media-type, x, y, width, height) => {
+                            root.hover-preview-requested(id, media-type, x, y, width, height);
+                        }
+                        hover-preview-dismissed => { root.hover-preview-dismissed(); }
                     }
                 }
             }
@@ -324,7 +335,16 @@ export component DiscoverPage inherits Rectangle {
                     spacing: 1.5 * root.unit;
                     alignment: start;
 
-                    Text {
+                    if (root.preview-logo.width > 0) : Image {
+                        horizontal-stretch: 1;
+                        max-width: preview.width - 5 * root.unit;
+                        height: 5 * root.unit;
+                        source: root.preview-logo;
+                        image-fit: contain;
+                        horizontal-alignment: left;
+                    }
+
+                    if (root.preview-logo.width == 0) : Text {
                         horizontal-stretch: 1;
                         max-width: preview.width - 5 * root.unit;
                         text: root.preview-title;
@@ -418,7 +438,7 @@ export component DiscoverPage inherits Rectangle {
                     height: 3.5 * root.unit;
                     icon-size: 1.55 * root.unit;
                     label: @tr("TRAILER" => "Trailer");
-                    surface-color: #14121b99;
+                    surface-color: Theme.overlay;
                     icon-source: @image-url("../assets/images/icons/trailer.svg");
                     clicked => { root.play-trailer-preview(root.preview-trailer-selection-id); }
                 }
@@ -433,7 +453,7 @@ export component DiscoverPage inherits Rectangle {
                         : @tr("ADD_TO_LIB" => "Add to Library");
                     active: root.preview-is-in-library;
                     active-color: Theme.accent;
-                    surface-color: #14121b99;
+                    surface-color: Theme.overlay;
                     icon-source: root.preview-is-in-library
                         ? @image-url("../assets/images/icons/remove-from-library.svg")
                         : @image-url("../assets/images/icons/add-to-library.svg");
@@ -450,7 +470,7 @@ export component DiscoverPage inherits Rectangle {
                         : @tr("MARK_AS_WATCHED" => "Mark as watched");
                     active: root.preview-is-watched;
                     active-color: Theme.accent;
-                    surface-color: #14121b99;
+                    surface-color: Theme.overlay;
                     icon-source: root.preview-is-watched
                         ? @image-url("../assets/images/icons/eye-off.svg")
                         : @image-url("../assets/images/icons/eye.svg");

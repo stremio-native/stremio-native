@@ -223,7 +223,7 @@ export component MenuButton inherits ButtonSurface {
     background: root.selected
         ? root.selected-color
         : (root.has-hover ? root.hover-color : transparent);
-    opacity: root.selected || root.has-hover || root.has-focus ? 1 : 0.4;
+    opacity: root.enabled ? 1.0 : 0.4;
     accessible-name: root.label;
 
     animate background, opacity { duration: Theme.motion-fast; }
@@ -384,7 +384,7 @@ export component IconAction inherits ButtonSurface {
                     ? root.active-foreground-color
                     : root.foreground-color;
                 image-fit: contain;
-                opacity: 0.88;
+                opacity: 1.0;
             }
         }
 
@@ -438,7 +438,7 @@ export component IconActionPair inherits Rectangle {
                 height: 1.65 * root.unit;
                 source: root.first-icon;
                 colorize: Theme.primary-foreground;
-                opacity: 0.9;
+                opacity: 1.0;
                 image-fit: contain;
             }
         }
@@ -460,7 +460,7 @@ export component IconActionPair inherits Rectangle {
                 height: 1.65 * root.unit;
                 source: root.second-icon;
                 colorize: Theme.primary-foreground;
-                opacity: 0.9;
+                opacity: 1.0;
                 image-fit: contain;
             }
         }

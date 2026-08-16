@@ -49,7 +49,7 @@ export component OnboardingModal inherits Rectangle {
     callback toggle-pause-on-minimize(bool);
 
     visible: root.open;
-    background: #000000bb;
+    background: Theme.scrim;
     z: 2500;
 
     TouchArea {
@@ -63,9 +63,9 @@ export component OnboardingModal inherits Rectangle {
         width: min(680px, parent.width * 0.95);
         height: min(520px, parent.height * 0.9);
         border-radius: 20px;
-        background: #151320f8;
+        background: Theme.modal-color;
         border-width: 1px;
-        border-color: #ffffff18;
+        border-color: Theme.card-border;
         drop-shadow-blur: Theme.outer-glow-blur;
         drop-shadow-color: Theme.outer-glow-color;
         TouchArea { } // Prevent click-through
@@ -82,7 +82,8 @@ export component OnboardingModal inherits Rectangle {
         Rectangle {
             width: parent.width;
             height: parent.height;
-            background: @linear-gradient(135deg, #18142ce0 0%, #121020f0 50%, #0d0b16f8 100%);
+            background: Theme.main-gradient;
+            opacity: 0.85;
         }
 
         // Top Step Indicator Dots & Pills
@@ -97,7 +98,7 @@ export component OnboardingModal inherits Rectangle {
                 width: root.active-step == step-idx ? 24px : 6px;
                 height: 6px;
                 border-radius: 3px;
-                background: root.active-step == step-idx ? #2b82fb : #ffffff4d;
+                background: root.active-step == step-idx ? Theme.primary-accent : Theme.primary-foreground.with-alpha(0.3);
 
                 animate width { duration: Theme.motion-control; easing: ease-out; }
                 animate background { duration: Theme.motion-control; }
@@ -128,7 +129,7 @@ export component OnboardingModal inherits Rectangle {
 
             Text {
                 text: @tr("Welcome to Stremio Native");
-                color: #ffffff;
+                color: Theme.primary-foreground;
                 font-size: 24px;
                 font-weight: 700;
                 horizontal-alignment: center;
@@ -136,7 +137,7 @@ export component OnboardingModal inherits Rectangle {
 
             Text {
                 text: @tr("Before we start");
-                color: #ffffff99;
+                color: Theme.text-secondary;
                 font-size: 14px;
                 font-weight: 500;
                 horizontal-alignment: center;
@@ -148,9 +149,9 @@ export component OnboardingModal inherits Rectangle {
                 width: min(340px, parent.width * 0.85);
                 height: 220px;
                 border-radius: 12px;
-                background: #1e1c28;
+                background: Theme.card-background;
                 border-width: 1px;
-                border-color: #ffffff14;
+                border-color: Theme.card-border;
                 clip: true;
 
                 ScrollView {
@@ -168,7 +169,7 @@ export component OnboardingModal inherits Rectangle {
                             width: parent.width - 12px;
                             height: 36px;
                             border-radius: 8px;
-                            background: root.selected-language-idx == idx ? #2b82fb : (self.has-hover ? #ffffff14 : transparent);
+                            background: root.selected-language-idx == idx ? Theme.primary-accent : (self.has-hover ? Theme.overlay-hover : transparent);
                             clicked => {
                                 root.selected-language-idx = idx;
                                 root.language-changed(idx);
@@ -176,7 +177,7 @@ export component OnboardingModal inherits Rectangle {
 
                             Text {
                                 text: lang;
-                                color: #ffffff;
+                                color: Theme.primary-foreground;
                                 font-size: 14px;
                                 font-weight: root.selected-language-idx == idx ? 700 : 500;
                                 horizontal-alignment: center;
@@ -206,14 +207,14 @@ export component OnboardingModal inherits Rectangle {
                     width: 32px;
                     height: 32px;
                     source: @image-url("../assets/images/icons/settings-upscaler.svg");
-                    colorize: #ffffffcc;
+                    colorize: Theme.text-secondary;
                     image-fit: contain;
                 }
             }
 
             Text {
                 text: @tr("Set up your playback");
-                color: #ffffff;
+                color: Theme.primary-foreground;
                 font-size: 24px;
                 font-weight: 700;
                 horizontal-alignment: center;
@@ -221,7 +222,7 @@ export component OnboardingModal inherits Rectangle {
 
             Text {
                 text: @tr("Quality, upscaling, and performance. Everything can be changed later in Settings.");
-                color: #ffffff99;
+                color: Theme.text-secondary;
                 font-size: 13px;
                 font-weight: 500;
                 horizontal-alignment: center;
@@ -230,7 +231,7 @@ export component OnboardingModal inherits Rectangle {
             // Upscaler Preset Selection Cards (3 Cards Row)
             Text {
                 text: @tr("GPU Video Upscaler");
-                color: #ffffffb3;
+                color: Theme.text-muted;
                 font-size: 12px;
                 font-weight: 600;
             }
@@ -245,9 +246,9 @@ export component OnboardingModal inherits Rectangle {
                     width: (parent.width - 24px) / 3;
                     height: 90px;
                     border-radius: 10px;
-                    background: root.selected-upscaler-preset == 1 ? #1e243b : #181624;
+                    background: root.selected-upscaler-preset == 1 ? Theme.overlay-pressed : Theme.card-background;
                     border-width: root.selected-upscaler-preset == 1 ? 2px : 1px;
-                    border-color: root.selected-upscaler-preset == 1 ? #2b82fb : #ffffff14;
+                    border-color: root.selected-upscaler-preset == 1 ? Theme.primary-accent : Theme.card-border;
                     enabled: root.upscaler-preset-available.length > 1 && root.upscaler-preset-available[1];
                     opacity: self.enabled ? 1.0 : 0.45;
                     clicked => {
@@ -260,13 +261,13 @@ export component OnboardingModal inherits Rectangle {
                         width: 16px;
                         height: 16px;
                         border-radius: 8px;
-                        background: #2b82fb;
+                        background: Theme.primary-accent;
 
                         Image {
                             width: 10px;
                             height: 10px;
                             source: @image-url("../assets/images/icons/checkmark.svg");
-                            colorize: #ffffff;
+                            colorize: Theme.primary-foreground;
                         }
                     }
 
@@ -283,12 +284,12 @@ export component OnboardingModal inherits Rectangle {
                                 width: 20px;
                                 height: 20px;
                                 source: @image-url("../assets/images/icons/hdr.svg");
-                                colorize: #ffffff;
+                                colorize: Theme.primary-foreground;
                             }
                         }
 
-                        Text { text: @tr("Anime4K (HQ)"); color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; }
-                        Text { text: @tr("Anime & cartoon upscaling"); color: #ffffff80; font-size: 10px; horizontal-alignment: center; wrap: word-wrap; }
+                        Text { text: @tr("Anime4K (HQ)"); color: Theme.primary-foreground; font-size: 13px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: @tr("Anime & cartoon upscaling"); color: Theme.text-muted; font-size: 10px; horizontal-alignment: center; wrap: word-wrap; }
                     }
                 }
 
@@ -297,9 +298,9 @@ export component OnboardingModal inherits Rectangle {
                     width: (parent.width - 24px) / 3;
                     height: 90px;
                     border-radius: 10px;
-                    background: root.selected-upscaler-preset == 7 ? #1e243b : #181624;
+                    background: root.selected-upscaler-preset == 7 ? Theme.overlay-pressed : Theme.card-background;
                     border-width: root.selected-upscaler-preset == 7 ? 2px : 1px;
-                    border-color: root.selected-upscaler-preset == 7 ? #2b82fb : #ffffff14;
+                    border-color: root.selected-upscaler-preset == 7 ? Theme.primary-accent : Theme.card-border;
                     enabled: root.upscaler-preset-available.length > 7 && root.upscaler-preset-available[7];
                     opacity: self.enabled ? 1.0 : 0.45;
                     clicked => {
@@ -312,13 +313,13 @@ export component OnboardingModal inherits Rectangle {
                         width: 16px;
                         height: 16px;
                         border-radius: 8px;
-                        background: #2b82fb;
+                        background: Theme.primary-accent;
 
                         Image {
                             width: 10px;
                             height: 10px;
                             source: @image-url("../assets/images/icons/checkmark.svg");
-                            colorize: #ffffff;
+                            colorize: Theme.primary-foreground;
                         }
                     }
 
@@ -335,12 +336,12 @@ export component OnboardingModal inherits Rectangle {
                                 width: 20px;
                                 height: 20px;
                                 source: @image-url("../assets/images/icons/star.svg");
-                                colorize: #ffffff;
+                                colorize: Theme.primary-foreground;
                             }
                         }
 
-                        Text { text: @tr("AMD FSR"); color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; }
-                        Text { text: @tr("Spatial upscaling for 4K"); color: #ffffff80; font-size: 10px; horizontal-alignment: center; wrap: word-wrap; }
+                        Text { text: @tr("AMD FSR"); color: Theme.primary-foreground; font-size: 13px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: @tr("Spatial upscaling for 4K"); color: Theme.text-muted; font-size: 10px; horizontal-alignment: center; wrap: word-wrap; }
                     }
                 }
 
@@ -349,9 +350,9 @@ export component OnboardingModal inherits Rectangle {
                     width: (parent.width - 24px) / 3;
                     height: 90px;
                     border-radius: 10px;
-                    background: root.selected-upscaler-preset == 0 ? #1e243b : #181624;
+                    background: root.selected-upscaler-preset == 0 ? Theme.overlay-pressed : Theme.card-background;
                     border-width: root.selected-upscaler-preset == 0 ? 2px : 1px;
-                    border-color: root.selected-upscaler-preset == 0 ? #2b82fb : #ffffff14;
+                    border-color: root.selected-upscaler-preset == 0 ? Theme.primary-accent : Theme.card-border;
                     clicked => {
                         root.upscaler-changed(0);
                     }
@@ -362,13 +363,13 @@ export component OnboardingModal inherits Rectangle {
                         width: 16px;
                         height: 16px;
                         border-radius: 8px;
-                        background: #2b82fb;
+                        background: Theme.primary-accent;
 
                         Image {
                             width: 10px;
                             height: 10px;
                             source: @image-url("../assets/images/icons/checkmark.svg");
-                            colorize: #ffffff;
+                            colorize: Theme.primary-foreground;
                         }
                     }
 
@@ -385,11 +386,11 @@ export component OnboardingModal inherits Rectangle {
                                 width: 20px;
                                 height: 20px;
                                 source: @image-url("../assets/images/icons/close.svg");
-                                colorize: #ffffff80;
+                                colorize: Theme.text-muted;
                             }
                         }
-                        Text { text: @tr("Native / Off"); color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; }
-                        Text { text: @tr("Direct libmpv rendering"); color: #ffffff80; font-size: 10px; horizontal-alignment: center; wrap: word-wrap; }
+                        Text { text: @tr("Native / Off"); color: Theme.primary-foreground; font-size: 13px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: @tr("Direct libmpv rendering"); color: Theme.text-muted; font-size: 10px; horizontal-alignment: center; wrap: word-wrap; }
                     }
                 }
             }
@@ -397,7 +398,7 @@ export component OnboardingModal inherits Rectangle {
             Text {
                 width: parent.width;
                 text: root.upscaler-status;
-                color: #ffffff99;
+                color: Theme.text-secondary;
                 font-size: 11px;
                 horizontal-alignment: center;
                 wrap: word-wrap;
@@ -408,9 +409,9 @@ export component OnboardingModal inherits Rectangle {
                 width: parent.width;
                 height: 44px;
                 border-radius: 10px;
-                background: #181624;
+                background: Theme.card-background;
                 border-width: 1px;
-                border-color: #ffffff14;
+                border-color: Theme.card-border;
 
                 HorizontalLayout {
                     padding-left: 16px;
@@ -420,7 +421,7 @@ export component OnboardingModal inherits Rectangle {
 
                     Text {
                         text: @tr("Seek Duration");
-                        color: #ffffffcc;
+                        color: Theme.text-secondary;
                         font-size: 13px;
                         font-weight: 500;
                         vertical-alignment: center;
@@ -440,7 +441,7 @@ export component OnboardingModal inherits Rectangle {
 
                     Text {
                         text: Math.round(root.seek-duration-seconds) + "s";
-                        color: #ffffff;
+                        color: Theme.primary-foreground;
                         font-size: 13px;
                         font-weight: 700;
                         vertical-alignment: center;
@@ -458,9 +459,9 @@ export component OnboardingModal inherits Rectangle {
                     width: (parent.width - 12px) / 2;
                     height: 64px;
                     border-radius: 10px;
-                    background: #181624;
+                    background: Theme.card-background;
                     border-width: 1px;
-                    border-color: #ffffff14;
+                    border-color: Theme.card-border;
 
                     HorizontalLayout {
                         padding: 12px;
@@ -470,8 +471,8 @@ export component OnboardingModal inherits Rectangle {
                             alignment: center;
                             spacing: 2px;
 
-                            Text { text: @tr("Hardware Acceleration"); color: #ffffff; font-size: 13px; font-weight: 600; }
-                            Text { text: @tr("GPU decoding (D3D11VA)"); color: #ffffff80; font-size: 11px; }
+                            Text { text: @tr("Hardware Acceleration"); color: Theme.primary-foreground; font-size: 13px; font-weight: 600; }
+                            Text { text: @tr("GPU decoding (D3D11VA)"); color: Theme.text-muted; font-size: 11px; }
                         }
 
                         ToggleSwitch {
@@ -486,9 +487,9 @@ export component OnboardingModal inherits Rectangle {
                     width: (parent.width - 12px) / 2;
                     height: 64px;
                     border-radius: 10px;
-                    background: #181624;
+                    background: Theme.card-background;
                     border-width: 1px;
-                    border-color: #ffffff14;
+                    border-color: Theme.card-border;
 
                     HorizontalLayout {
                         padding: 12px;
@@ -498,8 +499,8 @@ export component OnboardingModal inherits Rectangle {
                             alignment: center;
                             spacing: 2px;
 
-                            Text { text: @tr("Auto-select Subtitles"); color: #ffffff; font-size: 13px; font-weight: 600; }
-                            Text { text: @tr("Pick preferred subtitles"); color: #ffffff80; font-size: 11px; }
+                            Text { text: @tr("Auto-select Subtitles"); color: Theme.primary-foreground; font-size: 13px; font-weight: 600; }
+                            Text { text: @tr("Pick preferred subtitles"); color: Theme.text-muted; font-size: 11px; }
                         }
 
                         ToggleSwitch {
@@ -529,14 +530,14 @@ export component OnboardingModal inherits Rectangle {
                     width: 32px;
                     height: 32px;
                     source: @image-url("../assets/images/icons/network.svg");
-                    colorize: #ffffffcc;
+                    colorize: Theme.text-secondary;
                     image-fit: contain;
                 }
             }
 
             Text {
                 text: @tr("Stay connected");
-                color: #ffffff;
+                color: Theme.primary-foreground;
                 font-size: 24px;
                 font-weight: 700;
                 horizontal-alignment: center;
@@ -544,7 +545,7 @@ export component OnboardingModal inherits Rectangle {
 
             Text {
                 text: @tr("Link Stremio Native with your other apps and services.");
-                color: #ffffff99;
+                color: Theme.text-secondary;
                 font-size: 14px;
                 font-weight: 500;
                 horizontal-alignment: center;
@@ -562,9 +563,9 @@ export component OnboardingModal inherits Rectangle {
                         width: (parent.width - 12px) / 2;
                         height: 68px;
                         border-radius: 10px;
-                        background: #181624;
+                        background: Theme.card-background;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.card-border;
 
                         HorizontalLayout {
                             padding: 12px;
@@ -574,8 +575,8 @@ export component OnboardingModal inherits Rectangle {
                                 alignment: center;
                                 spacing: 2px;
 
-                                Text { text: @tr("Discord Rich Presence"); color: #ffffff; font-size: 13px; font-weight: 600; }
-                                Text { text: @tr("Show what you watch on Discord."); color: #ffffff80; font-size: 11px; }
+                                Text { text: @tr("Discord Rich Presence"); color: Theme.primary-foreground; font-size: 13px; font-weight: 600; }
+                                Text { text: @tr("Show what you watch on Discord."); color: Theme.text-muted; font-size: 11px; }
                             }
 
                             ToggleSwitch {
@@ -589,9 +590,9 @@ export component OnboardingModal inherits Rectangle {
                         width: (parent.width - 12px) / 2;
                         height: 68px;
                         border-radius: 10px;
-                        background: #181624;
+                        background: Theme.card-background;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.card-border;
 
                         HorizontalLayout {
                             padding: 12px;
@@ -601,8 +602,8 @@ export component OnboardingModal inherits Rectangle {
                                 alignment: center;
                                 spacing: 2px;
 
-                                Text { text: @tr("Background Playback"); color: #ffffff; font-size: 13px; font-weight: 600; }
-                                Text { text: @tr("Keep audio playing when minimized."); color: #ffffff80; font-size: 11px; }
+                                Text { text: @tr("Background Playback"); color: Theme.primary-foreground; font-size: 13px; font-weight: 600; }
+                                Text { text: @tr("Keep audio playing when minimized."); color: Theme.text-muted; font-size: 11px; }
                             }
 
                             ToggleSwitch {
@@ -621,9 +622,9 @@ export component OnboardingModal inherits Rectangle {
                         width: (parent.width - 12px) / 2;
                         height: 68px;
                         border-radius: 10px;
-                        background: #181624;
+                        background: Theme.card-background;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.card-border;
 
                         HorizontalLayout {
                             padding: 12px;
@@ -633,8 +634,8 @@ export component OnboardingModal inherits Rectangle {
                                 alignment: center;
                                 spacing: 2px;
 
-                                Text { text: @tr("Torrent Seeding"); color: #ffffff; font-size: 13px; font-weight: 600; }
-                                Text { text: @tr("Seed active streams in background."); color: #ffffff80; font-size: 11px; }
+                                Text { text: @tr("Torrent Seeding"); color: Theme.primary-foreground; font-size: 13px; font-weight: 600; }
+                                Text { text: @tr("Seed active streams in background."); color: Theme.text-muted; font-size: 11px; }
                             }
 
                             ToggleSwitch {
@@ -648,9 +649,9 @@ export component OnboardingModal inherits Rectangle {
                         width: (parent.width - 12px) / 2;
                         height: 68px;
                         border-radius: 10px;
-                        background: #181624;
+                        background: Theme.card-background;
                         border-width: 1px;
-                        border-color: #ffffff14;
+                        border-color: Theme.card-border;
 
                         HorizontalLayout {
                             padding: 12px;
@@ -660,8 +661,8 @@ export component OnboardingModal inherits Rectangle {
                                 alignment: center;
                                 spacing: 2px;
 
-                                Text { text: @tr("Pause on Minimize"); color: #ffffff; font-size: 13px; font-weight: 600; }
-                                Text { text: @tr("Pause video when minimized."); color: #ffffff80; font-size: 11px; }
+                                Text { text: @tr("Pause on Minimize"); color: Theme.primary-foreground; font-size: 13px; font-weight: 600; }
+                                Text { text: @tr("Pause video when minimized."); color: Theme.text-muted; font-size: 11px; }
                             }
 
                             ToggleSwitch {
@@ -675,7 +676,7 @@ export component OnboardingModal inherits Rectangle {
 
             Text {
                 text: @tr("More integrations and options live in Settings → Interface & Player.");
-                color: #ffffff66;
+                color: Theme.text-muted;
                 font-size: 11px;
                 horizontal-alignment: center;
             }
@@ -699,14 +700,14 @@ export component OnboardingModal inherits Rectangle {
                     width: 32px;
                     height: 32px;
                     source: @image-url("../assets/images/icons/megaphone.svg");
-                    colorize: #ffffffcc;
+                    colorize: Theme.text-secondary;
                     image-fit: contain;
                 }
             }
 
             Text {
                 text: @tr("What's New in Stremio Native");
-                color: #ffffff;
+                color: Theme.primary-foreground;
                 font-size: 24px;
                 font-weight: 700;
                 horizontal-alignment: center;
@@ -714,7 +715,7 @@ export component OnboardingModal inherits Rectangle {
 
             Text {
                 text: @tr("Latest release highlights and GitHub changelogs.");
-                color: #ffffff99;
+                color: Theme.text-secondary;
                 font-size: 13px;
                 font-weight: 500;
                 horizontal-alignment: center;
@@ -725,9 +726,9 @@ export component OnboardingModal inherits Rectangle {
                 width: parent.width;
                 height: 220px;
                 border-radius: 12px;
-                background: #181624;
+                background: Theme.card-background;
                 border-width: 1px;
-                border-color: #ffffff14;
+                border-color: Theme.card-border;
                 clip: true;
 
                 ScrollView {
@@ -744,7 +745,7 @@ export component OnboardingModal inherits Rectangle {
                         StyledText {
                             width: parent.width;
                             text: root.changelog-text;
-                            default-color: #ffffffe6;
+                            default-color: Theme.primary-foreground;
                             default-font-size: 12px;
                         }
                     }
@@ -759,9 +760,9 @@ export component OnboardingModal inherits Rectangle {
                     width: 210px;
                     height: 36px;
                     border-radius: 18px;
-                    background: #ffffff14;
+                    background: Theme.overlay;
                     border-width: 1px;
-                    border-color: #ffffff26;
+                    border-color: Theme.card-border;
                     clicked => { root.open-github-requested(); }
 
                     HorizontalLayout {
@@ -779,14 +780,14 @@ export component OnboardingModal inherits Rectangle {
                                 width: 16px;
                                 height: 16px;
                                 source: @image-url("../assets/images/icons/open-in-browser.svg");
-                                colorize: #ffffff;
+                                colorize: Theme.primary-foreground;
                                 image-fit: contain;
                             }
                         }
 
                         Text {
                             text: @tr("Visit GitHub Repository");
-                            color: #ffffff;
+                            color: Theme.primary-foreground;
                             font-size: 13px;
                             font-weight: 600;
                             vertical-alignment: center;
@@ -812,7 +813,7 @@ export component OnboardingModal inherits Rectangle {
 
                 Text {
                     text: @tr("Previous");
-                    color: #ffffffb3;
+                    color: Theme.text-secondary;
                     font-size: 14px;
                     font-weight: 500;
                     vertical-alignment: center;
@@ -825,7 +826,7 @@ export component OnboardingModal inherits Rectangle {
                 width: root.active-step == 3 ? 130px : 100px;
                 height: 38px;
                 border-radius: 19px;
-                background: #2b82fb;
+                background: Theme.primary-accent;
                 clicked => {
                     if (root.active-step < 3) {
                         root.active-step += 1;
@@ -836,7 +837,7 @@ export component OnboardingModal inherits Rectangle {
 
                 Text {
                     text: root.active-step == 3 ? @tr("Get Started") : @tr("Next");
-                    color: #ffffff;
+                    color: Theme.primary-foreground;
                     font-size: 14px;
                     font-weight: 700;
                     horizontal-alignment: center;

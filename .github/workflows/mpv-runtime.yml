@@ -1,0 +1,316 @@
+name: MPV runtime builds
+
+# Builds the libmpv runtime from source with the AVX stack-alignment fix
+# applied, for Windows (mingw-w64 cross build) and Linux (native).
+#
+# Why this exists: the prebuilt x86-64-v3 runtime pinned in mpv.lock.json is
+# compiled with AVX2 enabled everywhere, and GCC emits 32-byte aligned vector
+# spills against a stack it only aligns to 16 bytes. zimg's
+# GraphBuilder::impl::build_subgraph() faulted on exactly that during every
+# screenshot-raw, which is how timeline thumbnails are captured. The fix is
+# -Wa,-muse-unaligned-vector-move, which upstream mpv-winbuild already applies
+# to AVX-512 builds but not to AVX2 ones.
+#
+# Manual trigger only: a cold Windows run builds the whole cross toolchain and
+# every dependency, so it takes hours.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: Which runtimes to build
+        type: choice
+        options: [both, windows, linux]
+        default: both
+      mpv_repository:
+        description: mpv git repository
+        default: https://github.com/mpv-player/mpv.git
+      mpv_ref:
+        description: mpv commit or tag (blank keeps whatever mpv-winbuild pins)
+        default: ""
+      gcc_arch:
+        description: Microarchitecture level (-march) to compile for
+        default: x86-64-v3
+      extra_meson_args:
+        description: 'Extra mpv meson args, e.g. "-Dorender=enabled -Dasio=enabled"'
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mpv-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x86_64 (${{ inputs.gcc_arch }})
+    if: inputs.targets != 'linux'
+    runs-on: ubuntu-latest
+    # The image upstream builds its own releases in; it carries the full
+    # cross-build dependency set, so nothing here installs packages.
+    container:
+      image: docker://ghcr.io/shinchiro/archlinux:latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v7
+        with:
+          path: stremio-native
+
+      - name: Check out mpv-winbuild-cmake
+        uses: actions/checkout@v7
+        with:
+          repository: shinchiro/mpv-winbuild-cmake
+          path: winbuild
+
+      - name: Mark checkouts as safe for git
+        run: git config --global --add safe.directory '*'
+
+      - name: Apply the AVX stack-alignment patch
+        working-directory: winbuild
+        run: |
+          set -euo pipefail
+          patch=../stremio-native/.github/patches/mpv-winbuild-avx-stack-alignment.patch
+          git apply --3way --verbose "$patch"
+          # An applied-but-wrong patch would silently produce a crashing DLL, so
+          # assert on the resulting condition rather than trusting the exit code.
+          if ! grep -q 'GCC_ARCH_HAS_AVX@" == "ON"' toolchain/gcc/gcc-compiler.in; then
+            echo "::error::patch applied but the AVX gate is not present in gcc-compiler.in"
+            exit 1
+          fi
+          echo "AVX gate in place:"
+          grep -n -A2 'GCC_ARCH_HAS_AVX@' toolchain/gcc/gcc-compiler.in
+
+      - name: Point the mpv package at the requested source
+        working-directory: winbuild
+        env:
+          MPV_REPOSITORY: ${{ inputs.mpv_repository }}
+          MPV_REF: ${{ inputs.mpv_ref }}
+          EXTRA_MESON_ARGS: ${{ inputs.extra_meson_args }}
+        run: |
+          set -euo pipefail
+          # Every edit is anchored on a line upstream owns. If an anchor moves,
+          # fail loudly rather than quietly building unmodified sources.
+          python3 - <<'PY'
+          import os, sys
+
+          path = "packages/mpv.cmake"
+          text = open(path).read()
+          repository = os.environ["MPV_REPOSITORY"]
+          ref = os.environ["MPV_REF"]
+          extra = os.environ["EXTRA_MESON_ARGS"].split()
+
+          anchor = "GIT_REPOSITORY https://github.com/mpv-player/mpv.git"
+          if text.count(anchor) != 1:
+              sys.exit("::error::packages/mpv.cmake lost its GIT_REPOSITORY anchor")
+          replacement = f"GIT_REPOSITORY {repository}"
+          if ref:
+              replacement += f"\n    GIT_TAG {ref}"
+
+          # Add PATCH_COMMAND to apply the omniphony spatial audio decoder patch
+          patch_path = "${CMAKE_CURRENT_SOURCE_DIR}/../stremio-native/.github/patches/mpv-omniphony.patch"
+          replacement += f"\n    PATCH_COMMAND git -C <SOURCE_DIR> reset --hard && git -C <SOURCE_DIR> clean -fd && git -C <SOURCE_DIR> apply --3way {patch_path}"
+
+          text = text.replace(anchor, replacement, 1)
+
+          meson_anchor = "        -Dlibmpv=true\n"
+          if text.count(meson_anchor) != 1:
+              sys.exit("::error::packages/mpv.cmake lost its -Dlibmpv=true anchor")
+          added = "        -Dorender=enabled\n"
+          if extra:
+              added += "".join(f"        {argument}\n" for argument in extra)
+          text = text.replace(meson_anchor, meson_anchor + added, 1)
+
+          open(path, "w").write(text)
+          print(f"rewrote {path}")
+          PY
+          echo "resulting mpv package definition:"
+          sed -n '20,60p' packages/mpv.cmake
+
+      - name: Restore package sources
+        uses: actions/cache@v4
+        with:
+          path: winbuild/src_packages
+          key: mpv-sources-${{ inputs.gcc_arch }}-${{ github.run_id }}
+          restore-keys: mpv-sources-${{ inputs.gcc_arch }}-
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: mpv-ccache-${{ inputs.gcc_arch }}-${{ hashFiles('.github/patches/mpv-winbuild-avx-stack-alignment.patch', '.github/patches/mpv-omniphony.patch') }}-${{ github.run_id }}
+          restore-keys: |
+            mpv-ccache-${{ inputs.gcc_arch }}-${{ hashFiles('.github/patches/mpv-winbuild-avx-stack-alignment.patch', '.github/patches/mpv-omniphony.patch') }}-
+            mpv-ccache-${{ inputs.gcc_arch }}-
+
+      - name: Build the cross toolchain and libmpv
+        working-directory: winbuild
+        run: |
+          set -euo pipefail
+          cmake -DTARGET_ARCH=x86_64-w64-mingw32 \
+                -DGCC_ARCH=${{ inputs.gcc_arch }} \
+                -DSINGLE_SOURCE_LOCATION=$PWD/src_packages \
+                -DRUSTUP_LOCATION=$PWD/rustup \
+                -DENABLE_CCACHE=ON \
+                --fresh -G Ninja -B build_x86_64 -S $PWD
+          # The wrapper scripts that carry the patched flags are generated at
+          # configure time; confirm the flag survived into the real compiler.
+          if ! grep -q 'muse-unaligned-vector-move' build_x86_64/install/bin/x86_64-w64-mingw32-gcc; then
+            echo "::error::generated gcc wrapper is missing -Wa,-muse-unaligned-vector-move"
+            exit 1
+          fi
+          ninja -C build_x86_64 download || true
+          if [ ! -f build_x86_64/install/bin/cross-gcc ]; then
+            ninja -C build_x86_64 gcc
+            rm -rf build_x86_64/toolchain
+          fi
+          ninja -C build_x86_64 update
+          ninja -C build_x86_64 mpv
+          ninja -C build_x86_64 mpv-packaging
+
+      - name: Audit the runtime for misaligned vector spills
+        working-directory: winbuild
+        env:
+          OBJDUMP: ${{ github.workspace }}/winbuild/build_x86_64/install/bin/cross-objdump
+        run: |
+          set -euo pipefail
+          bash ../stremio-native/.github/scripts/audit-vector-alignment.sh \
+            build_x86_64/packages/mpv-prefix/src/mpv-build/libmpv-2.dll
+
+      - name: Summarise the artifact
+        working-directory: winbuild
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          mv build_x86_64/mpv*.7z release/
+          {
+            echo "### Windows libmpv (${{ inputs.gcc_arch }})"
+            echo
+            echo "| asset | sha256 |"
+            echo "| --- | --- |"
+            for f in release/*.7z; do
+              echo "| $(basename "$f") | $(sha256sum "$f" | cut -d' ' -f1) |"
+            done
+            echo
+            echo "The \`mpv-dev-*\` archive is the one \`mpv.lock.json\` consumes."
+            echo "Update its \`distribution.url\`, \`distribution.asset\` and"
+            echo "\`distribution.sha256\` once the archive is published to a release."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the Windows runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-windows-${{ inputs.gcc_arch }}
+          path: winbuild/release/*.7z
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-windows-logs
+          path: winbuild/build_x86_64/**/*.log
+          if-no-files-found: ignore
+
+  linux:
+    name: Linux x86_64 (${{ inputs.gcc_arch }})
+    if: inputs.targets != 'windows'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # libzimg-dev matters specifically: zimg is the library whose AVX2
+          # codegen triggered the crash this workflow guards against.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config python3-pip git ca-certificates \
+            libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev \
+            libswresample-dev libswscale-dev \
+            libass-dev libplacebo-dev libzimg-dev libarchive-dev libbluray-dev \
+            libdrm-dev libegl1-mesa-dev libgl1-mesa-dev libgbm-dev \
+            libpulse-dev libasound2-dev libjack-jackd2-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libx11-dev libxext-dev libxpresent-dev libxrandr-dev libxss-dev libxv-dev \
+            libvulkan-dev libshaderc-dev libuchardet-dev liblua5.2-dev libmujs-dev
+
+      - name: Verify the assembler supports the workaround
+        run: |
+          set -euo pipefail
+          if ! as --help 2>&1 | grep -q 'muse-unaligned-vector-move'; then
+            echo "::error::this binutils has no -muse-unaligned-vector-move; needs >= 2.39"
+            as --version | head -1
+            exit 1
+          fi
+          as --version | head -1
+
+      - name: Check out mpv
+        run: |
+          set -euo pipefail
+          git clone --filter=tree:0 "${{ inputs.mpv_repository }}" mpv
+          if [ -n "${{ inputs.mpv_ref }}" ]; then
+            git -C mpv checkout --detach "${{ inputs.mpv_ref }}"
+          fi
+          git -C mpv --no-pager log -1 --format='building mpv %h %s'
+
+      - name: Apply the omniphony patch
+        run: |
+          set -euo pipefail
+          patch=.github/patches/mpv-omniphony.patch
+          git -C mpv apply --3way --verbose "$GITHUB_WORKSPACE/$patch"
+
+      - name: Build libmpv
+        working-directory: mpv
+        env:
+          # Same mitigation the Windows cross toolchain gets from the patch:
+          # let the assembler emit unaligned vector moves so GCC's 32-byte
+          # aligned stack spills cannot fault on a 16-byte aligned stack.
+          CFLAGS: -O2 -march=${{ inputs.gcc_arch }} -Wa,-muse-unaligned-vector-move
+          CXXFLAGS: -O2 -march=${{ inputs.gcc_arch }} -Wa,-muse-unaligned-vector-move
+        run: |
+          set -euo pipefail
+          meson setup build \
+            --buildtype=release \
+            --prefix=/usr \
+            -Dlibmpv=true \
+            -Dorender=enabled \
+            -Dcplayer=false \
+            -Dtests=false \
+            ${{ inputs.extra_meson_args }}
+          meson compile -C build
+
+      - name: Audit the runtime for misaligned vector spills
+        run: |
+          set -euo pipefail
+          bash .github/scripts/audit-vector-alignment.sh mpv/build/libmpv.so.2
+
+      - name: Package the runtime
+        run: |
+          set -euo pipefail
+          version=$(git -C mpv describe --tags --always)
+          stage=libmpv-linux-x86_64
+          mkdir -p "$stage/lib" "$stage/include/mpv"
+          cp -a mpv/build/libmpv.so* "$stage/lib/"
+          cp mpv/include/mpv/*.h "$stage/include/mpv/"
+          cp mpv/LICENSE.GPL mpv/LICENSE.LGPL "$stage/"
+          printf 'mpv %s\nmarch=%s\nbuilt with -Wa,-muse-unaligned-vector-move + omniphony patch (-Dorender=enabled)\n' \
+            "$version" "${{ inputs.gcc_arch }}" > "$stage/SOURCE.txt"
+          tar -caf "$stage-$version.tar.zst" "$stage"
+          {
+            echo "### Linux libmpv (${{ inputs.gcc_arch }})"
+            echo
+            echo "| asset | sha256 |"
+            echo "| --- | --- |"
+            f="$stage-$version.tar.zst"
+            echo "| $f | $(sha256sum "$f" | cut -d' ' -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the Linux runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-linux-${{ inputs.gcc_arch }}
+          path: libmpv-linux-x86_64-*.tar.zst

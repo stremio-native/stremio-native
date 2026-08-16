@@ -2,6 +2,67 @@
 
 This file records notable changes to Stremio Native relative to the initial source snapshot.
 
+## 1.0.6 - 2026-08-14
+
+### Browsing, discovery, and metadata
+
+- Added a hover trailer popup to Board, Discover, Library, and Search cards. After a configurable delay (1.2 seconds by default), it shows a muted live trailer, title metadata, genres, rating, poster, mute control, full-play action, and library toggle; a persistent bounded MPV worker stops and generation-cancels stale previews when the pointer leaves.
+- Added cached Rotten Tomatoes, Metacritic, Letterboxd, AniList, and Kitsu rating badges to movie, series, and anime details, with stale-result rejection when navigation changes while requests are in flight.
+- Added optional MDBList metadata enrichment with vault-backed API-key configuration, provider attribution, and score normalization across MDBList's aggregate and per-source rating formats.
+- Improved media branding and playback context by refreshing cached logos on Details, Discover, and Player surfaces, preferring canonical library or metadata titles, and including episode names plus season/episode numbers in series player titles.
+- Improved stream ranking and presentation by extracting missing seeder counts and file sizes from addon names and descriptions, using them for Smart, Smallest, and Seeders ordering, and displaying a consistent two-line stream summary.
+
+### Addons and integrations
+
+- Added a separate Stremio Addons directory tab using the public `api/v0` list and rising endpoints, with search, media-type, category, NSFW, and sort filters, deterministic pagination, trusted configuration links, and visible provider attribution.
+- Added explicit Webhook endpoint, Telegram chat ID and bot-token fields, reveal/hide controls for secrets, and MDBList to the native integrations manager while keeping credentials in the operating-system vault.
+- Added three automatic retries for transient addon catalog failures, covering transport errors and HTTP 408, 429, and 5xx responses with 250 ms, 500 ms, and 1 second backoff; catalog rows remain loading and show the existing error only after all four total attempts fail.
+
+### Playback and audio
+
+- Added Disabled, Omniphony 3D, Binaural HRTF, and 7.1 Virtual Surround audio modes with automatic capability checks, fallback reporting, persistent settings, and audio-track reselection after live mode changes.
+- Added the full Omniphony spatial-audio control surface for speaker or headphone output, measured, synthetic, parametric, PRTF, and SOFA HRTFs, listener geometry, air absorption, early reflections, room dimensions, late reverb, OSC head tracking, live parameter updates, and recentering.
+- Added runtime-selectable libmpv loading through `STREMIO_MPV_RUNTIME` or an adjacent Omniphony bundle, with API/symbol validation, liborender ABI probing, build identification, and safe fallback to the pinned linked runtime.
+- Routed YouTube streams back through their watch URLs and configured MPV's `ytdl_hook` with the bundled `yt-dlp`, allowing adaptive video and audio renditions instead of the streaming server's low-resolution progressive redirect.
+- Fixed passive seekbar hover so timeline previews load while moving the pointer without clicking or dragging.
+- Improved timeline previews during heavy playback with hardware copy-back decoding when enabled, automatic software fallback, and one revision-cancellable retry for transient source, seek, or screenshot failures.
+- Improved remappable player shortcuts with physical-key release tracking, repeat-while-held behavior for seeking, volume, subtitle, and speed adjustments, Space-key normalization, and tap-versus-hold temporary double-speed playback.
+
+### Customization and desktop interface
+
+- Added a live Theme Studio with searchable semantic color tokens, 14 presets, typography and layout controls, and previews for featured media, streams, player controls, library cards, form controls, and addons; color and preset changes are persisted and can be reset safely.
+- Rebuilt the color editor with solid, linear-gradient, and radial-gradient modes, up to five editable stops, angle and reversal controls, alpha plus Hex/RGB/HSL entry, a Windows screen eyedropper, and persistent saved colors and gradients.
+- Replaced the stock Windows tray menu with a themed, DPI-aware Slint popup that exposes window, Settings, logs, update, install, and quit actions, dismisses like a native menu, survives Explorer restarts, and remains backed by the standard native tray on other platforms.
+- Refined onboarding, authentication, settings, profiles, integrations, and Downloads to use the expanded semantic theme and native form controls; profile creation now presents name, role, and optional PIN fields explicitly, while download actions reflect cancellable, resumable, and terminal states.
+
+### Performance, reliability, and diagnostics
+
+- Serialized application access to the shared Turso connection across complete queries, cursors, and transactions, eliminating `concurrent use forbidden` races across downloads, profiles, integrations, local-library, configuration, secure-settings, backup, and logging work.
+- Added bounded database-lock recovery: Stremio identifies confirmed lock owners with Windows Restart Manager or `lsof`, prompts before terminating them, rechecks ownership before acting, and retries initialization without blocking async worker threads.
+- Corrected shutdown WAL checkpoint handling by consuming the status row returned by `PRAGMA wal_checkpoint(TRUNCATE)` and reporting completed, busy, failed, or timed-out outcomes without racing active database work.
+- Changed bundled stream-server playback to return `200 OK` or `206 Partial Content` without startup byte pre-reads or piece-readiness `503 Service Unavailable` responses; the response body now waits asynchronously for torrent pieces, while genuine reader-open failures return `500 Internal Server Error`.
+- Optimized libtorrent 2.1.1 playback with one-shot sparse piece-priority updates, batched piece-presence snapshots, cached disk-read verification, cheaper status polling, deeper high-bandwidth request queues, an immediate peer-connection boost, and a larger disk write pipeline.
+- Replaced unbounded debrid and metadata response maps with process-wide bounded Moka caches, shared provider HTTP clients, single-flight fetching, global request limits, response-size caps, credential-aware keys, and explicit invalidation after credential changes.
+- Bounded the community-addon response to 4 MiB, its decoded page cache to 8 MiB, and the visible decoded-image working set to 64 MiB while preserving shared image buffers.
+- Moved backup archive parsing, decompression, integrity hashing, and secret cryptography off async workers; reduced restore peak allocations with streaming verification and row ownership transfer, and required restore confirmation to match the previewed archive checksum.
+- Replaced the unbounded sequential Core channel with a lossless 64-item FIFO on a dedicated small-stack worker, explicit producer backpressure, and direct-runtime fallback if the worker is unavailable.
+- Recovered poisoned production details-view mutexes while retaining documented test and Core-runtime invariants.
+- Corrected self-update repository and release-tag resolution, selected the newest stable release independently of API ordering, and removed stale staged installers before retrying a download.
+- Added a Windows native exception handler that records the exception code, fault address, module, module offset, thread, and timestamp in `crash.log`, and retained Info-level release diagnostics for post-crash investigation.
+- Enabled the in-process stream server and connector in the default application feature set, removing the separate server-process hop from standard builds while retaining the explicit feature boundary.
+
+### Build and developer tooling
+
+- Pinned the embedded stream-server dependency to the tested and pushed `3b809ac` revision in the canonical organization repository, replacing the temporary sibling checkout used for Windows integration testing.
+- Upgraded the embedded server to libtorrent 2.1.1 and its ABI 100 APIs, including current torrent loading, file layout, peer endpoint, resume-data, magnet, disk-status, and disk-buffer ownership interfaces; Linux CI now builds the checksum-verified static release and Windows uses the matching vcpkg overlay.
+- Corrected Arch and Fedora runtime dependency names and made both package jobs install and validate their generated runtime dependency lists before producing artifacts.
+- Added manual Windows and Linux libmpv runtime workflows that apply the Omniphony decoder/overlay patch and the AVX stack-alignment workaround, audit generated binaries for unsafe aligned vector spills, publish checksums, and upload runtime artifacts plus build logs.
+- Switched Windows linking to `rust-lld` with the required static-ICU duplicate-symbol compatibility flags, and moved release builds from serial fat LTO to parallel ThinLTO with optimized build scripts for substantially shorter link and code-generation times.
+- Added opt-in Hotpath profiling for application entry points, database and navigation operations, image/thumbnail work, channels, allocations, Tokio, and Reqwest while retaining Chrome traces in profiling builds.
+- Updated the workspace dependency set, including Turso 0.7.2, Moka 0.12.16, async-trait 0.1.92, base64 0.23.1, Blake3 1.8.6, futures 0.3.34, HTTP 1.5.0, thiserror 2.0.20, `open` 5.4.1, and pkg-config 0.3.34.
+- Added the top-level GPL-3.0-only license and standardized author, maintainer, diagnostics, release-package, and Flatpak metadata on the current project identity and contact address.
+- Refreshed the README with CI and release badges, v1.0.5 downloads, modern CPU/GPU requirements, the rewrite feedback notice, and an expanded current-feature overview; repository, issue, workflow, and package links now target the `stremio-native/stremio-native` organization repository.
+
 ## 1.0.5 - 2026-07-31
 
 ### Native player tools and recovery

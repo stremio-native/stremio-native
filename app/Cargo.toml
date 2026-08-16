@@ -1,6 +1,6 @@
 [package]
 name = "stremio-native"
-version = "1.0.5"
+version = "1.0.6"
 authors = ["perpetus <perpetus.github@gmail.com>"]
 edition = "2024"
 license = "GPL-3.0-only"
@@ -49,7 +49,7 @@ chacha20poly1305.workspace = true
 mimalloc = "0.1.52"
 arboard = "3.6.1"
 hex = "0.4.3"
-open = "5.4.0"
+open = "5.4.1"
 percent-encoding.workspace = true
 self_update.workspace = true
 zip.workspace = true
@@ -65,14 +65,19 @@ souvlaki = { workspace = true }
 keepawake = { workspace = true }
 rodio.workspace = true
 mlua = { workspace = true, optional = true }
+hotpath = { version = "0.23.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell"] }
-# Ergonomic COM for the taskbar thumbnail toolbar (ITaskbarList3), plus D3D11 for
-# the background GPU-driver pre-warm.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+# Ergonomic COM for the taskbar thumbnail toolbar (ITaskbarList3) and the
+# notification-area tray host, plus D3D11 for the background GPU-driver pre-warm.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_RestartManager",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
@@ -88,9 +93,15 @@ serde_json.workspace = true
 winres = "0.1.12"
 
 [features]
-default = ["stremio-core/env-future-send", "core-env/default", "server-connector/default"]
+default = [
+    "stremio-core/env-future-send",
+    "core-env/default",
+    "server-connector/default",
+    "in-process",
+]
 in-process = ["core-env/in-process", "server-connector/in-process"]
 plugins = ["dep:mlua"]
+profiling = ["hotpath/hotpath", "hotpath/hotpath-alloc", "hotpath/tokio", "hotpath/reqwest-0-12"]
 
 [package.metadata.deb]
 maintainer = "perpetus <perpetus.github@gmail.com>"

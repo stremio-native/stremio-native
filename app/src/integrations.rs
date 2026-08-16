@@ -68,7 +68,9 @@ pub async fn configure_notification(
             SecretValue::new(value),
         )
         .await?;
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     conn.execute(
         "INSERT INTO profile_integrations(
             profile_id, provider, enabled, credential_ref, metadata_json
@@ -143,7 +145,9 @@ pub async fn disconnect_notification(
         Ok(()) | Err(CredentialError::Missing) => {}
         Err(error) => return Err(error.into()),
     }
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     conn.execute(
         "UPDATE profile_integrations SET enabled = 0 WHERE profile_id = ? AND provider = ?",
         (profile_id, notification_db_name(kind)),
@@ -175,8 +179,12 @@ pub fn install(store: Arc<dyn CredentialStore>) {
 }
 
 pub async fn delete_profile_credentials(profile_id: &str) -> Result<(), IntegrationError> {
+    debrid::invalidate_availability_cache();
+    media_integrations::invalidate_response_cache();
     let store = STORE.get().ok_or(CredentialError::Unavailable)?;
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     let mut references = Vec::new();
     let mut integration_rows = conn
         .query(
@@ -214,6 +222,8 @@ pub async fn delete_profile_credentials(profile_id: &str) -> Result<(), Integrat
                 .map_err(|_| IntegrationError::Database)?,
         );
     }
+    drop(download_rows);
+    drop(conn);
     references.sort();
     references.dedup();
     for reference in references {
@@ -228,7 +238,9 @@ pub async fn delete_profile_credentials(profile_id: &str) -> Result<(), Integrat
 
 pub async fn exportable_secrets() -> Result<Vec<(String, SecretKind, Vec<u8>)>, IntegrationError> {
     let store = STORE.get().ok_or(CredentialError::Unavailable)?;
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     let mut references = Vec::<(String, SecretKind)>::new();
     let mut profiles = conn
         .query("SELECT id FROM local_profiles", ())
@@ -294,6 +306,8 @@ pub async fn exportable_secrets() -> Result<Vec<(String, SecretKind, Vec<u8>)>, 
             SecretKind::DownloadSource,
         ));
     }
+    drop(downloads);
+    drop(conn);
     references.sort_by(|left, right| left.0.cmp(&right.0));
     references.dedup_by(|left, right| left.0 == right.0);
     let mut secrets = Vec::new();
@@ -336,6 +350,7 @@ pub async fn configure_debrid(
             SecretValue::new(api_key.as_bytes().to_vec()),
         )
         .await?;
+    debrid::invalidate_availability_cache();
     let client = HttpDebridProvider::new(provider, reference.clone(), store.clone())?;
     let status = match client.account_status().await {
         Ok(status) => status,
@@ -367,6 +382,7 @@ pub async fn configure_metadata_provider(
             SecretValue::new(api_key.as_bytes().to_vec()),
         )
         .await?;
+    media_integrations::invalidate_response_cache();
     let provider_client =
         HttpMetadataProvider::new(provider, Some(reference.clone()), store.clone())?;
     let validation_id = match provider {
@@ -383,7 +399,9 @@ pub async fn configure_metadata_provider(
         }
         return Err(error.into());
     }
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     conn.execute(
         "INSERT INTO profile_integrations(profile_id, provider, enabled, credential_ref, metadata_json)
          VALUES (?, ?, 1, ?, '{}')
@@ -403,7 +421,9 @@ pub async fn configure_metadata_provider(
 pub async fn configured_integration_names(
     profile_id: &str,
 ) -> Result<Vec<String>, IntegrationError> {
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     let mut rows = conn
         .query(
             "SELECT provider FROM profile_integrations
@@ -426,6 +446,7 @@ pub async fn configured_integration_names(
             "debrid:torbox" => "TorBox",
             "metadata:tmdb" => "TMDB",
             "metadata:omdb" => "OMDb",
+            "metadata:mdblist" => "MDBList",
             "metadata:fanart" => "Fanart.tv",
             "metadata:rpdb" => "RPDB",
             "webhook" => "Webhook",
@@ -448,7 +469,10 @@ pub async fn disconnect_metadata_provider(
         Ok(()) | Err(CredentialError::Missing) => {}
         Err(error) => return Err(error.into()),
     }
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    media_integrations::invalidate_response_cache();
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     conn.execute(
         "UPDATE profile_integrations SET enabled = 0 WHERE profile_id = ? AND provider = ?",
         (profile_id, metadata_db_name(provider)),
@@ -462,7 +486,9 @@ pub async fn enabled_metadata_providers(
     profile_id: &str,
 ) -> Result<Vec<Arc<dyn MetadataProvider>>, IntegrationError> {
     let store = STORE.get().ok_or(CredentialError::Unavailable)?;
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     let mut rows = conn
         .query(
             "SELECT provider, credential_ref FROM profile_integrations
@@ -510,14 +536,18 @@ pub async fn disconnect_debrid(
     let store = STORE.get().ok_or(CredentialError::Unavailable)?;
     let reference = debrid_reference(profile_id, provider)?;
     store.delete(&reference).await?;
-    persist_integration(profile_id, provider, false, Some(&reference), "{}").await
+    debrid::invalidate_availability_cache();
+    persist_integration(profile_id, provider, false, Some(&reference), "{}").await?;
+    Ok(())
 }
 
 pub async fn enabled_debrid_providers(
     profile_id: &str,
 ) -> Result<Vec<Arc<dyn DebridProvider>>, IntegrationError> {
     let store = STORE.get().ok_or(CredentialError::Unavailable)?;
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     let mut rows = conn
         .query(
             "SELECT provider, credential_ref FROM profile_integrations
@@ -582,7 +612,9 @@ async fn persist_integration(
     reference: Option<&CredentialRef>,
     metadata: &str,
 ) -> Result<(), IntegrationError> {
-    let conn = crate::db::get_conn().map_err(|_| IntegrationError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| IntegrationError::Database)?;
     conn.execute(
         "INSERT INTO profile_integrations(
             profile_id, provider, enabled, credential_ref, metadata_json
@@ -628,6 +660,7 @@ const fn metadata_db_name(provider: media_integrations::ProviderKind) -> &'stati
     match provider {
         media_integrations::ProviderKind::Tmdb => "metadata:tmdb",
         media_integrations::ProviderKind::Omdb => "metadata:omdb",
+        media_integrations::ProviderKind::Mdblist => "metadata:mdblist",
         media_integrations::ProviderKind::Fanart => "metadata:fanart",
         media_integrations::ProviderKind::Rpdb => "metadata:rpdb",
         media_integrations::ProviderKind::Kitsu => "metadata:kitsu",
@@ -640,6 +673,7 @@ fn metadata_provider_from_db(value: &str) -> Option<media_integrations::Provider
     match value {
         "metadata:tmdb" => Some(media_integrations::ProviderKind::Tmdb),
         "metadata:omdb" => Some(media_integrations::ProviderKind::Omdb),
+        "metadata:mdblist" => Some(media_integrations::ProviderKind::Mdblist),
         "metadata:fanart" => Some(media_integrations::ProviderKind::Fanart),
         "metadata:rpdb" => Some(media_integrations::ProviderKind::Rpdb),
         "metadata:kitsu" => Some(media_integrations::ProviderKind::Kitsu),

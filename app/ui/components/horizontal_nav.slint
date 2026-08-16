@@ -12,7 +12,7 @@ export component HorizontalNavButton inherits ButtonSurface {
     width: 3.5 * root.unit;
     height: 3.5 * root.unit;
     border-radius: 0.75 * root.unit;
-    opacity: root.has-hover || root.has-focus || root.active ? 1 : 0.6;
+    opacity: root.has-hover || root.has-focus || root.active ? 1 : 0.85;
     background: root.has-hover || root.has-focus || root.active
         ? Theme.overlay-color
         : transparent;
@@ -26,7 +26,7 @@ export component HorizontalNavButton inherits ButtonSurface {
         height: 2 * root.unit;
         source: root.icon-source;
         colorize: Theme.primary-foreground;
-        opacity: root.has-hover || root.has-focus || root.active ? 0.8 : 0.6;
+        opacity: root.has-hover || root.has-focus || root.active ? 1.0 : 0.85;
         image-fit: contain;
     }
 }

@@ -1,9 +1,12 @@
 use std::{
+    env,
     ffi::{CStr, CString, c_char, c_int, c_ulong, c_void},
+    path::{Path, PathBuf},
     ptr::NonNull,
     sync::Arc,
 };
 
+use libloading::Library;
 use thiserror::Error;
 
 pub const FORMAT_NONE: c_int = 0;
@@ -94,6 +97,17 @@ pub enum MpvError {
     RuntimeTooOld {
         required: ApiVersion,
         runtime: ApiVersion,
+    },
+    #[error("could not load MPV runtime {}: {message}", path.display())]
+    RuntimeLoad { path: PathBuf, message: String },
+    #[error(
+        "MPV runtime {} does not export required symbol {symbol}: {message}",
+        path.display()
+    )]
+    RuntimeSymbol {
+        path: PathBuf,
+        symbol: &'static str,
+        message: String,
     },
     #[error("libmpv returned a null player handle")]
     NullHandle,
@@ -250,6 +264,11 @@ type RenderUpdateFn = unsafe extern "C" fn(*mut MpvRenderContext) -> u64;
 type RenderFn = unsafe extern "C" fn(*mut MpvRenderContext, *mut MpvRenderParam) -> c_int;
 type RenderFreeFn = unsafe extern "C" fn(*mut MpvRenderContext);
 
+enum MpvRuntimeModule {
+    Linked,
+    Dynamic { _library: Library },
+}
+
 // The symbols are provided by the pinned MPV import library selected by build.rs.
 // Keeping this list explicit makes the unsafe ABI surface small and auditable.
 unsafe extern "C" {
@@ -325,6 +344,7 @@ unsafe extern "C" {
 }
 
 pub struct MpvApi {
+    _runtime: MpvRuntimeModule,
     client_api_version: ClientApiVersionFn,
     error_string: ErrorStringFn,
     create: CreateFn,
@@ -351,8 +371,52 @@ pub struct MpvApi {
 }
 
 impl MpvApi {
-    pub fn linked() -> Result<Arc<Self>, MpvError> {
-        let api = Self {
+    /// Selects the runtime that drives playback: an explicitly configured
+    /// module, the adjacent Omniphony bundle, or the pinned linked build.
+    pub fn playback_runtime() -> Result<Arc<Self>, MpvError> {
+        if let Some(path) = env::var_os("STREMIO_MPV_RUNTIME").filter(|path| !path.is_empty()) {
+            let path = PathBuf::from(path);
+            let api = Self::dynamic(&path)?;
+            tracing::info!(path = %path.display(), "using explicitly configured MPV runtime");
+            return Ok(Arc::new(api));
+        }
+
+        for path in adjacent_omniphony_runtime_candidates() {
+            if !path.is_file() {
+                continue;
+            }
+            match Self::dynamic(&path) {
+                Ok(api) => {
+                    tracing::info!(path = %path.display(), "using adjacent Omniphony MPV runtime");
+                    return Ok(Arc::new(api));
+                }
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "could not use adjacent Omniphony MPV runtime; falling back to linked libmpv"
+                ),
+            }
+        }
+
+        Self::pinned_runtime()
+    }
+
+    /// Returns the pinned build linked into this application.
+    ///
+    /// Swappable runtimes are deliberately not considered here. Components that
+    /// gain nothing from them stay on the build the application is tested
+    /// against, so a defect in a bundled or user-supplied module cannot reach
+    /// them.
+    pub fn pinned_runtime() -> Result<Arc<Self>, MpvError> {
+        let api = Self::from_linked();
+        api.api_version().ensure_compatible()?;
+        tracing::debug!("using linked MPV runtime");
+        Ok(Arc::new(api))
+    }
+
+    fn from_linked() -> Self {
+        Self {
+            _runtime: MpvRuntimeModule::Linked,
             client_api_version: mpv_client_api_version,
             error_string: mpv_error_string,
             create: mpv_create,
@@ -376,9 +440,147 @@ impl MpvApi {
             render_update: mpv_render_context_update,
             render: mpv_render_context_render,
             render_free: mpv_render_context_free,
+        }
+    }
+
+    fn dynamic(path: &Path) -> Result<Self, MpvError> {
+        #[cfg(target_os = "windows")]
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        {
+            return Err(MpvError::RuntimeLoad {
+                path: path.to_owned(),
+                message: "Windows executables cannot be used safely as in-process libmpv modules; provide libmpv-2.dll instead".to_owned(),
+            });
+        }
+
+        // SAFETY: Loading a user-selected native module executes its process
+        // initialization. Only an explicit path or the app-owned adjacent
+        // Omniphony bundle is considered here.
+        let library = unsafe { Library::new(path) }.map_err(|error| MpvError::RuntimeLoad {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?;
+
+        let api = Self {
+            client_api_version: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_client_api_version\0",
+                "mpv_client_api_version",
+            )?,
+            error_string: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_error_string\0",
+                "mpv_error_string",
+            )?,
+            create: load_runtime_symbol(&library, path, b"mpv_create\0", "mpv_create")?,
+            initialize: load_runtime_symbol(&library, path, b"mpv_initialize\0", "mpv_initialize")?,
+            terminate_destroy: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_terminate_destroy\0",
+                "mpv_terminate_destroy",
+            )?,
+            set_option_string: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_set_option_string\0",
+                "mpv_set_option_string",
+            )?,
+            set_property: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_set_property\0",
+                "mpv_set_property",
+            )?,
+            set_property_string: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_set_property_string\0",
+                "mpv_set_property_string",
+            )?,
+            get_property: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_get_property\0",
+                "mpv_get_property",
+            )?,
+            free: load_runtime_symbol(&library, path, b"mpv_free\0", "mpv_free")?,
+            command: load_runtime_symbol(&library, path, b"mpv_command\0", "mpv_command")?,
+            command_ret: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_command_ret\0",
+                "mpv_command_ret",
+            )?,
+            free_node_contents: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_free_node_contents\0",
+                "mpv_free_node_contents",
+            )?,
+            command_async: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_command_async\0",
+                "mpv_command_async",
+            )?,
+            abort_async_command: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_abort_async_command\0",
+                "mpv_abort_async_command",
+            )?,
+            observe_property: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_observe_property\0",
+                "mpv_observe_property",
+            )?,
+            wait_event: load_runtime_symbol(&library, path, b"mpv_wait_event\0", "mpv_wait_event")?,
+            set_wakeup_callback: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_set_wakeup_callback\0",
+                "mpv_set_wakeup_callback",
+            )?,
+            render_create: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_render_context_create\0",
+                "mpv_render_context_create",
+            )?,
+            render_set_update_callback: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_render_context_set_update_callback\0",
+                "mpv_render_context_set_update_callback",
+            )?,
+            render_update: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_render_context_update\0",
+                "mpv_render_context_update",
+            )?,
+            render: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_render_context_render\0",
+                "mpv_render_context_render",
+            )?,
+            render_free: load_runtime_symbol(
+                &library,
+                path,
+                b"mpv_render_context_free\0",
+                "mpv_render_context_free",
+            )?,
+            _runtime: MpvRuntimeModule::Dynamic { _library: library },
         };
         api.api_version().ensure_compatible()?;
-        Ok(Arc::new(api))
+        Ok(api)
     }
 
     // `c_ulong` is 64-bit on LP64 targets and 32-bit on Windows, so widening it
@@ -392,7 +594,9 @@ impl MpvApi {
         reason = "c_ulong is already u64 on LP64 targets but u32 on Windows"
     )]
     pub fn api_version(&self) -> ApiVersion {
-        // SAFETY: The imported function uses the pinned client.h signature.
+        // SAFETY: Linked and dynamically resolved symbols both use the pinned
+        // client.h signature, and dynamic runtimes are version-checked during
+        // construction.
         ApiVersion::decode(unsafe { (self.client_api_version)() } as u64)
     }
 
@@ -416,6 +620,42 @@ impl MpvApi {
         } else {
             Ok(())
         }
+    }
+}
+
+fn load_runtime_symbol<T: Copy>(
+    library: &Library,
+    path: &Path,
+    name: &'static [u8],
+    label: &'static str,
+) -> Result<T, MpvError> {
+    // SAFETY: Each caller supplies the exact function-pointer type from the
+    // pinned mpv/client.h ABI. The module remains owned by MpvApi for at least
+    // as long as any copied function pointer can be called.
+    unsafe { library.get::<T>(name) }
+        .map(|symbol| *symbol)
+        .map_err(|error| MpvError::RuntimeSymbol {
+            path: path.to_owned(),
+            symbol: label,
+            message: error.to_string(),
+        })
+}
+
+fn adjacent_omniphony_runtime_candidates() -> Vec<PathBuf> {
+    let Ok(executable) = env::current_exe() else {
+        return Vec::new();
+    };
+    let Some(directory) = executable.parent() else {
+        return Vec::new();
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        vec![directory.join("mpv-omniphony").join("libmpv-2.dll")]
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![directory.join("mpv-omniphony").join("libmpv.so")]
     }
 }
 
@@ -647,6 +887,30 @@ impl MpvClient {
         Ok(value)
     }
 
+    pub(crate) fn get_node(&self, name: &str) -> Result<MpvOwnedNode, MpvError> {
+        let name = CString::new(name)?;
+        let mut node = MpvNode {
+            value: MpvNodeValue { int64: 0 },
+            format: FORMAT_NONE,
+        };
+        // SAFETY: MPV initializes `node` on success and transfers ownership of
+        // its nested allocations to the caller. The property name remains
+        // valid for the synchronous call.
+        let code = unsafe {
+            (self.api.get_property)(
+                self.handle(),
+                name.as_ptr(),
+                FORMAT_NODE,
+                (&mut node as *mut MpvNode).cast(),
+            )
+        };
+        self.api.result(code)?;
+        Ok(MpvOwnedNode {
+            api: self.api.clone(),
+            node,
+        })
+    }
+
     pub fn set_string_list(&self, name: &str, values: &[String]) -> Result<(), MpvError> {
         let name = CString::new(name)?;
         let (strings, mut nodes) = string_list_nodes(values)?;
@@ -736,7 +1000,7 @@ mod tests {
 
     #[test]
     fn dynamically_linked_engine_should_initialize() -> Result<(), MpvError> {
-        let api = MpvApi::linked()?;
+        let api = MpvApi::playback_runtime()?;
         let client = MpvClient::create(api)?;
         client.set_option("terminal", "no")?;
         client.set_option("vo", "libmpv")?;

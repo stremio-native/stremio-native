@@ -31,6 +31,10 @@ pub struct ThumbnailConfig {
     pub exact_seek_delay: Duration,
     pub load_timeout: Duration,
     pub seek_timeout: Duration,
+    pub hardware_decoding: bool,
+    pub max_source_attempts: u8,
+    pub max_request_attempts: u8,
+    pub retry_delay: Duration,
 }
 
 impl Default for ThumbnailConfig {
@@ -42,7 +46,11 @@ impl Default for ThumbnailConfig {
             fast_seek_interval: Duration::from_millis(50),
             exact_seek_delay: Duration::from_millis(100),
             load_timeout: Duration::from_secs(15),
-            seek_timeout: Duration::from_secs(5),
+            seek_timeout: Duration::from_secs(15),
+            hardware_decoding: false,
+            max_source_attempts: 2,
+            max_request_attempts: 2,
+            retry_delay: Duration::from_millis(250),
         }
     }
 }
@@ -220,16 +228,21 @@ pub struct ThumbnailRuntime {
 }
 
 impl ThumbnailRuntime {
-    /// Initializes a separate software-decoding MPV client and starts its worker.
+    /// Initializes a separate MPV client and starts its worker.
+    ///
+    /// The worker decodes video with audio disabled, so it always uses the
+    /// pinned runtime rather than whichever module playback selected: a
+    /// screenshot defect in a swapped-in build would otherwise crash the whole
+    /// application while a viewer merely hovers the timeline.
     pub fn start(
         config: ThumbnailConfig,
         event_sink: impl Fn(ThumbnailEvent) + Send + Sync + 'static,
     ) -> Result<Self, MpvError> {
         let started_at = Instant::now();
         validate_config(&config)?;
-        let api = MpvApi::linked()?;
+        let api = MpvApi::pinned_runtime()?;
         let client = MpvClient::create(api)?;
-        configure_client(&client)?;
+        configure_client(&client, &config)?;
         client.initialize()?;
 
         let shared = Arc::new(SharedMailbox::default());
@@ -351,10 +364,15 @@ fn validate_config(config: &ThumbnailConfig) -> Result<(), MpvError> {
         })
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or_else(|| MpvError::InvalidNode("thumbnail bounds overflow memory size".to_owned()))?;
+    if config.max_source_attempts == 0 || config.max_request_attempts == 0 {
+        return Err(MpvError::InvalidNode(
+            "thumbnail attempt counts must be non-zero".to_owned(),
+        ));
+    }
     Ok(())
 }
 
-fn configure_client(client: &MpvClient) -> Result<(), MpvError> {
+fn configure_client(client: &MpvClient, config: &ThumbnailConfig) -> Result<(), MpvError> {
     let options = [
         ("config", "no"),
         ("load-scripts", "no"),
@@ -367,11 +385,12 @@ fn configure_client(client: &MpvClient) -> Result<(), MpvError> {
         ("keep-open", "yes"),
         ("vo", "null"),
         ("audio", "no"),
+        ("ad", "no"),
         ("aid", "no"),
         ("sid", "no"),
         ("sub-auto", "no"),
         ("ytdl", "no"),
-        ("hwdec", "no"),
+        ("hwdec", thumbnail_hwdec(config.hardware_decoding)),
         ("screenshot-sw", "yes"),
         ("vd-lavc-threads", "2"),
         ("vd-lavc-fast", "yes"),
@@ -389,6 +408,10 @@ fn configure_client(client: &MpvClient) -> Result<(), MpvError> {
         client.set_option(name, value)?;
     }
     Ok(())
+}
+
+const fn thumbnail_hwdec(hardware_decoding: bool) -> &'static str {
+    if hardware_decoding { "auto-copy" } else { "no" }
 }
 
 struct LoadedSource {
@@ -471,7 +494,7 @@ fn handle_control(
             state.source = None;
             state.cache.clear();
             let _ = client.command(&["stop"]);
-            match load_source(client, shared, config, state, source_revision, &source) {
+            match load_source_with_retry(client, shared, config, state, source_revision, &source) {
                 Ok(Some(loaded)) => {
                     let generation = loaded.generation;
                     let duration = loaded.duration;
@@ -506,6 +529,37 @@ fn handle_control(
         }
         Control::Shutdown => false,
     }
+}
+
+fn load_source_with_retry(
+    client: &MpvClient,
+    shared: &SharedMailbox,
+    config: &ThumbnailConfig,
+    state: &mut WorkerState,
+    source_revision: u64,
+    source: &ThumbnailSource,
+) -> Result<Option<LoadedSource>, ThumbnailUnavailableReason> {
+    for attempt in 1..=config.max_source_attempts {
+        match load_source(client, shared, config, state, source_revision, source) {
+            Ok(result) => return Ok(result),
+            Err(reason) if source_retry_permitted(&reason, attempt, config.max_source_attempts) => {
+                if !wait_source_interruptible(shared, config.retry_delay, source_revision) {
+                    return Ok(None);
+                }
+                let _ = client.command(&["stop"]);
+            }
+            Err(reason) => return Err(reason),
+        }
+    }
+    unreachable!("validated source attempt count is non-zero")
+}
+
+fn source_retry_permitted(
+    reason: &ThumbnailUnavailableReason,
+    attempt: u8,
+    max_attempts: u8,
+) -> bool {
+    attempt < max_attempts && matches!(reason, ThumbnailUnavailableReason::LoadFailed(_))
 }
 
 fn load_source(
@@ -705,17 +759,60 @@ fn perform_seek_and_capture(
     seek_mode: &str,
     quality: ThumbnailQuality,
 ) -> bool {
+    for attempt in 1..=config.max_request_attempts {
+        match seek_and_capture_once(
+            client, shared, config, state, rotation, versioned, seconds, seek_mode, quality,
+        ) {
+            RequestAttempt::Captured(captured) => {
+                if quality == ThumbnailQuality::Exact {
+                    state.cache.insert(
+                        CacheKey::new(versioned.request.generation, seconds),
+                        CachedFrame::from_frame(&captured),
+                    );
+                }
+                sink(ThumbnailEvent::Frame(captured));
+                return true;
+            }
+            RequestAttempt::Cancelled => return false,
+            RequestAttempt::Failed(reason)
+                if request_retry_permitted(&reason, attempt, config.max_request_attempts) =>
+            {
+                if !wait_interruptible(shared, config.retry_delay, versioned.revision) {
+                    return false;
+                }
+            }
+            RequestAttempt::Failed(reason) => {
+                emit_request_failure(shared, sink, versioned, reason);
+                return false;
+            }
+        }
+    }
+    unreachable!("validated request attempt count is non-zero")
+}
+
+enum RequestAttempt {
+    Captured(ThumbnailFrame),
+    Cancelled,
+    Failed(ThumbnailUnavailableReason),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seek_and_capture_once(
+    client: &MpvClient,
+    shared: &SharedMailbox,
+    config: &ThumbnailConfig,
+    state: &mut WorkerState,
+    rotation: u16,
+    versioned: VersionedRequest,
+    seconds: f64,
+    seek_mode: &str,
+    quality: ThumbnailQuality,
+) -> RequestAttempt {
     if !throttle_seek(shared, versioned.revision, state, config.fast_seek_interval) {
-        return false;
+        return RequestAttempt::Cancelled;
     }
     if let Err(error) = seek(client, seconds, seek_mode) {
-        emit_request_failure(
-            shared,
-            sink,
-            versioned,
-            ThumbnailUnavailableReason::SeekFailed(error.to_string()),
-        );
-        return false;
+        return RequestAttempt::Failed(ThumbnailUnavailableReason::SeekFailed(error.to_string()));
     }
     state.last_seek_started = Some(Instant::now());
     match wait_for_event(
@@ -726,47 +823,39 @@ fn perform_seek_and_capture(
         Cancellation::Request(versioned.revision),
     ) {
         WaitOutcome::Reached => {}
-        WaitOutcome::Cancelled => return false,
+        WaitOutcome::Cancelled => return RequestAttempt::Cancelled,
         WaitOutcome::TimedOut => {
-            emit_request_failure(
-                shared,
-                sink,
-                versioned,
-                ThumbnailUnavailableReason::SeekFailed("timed out waiting for the seek".to_owned()),
-            );
-            return false;
+            return RequestAttempt::Failed(ThumbnailUnavailableReason::SeekFailed(
+                "timed out waiting for the seek".to_owned(),
+            ));
         }
         WaitOutcome::Failed(message) => {
-            emit_request_failure(
-                shared,
-                sink,
-                versioned,
-                ThumbnailUnavailableReason::SeekFailed(message),
-            );
-            return false;
+            return RequestAttempt::Failed(ThumbnailUnavailableReason::SeekFailed(message));
         }
     }
     if !is_request_current(shared, versioned.revision) {
-        return false;
+        return RequestAttempt::Cancelled;
     }
-    let captured = match capture_frame(client, versioned.request, seconds, rotation, quality) {
-        Ok(frame) => frame,
-        Err(reason) => {
-            emit_request_failure(shared, sink, versioned, reason);
-            return false;
+    match capture_frame(client, versioned.request, seconds, rotation, quality) {
+        Ok(frame) if is_request_current(shared, versioned.revision) => {
+            RequestAttempt::Captured(frame)
         }
-    };
-    if !is_request_current(shared, versioned.revision) {
-        return false;
+        Ok(_) => RequestAttempt::Cancelled,
+        Err(reason) => RequestAttempt::Failed(reason),
     }
-    if quality == ThumbnailQuality::Exact {
-        state.cache.insert(
-            CacheKey::new(versioned.request.generation, seconds),
-            CachedFrame::from_frame(&captured),
-        );
-    }
-    sink(ThumbnailEvent::Frame(captured));
-    true
+}
+
+fn request_retry_permitted(
+    reason: &ThumbnailUnavailableReason,
+    attempt: u8,
+    max_attempts: u8,
+) -> bool {
+    attempt < max_attempts
+        && matches!(
+            reason,
+            ThumbnailUnavailableReason::SeekFailed(_)
+                | ThumbnailUnavailableReason::ScreenshotFailed(_)
+        )
 }
 
 fn seek(client: &MpvClient, seconds: f64, mode: &str) -> Result<(), MpvError> {
@@ -811,6 +900,24 @@ fn wait_interruptible(shared: &SharedMailbox, duration: Duration, request_revisi
         mailbox = next;
     }
     mailbox.request_revision == request_revision
+}
+
+fn wait_source_interruptible(
+    shared: &SharedMailbox,
+    duration: Duration,
+    source_revision: u64,
+) -> bool {
+    let deadline = Instant::now() + duration;
+    let mut mailbox = lock_mailbox(shared);
+    while mailbox.source_revision == source_revision && Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let (next, _) = shared
+            .condvar
+            .wait_timeout(mailbox, remaining)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        mailbox = next;
+    }
+    mailbox.source_revision == source_revision
 }
 
 fn capture_frame(
@@ -992,7 +1099,7 @@ fn finite_non_negative(value: f64) -> f64 {
     }
 }
 
-fn normalize_rotation(rotation: i64) -> u16 {
+pub(crate) fn normalize_rotation(rotation: i64) -> u16 {
     let normalized = rotation.rem_euclid(360) as u16;
     match normalized {
         45..=134 => 90,
@@ -1003,13 +1110,13 @@ fn normalize_rotation(rotation: i64) -> u16 {
 }
 
 #[derive(Debug)]
-struct RawRgba {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
+pub(crate) struct RawRgba {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: Vec<u8>,
 }
 
-fn parse_screenshot(node: &MpvNode) -> Result<RawRgba, String> {
+pub(crate) fn parse_screenshot(node: &MpvNode) -> Result<RawRgba, String> {
     if node.format != FORMAT_NODE_MAP {
         return Err(format!("expected node map, got format {}", node.format));
     }
@@ -1153,7 +1260,7 @@ fn map_string(entries: &[(&CStr, &MpvNode)], name: &str) -> Result<String, Strin
         .into_owned())
 }
 
-fn rotate_rgba(
+pub(crate) fn rotate_rgba(
     width: u32,
     height: u32,
     rgba: Vec<u8>,
@@ -1556,6 +1663,118 @@ mod tests {
         let revision = take_latest_request(&shared).expect("request").revision;
         controller.clear().expect("clear");
         assert!(!is_request_current(&shared, revision));
+    }
+
+    #[test]
+    fn hardware_mode_uses_copy_back_and_disabled_mode_stays_software_only() {
+        assert_eq!(thumbnail_hwdec(true), "auto-copy");
+        assert_eq!(thumbnail_hwdec(false), "no");
+    }
+
+    #[test]
+    fn zero_retry_attempts_are_rejected() {
+        let config = ThumbnailConfig {
+            max_request_attempts: 0,
+            ..ThumbnailConfig::default()
+        };
+
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn transient_source_failure_is_retried_once_with_default_policy() {
+        let config = ThumbnailConfig::default();
+        let reason = ThumbnailUnavailableReason::LoadFailed("temporary".to_owned());
+
+        assert!(source_retry_permitted(
+            &reason,
+            1,
+            config.max_source_attempts
+        ));
+        assert!(!source_retry_permitted(
+            &reason,
+            2,
+            config.max_source_attempts
+        ));
+    }
+
+    #[test]
+    fn permanent_source_failures_are_not_retried() {
+        let config = ThumbnailConfig::default();
+
+        assert!(!source_retry_permitted(
+            &ThumbnailUnavailableReason::NoVideo,
+            1,
+            config.max_source_attempts
+        ));
+        assert!(!source_retry_permitted(
+            &ThumbnailUnavailableReason::NotSeekable,
+            1,
+            config.max_source_attempts
+        ));
+    }
+
+    #[test]
+    fn transient_request_failures_are_retried_once_with_default_policy() {
+        let config = ThumbnailConfig::default();
+        let seek = ThumbnailUnavailableReason::SeekFailed("temporary".to_owned());
+        let screenshot = ThumbnailUnavailableReason::ScreenshotFailed("temporary".to_owned());
+
+        assert!(request_retry_permitted(
+            &seek,
+            1,
+            config.max_request_attempts
+        ));
+        assert!(request_retry_permitted(
+            &screenshot,
+            1,
+            config.max_request_attempts
+        ));
+        assert!(!request_retry_permitted(
+            &seek,
+            2,
+            config.max_request_attempts
+        ));
+    }
+
+    #[test]
+    fn invalid_frames_are_not_retried() {
+        let config = ThumbnailConfig::default();
+
+        assert!(!request_retry_permitted(
+            &ThumbnailUnavailableReason::InvalidFrame("bad frame".to_owned()),
+            1,
+            config.max_request_attempts
+        ));
+    }
+
+    #[test]
+    fn a_new_source_generation_cancels_source_retry_delay() {
+        let shared = Arc::new(SharedMailbox::default());
+        let controller = ThumbnailController {
+            shared: shared.clone(),
+        };
+        controller
+            .load_source(ThumbnailSource {
+                generation: 1,
+                url: "file:///first.mp4".to_owned(),
+                initial_position: 0.0,
+            })
+            .expect("first source");
+        let revision = lock_mailbox(&shared).source_revision;
+        controller
+            .load_source(ThumbnailSource {
+                generation: 2,
+                url: "file:///second.mp4".to_owned(),
+                initial_position: 0.0,
+            })
+            .expect("replacement source");
+
+        assert!(!wait_source_interruptible(
+            &shared,
+            Duration::from_secs(1),
+            revision
+        ));
     }
 
     #[test]

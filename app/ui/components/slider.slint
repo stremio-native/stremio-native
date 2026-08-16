@@ -207,9 +207,18 @@ export component Slider inherits Rectangle {
         }
     }
 
+    private property <length> tracked-mouse-x: slider-area.mouse-x;
+    changed tracked-mouse-x => {
+        if (slider-area.has-hover && !slider-area.pressed) {
+            root.hover-position-changed(root.value-at(slider-area.mouse-x));
+        }
+    }
+
     private property <bool> is-hovering: slider-area.has-hover;
     changed is-hovering => {
-        if (!self.is-hovering) {
+        if (self.is-hovering && !slider-area.pressed) {
+            root.hover-position-changed(root.value-at(slider-area.mouse-x));
+        } else if (!self.is-hovering) {
             root.hover-left();
         }
     }

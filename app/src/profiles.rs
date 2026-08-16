@@ -167,7 +167,9 @@ impl PinAttemptLimiter {
 }
 
 pub async fn list_profiles() -> Result<Vec<LocalProfile>, ProfileError> {
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let mut rows = conn
         .query(
             "SELECT id, name, avatar, role, pin_hash IS NOT NULL, created_at, updated_at
@@ -191,7 +193,9 @@ pub async fn list_profiles() -> Result<Vec<LocalProfile>, ProfileError> {
 }
 
 pub async fn active_profile_id() -> Result<ProfileId, ProfileError> {
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let mut rows = conn
         .query(
             "SELECT value FROM app_state WHERE key = 'active_profile_id'",
@@ -208,7 +212,9 @@ pub async fn active_profile_id() -> Result<ProfileId, ProfileError> {
 }
 
 pub async fn set_active_profile(profile_id: &ProfileId) -> Result<(), ProfileError> {
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let changed = conn
         .execute(
             "UPDATE app_state SET value = ? WHERE key = 'active_profile_id'
@@ -223,7 +229,9 @@ pub async fn set_active_profile(profile_id: &ProfileId) -> Result<(), ProfileErr
 }
 
 pub async fn setting(profile_id: &ProfileId, key: &str) -> Result<Option<String>, ProfileError> {
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let mut rows = conn
         .query(
             "SELECT value FROM profile_settings WHERE profile_id = ? AND key = ?",
@@ -242,7 +250,9 @@ pub async fn set_setting(
     key: &str,
     value: &str,
 ) -> Result<(), ProfileError> {
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     conn.execute(
         "INSERT INTO profile_settings(profile_id, key, value) VALUES (?, ?, ?)
          ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
@@ -253,7 +263,9 @@ pub async fn set_setting(
 }
 
 pub async fn delete_setting(profile_id: &ProfileId, key: &str) -> Result<(), ProfileError> {
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     conn.execute(
         "DELETE FROM profile_settings WHERE profile_id = ? AND key = ?",
         (profile_id.as_str(), key),
@@ -270,7 +282,9 @@ pub async fn create_profile(
     let name = validated_name(name)?;
     let id = ProfileId::new();
     let now = chrono::Utc::now().timestamp();
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     conn.execute(
         "INSERT INTO local_profiles(id, name, avatar, role, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)",
@@ -289,8 +303,9 @@ pub async fn create_profile(
 }
 
 pub async fn delete_profile(profile_id: &ProfileId) -> Result<(), ProfileError> {
-    let mut conn =
-        crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let mut conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let transaction = conn.transaction().await?;
     let mut active_rows = transaction
         .query(
@@ -388,7 +403,9 @@ pub async fn set_pin(profile_id: &ProfileId, pin: &str) -> Result<(), ProfileErr
         .hash_password(pin.as_bytes(), &salt)
         .map_err(|_| ProfileError::InvalidPin)?
         .to_string();
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let changed = conn
         .execute(
             "UPDATE local_profiles SET pin_hash = ?, updated_at = ? WHERE id = ?",
@@ -408,7 +425,9 @@ pub async fn verify_pin(
 ) -> Result<(), ProfileError> {
     limiter.preflight(profile_id)?;
     validate_pin(pin)?;
-    let conn = crate::db::get_conn().map_err(|error| ProfileError::Database(error.to_string()))?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|error| ProfileError::Database(error.to_string()))?;
     let mut rows = conn
         .query(
             "SELECT pin_hash FROM local_profiles WHERE id = ?",
@@ -422,6 +441,8 @@ pub async fn verify_pin(
         .transpose()?
         .flatten()
         .ok_or(ProfileError::IncorrectPin)?;
+    drop(rows);
+    drop(conn);
     let parsed = PasswordHash::new(&hash).map_err(|_| ProfileError::IncorrectPin)?;
     if Argon2::default()
         .verify_password(pin.as_bytes(), &parsed)

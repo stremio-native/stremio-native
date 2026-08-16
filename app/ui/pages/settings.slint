@@ -5,6 +5,7 @@ import { SelectField } from "../components/select.slint";
 import { NativeTextField } from "../components/text_input.slint";
 import { ToggleSwitch } from "../components/toggle.slint";
 import { Slider } from "../components/slider.slint";
+import { NumberInput } from "../components/number_input.slint";
 import { ColorInput, ColorPicker } from "../components/color_input.slint";
 import { ModalDialog } from "../components/overlays.slint";
 import { ProfileItem } from "../components/profile_picker.slint";
@@ -12,6 +13,67 @@ import { ProfileManager } from "../components/profile_manager.slint";
 import { IntegrationsManager } from "../components/integrations_manager.slint";
 import { OperationsManager } from "../components/operations_manager.slint";
 import { HotkeyEditor, HotkeyItem } from "../components/hotkey_editor.slint";
+
+export struct OmniphonyAudioSettings {
+    headphones: bool,
+    hrir-source: string,
+    sofa-path: string,
+    pinna-preset: string,
+    pinna-d-scale-pct: float,
+    pinna-depth-pct: float,
+    prtf-frequency-scale-pct: float,
+    prtf-depth-pct: float,
+    unit-scale-m: float,
+    head-radius-cm: float,
+    reflections-enabled: bool,
+    reflection-level: float,
+    room-width-m: float,
+    room-depth-m: float,
+    room-height-m: float,
+    reverb-enabled: bool,
+    reverb-level: float,
+    reverb-rt60-s: float,
+    reverb-predelay-ms: float,
+    air-absorption: bool,
+    tracking-address: string,
+    tracking-format: string,
+    tracking-smoothing: float,
+    tracking-invert: bool,
+    osc-rx-port: int,
+}
+
+component SettingsSlider inherits Rectangle {
+    in property <length> unit: 16px;
+    in-out property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <string> suffix: "";
+    callback committed(float);
+
+    width: 16 * root.unit;
+    height: 3.7 * root.unit;
+
+    VerticalLayout {
+        spacing: 0.25 * root.unit;
+        Text {
+            height: root.unit;
+            text: root.value + root.suffix;
+            color: Theme.text-secondary;
+            font-size: 0.82 * root.unit;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Slider {
+            width: parent.width;
+            value <=> root.value;
+            minimum: root.minimum;
+            maximum: root.maximum;
+            step: root.step;
+            released(value) => { root.committed(value); }
+        }
+    }
+}
 
 
 component SettingsSection inherits VerticalLayout {
@@ -175,7 +237,10 @@ export component SettingsPage inherits Rectangle {
     in-out property <color> subtitles-outline-color: #000000ff;
     in-out property <bool> ass-subtitles-styling: false;
     in-out property <string> audio-language: "English";
-    in-out property <bool> surround-sound: false;
+    in-out property <string> spatial-audio-mode: "Disabled";
+    in property <string> spatial-audio-status: "Spatial audio disabled";
+    in property <bool> omniphony-audio-available: false;
+    in property <OmniphonyAudioSettings> omniphony-audio;
     in-out property <string> seek-short-duration: "3";
     in-out property <string> next-video-popup-duration: "35";
     in-out property <string> external-player: "Built-in player";
@@ -185,11 +250,16 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> streaming-transcode-profile: "Disabled";
     private property <bool> color-dialog-open: false;
     private property <int> color-dialog-kind: 0;
-    private property <color> color-dialog-value: #ffffffff;
+    private property <color> color-dialog-value: Theme.primary-accent;
     private property <bool> subtitles-font-open: false;
     private property <bool> subtitles-size-open: false;
     private property <bool> subtitles-offset-open: false;
     private property <bool> audio-language-open: false;
+    private property <bool> spatial-audio-mode-open: false;
+    private property <bool> omniphony-output-mode-open: false;
+    private property <bool> omniphony-hrir-source-open: false;
+    private property <bool> omniphony-pinna-preset-open: false;
+    private property <bool> omniphony-tracking-format-open: false;
     private property <bool> seek-duration-open: false;
     private property <bool> seek-short-duration-open: false;
     private property <bool> next-video-popup-duration-open: false;
@@ -198,6 +268,7 @@ export component SettingsPage inherits Rectangle {
     private property <bool> torrent-profile-open: false;
 
     callback open-external-url(string);
+    callback open-theme-studio;
     callback apply-cache-settings(float);
     callback change-interface-language(string);
     callback change-subtitles-language(string);
@@ -239,7 +310,11 @@ export component SettingsPage inherits Rectangle {
     callback change-subtitles-outline-color(color);
     callback change-ass-subtitles-styling(bool);
     callback change-audio-language(string);
-    callback change-surround-sound(bool);
+    callback change-spatial-audio-mode(string);
+    callback change-omniphony-string(string, string);
+    callback change-omniphony-number(string, float);
+    callback change-omniphony-bool(string, bool);
+    callback recenter-omniphony-head();
     callback change-seek-short-duration(string);
     callback change-next-video-popup-duration(string);
     callback change-external-player(string);
@@ -653,6 +728,18 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
+                        label: @tr("Theme Customization & Colors");
+                        description: @tr("Customize UI colors, theme presets, and component styles.");
+                        PillButton {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            label: @tr("Open Theme Studio");
+                            outlined: true;
+                            clicked => { root.open-theme-studio(); }
+                        }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
                         label: @tr("SETTINGS_FULLSCREEN_EXIT" => "Escape key exit full screen");
                         ToggleSwitch { unit: root.unit; checked: root.esc-exit-fullscreen; toggled => { root.esc-exit-fullscreen = self.checked; } }
                     }
@@ -733,6 +820,7 @@ export component SettingsPage inherits Rectangle {
                         ColorInput {
                             width: 16 * root.unit;
                             unit: root.unit;
+                            use-popup: false;
                             value: root.subtitles-text-color;
                             open-requested(value) => {
                                 root.color-dialog-kind = 1;
@@ -747,6 +835,7 @@ export component SettingsPage inherits Rectangle {
                         ColorInput {
                             width: 16 * root.unit;
                             unit: root.unit;
+                            use-popup: false;
                             value: root.subtitles-background-color;
                             open-requested(value) => {
                                 root.color-dialog-kind = 2;
@@ -761,6 +850,7 @@ export component SettingsPage inherits Rectangle {
                         ColorInput {
                             width: 16 * root.unit;
                             unit: root.unit;
+                            use-popup: false;
                             value: root.subtitles-outline-color;
                             open-requested(value) => {
                                 root.color-dialog-kind = 3;
@@ -807,11 +897,419 @@ export component SettingsPage inherits Rectangle {
                     }
                     SettingsOption {
                         unit: root.unit;
-                        label: @tr("SETTINGS_SURROUND_SOUND" => "Surround sound");
+                        label: @tr("Spatial Audio Mode");
+                        description: root.spatial-audio-status;
+                        SelectField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            field-width: 16 * root.unit;
+                            value: root.spatial-audio-mode;
+                            options: ["Disabled", "Omniphony 3D", "Binaural HRTF", "7.1 Virtual Surround"];
+                            option-enabled: [true, root.omniphony-audio-available, true, true];
+                            open: root.spatial-audio-mode-open;
+                            toggle => { root.spatial-audio-mode-open = !root.spatial-audio-mode-open; }
+                            selected(value) => {
+                                root.spatial-audio-mode-open = false;
+                                root.spatial-audio-mode = value;
+                                root.change-spatial-audio-mode(value);
+                            }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio-available) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Omniphony output");
+                        description: @tr("Speaker-array rendering or two-channel binaural headphone rendering.");
+                        SelectField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            field-width: 16 * root.unit;
+                            value: root.omniphony-audio.headphones ? @tr("Headphones") : @tr("Speakers");
+                            options: [@tr("Headphones"), @tr("Speakers")];
+                            open: root.omniphony-output-mode-open;
+                            toggle => { root.omniphony-output-mode-open = !root.omniphony-output-mode-open; }
+                            selected(value) => {
+                                root.omniphony-output-mode-open = false;
+                                root.change-omniphony-bool("headphones", value == @tr("Headphones"));
+                            }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio-available && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Headphone HRTF");
+                        description: @tr("Select a measured, analytic, parametric, or personalized HRTF.");
+                        SelectField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            field-width: 16 * root.unit;
+                            value: root.omniphony-audio.hrir-source == "synthetic" ? @tr("Synthetic")
+                                : (root.omniphony-audio.hrir-source == "pinna" ? @tr("Pinna (parametric)")
+                                : (root.omniphony-audio.hrir-source == "prtf" ? @tr("PRTF (Spagnol)")
+                                : (root.omniphony-audio.hrir-source == "sofa" ? @tr("SOFA file")
+                                : @tr("KEMAR (measured)"))));
+                            options: [@tr("KEMAR (measured)"), @tr("Synthetic"), @tr("Pinna (parametric)"), @tr("PRTF (Spagnol)"), @tr("SOFA file")];
+                            open: root.omniphony-hrir-source-open;
+                            toggle => { root.omniphony-hrir-source-open = !root.omniphony-hrir-source-open; }
+                            selected(value) => {
+                                root.omniphony-hrir-source-open = false;
+                                root.change-omniphony-string("hrir_source",
+                                    value == @tr("Synthetic") ? "synthetic"
+                                    : (value == @tr("Pinna (parametric)") ? "pinna"
+                                    : (value == @tr("PRTF (Spagnol)") ? "prtf"
+                                    : (value == @tr("SOFA file") ? "sofa" : "saf"))));
+                            }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "sofa") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SOFA HRTF file");
+                        description: @tr("Enter the full path to a local .sofa file and press Enter.");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text: root.omniphony-audio.sofa-path;
+                            placeholder-text: @tr("Path to .sofa file");
+                            accepted => { root.change-omniphony-string("sofa_path", self.text); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "sofa") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Public HRTF library");
+                        description: @tr("Browse the SOFA Acoustics database in your browser, then use a downloaded file above.");
+                        PillButton {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            label: @tr("Open SOFA database");
+                            outlined: true;
+                            clicked => { root.open-external-url("https://www.sofacoustics.org/data/"); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "pinna") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Pinna preset");
+                        SelectField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            field-width: 16 * root.unit;
+                            value: root.omniphony-audio.pinna-preset == "rd" ? "RD" : "PB & NH";
+                            options: ["PB & NH", "RD"];
+                            open: root.omniphony-pinna-preset-open;
+                            toggle => { root.omniphony-pinna-preset-open = !root.omniphony-pinna-preset-open; }
+                            selected(value) => {
+                                root.omniphony-pinna-preset-open = false;
+                                root.change-omniphony-string("pinna_preset", value == "RD" ? "rd" : "pbnh");
+                            }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "pinna") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Pinna elevation factor");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.pinna-d-scale-pct;
+                            minimum: 50;
+                            maximum: 150;
+                            step: 5;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("pinna_d_scale_pct", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "pinna") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Pinna echo depth");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.pinna-depth-pct;
+                            minimum: 0;
+                            maximum: 100;
+                            step: 5;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("pinna_depth_pct", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "prtf") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("PRTF notch frequency scale");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.prtf-frequency-scale-pct;
+                            minimum: 50;
+                            maximum: 150;
+                            step: 5;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("prtf_frequency_scale_pct", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.hrir-source == "prtf") : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("PRTF pinna coloration");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.prtf-depth-pct;
+                            minimum: 0;
+                            maximum: 100;
+                            step: 5;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("prtf_depth_pct", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Head radius");
+                        description: @tr("Half the listener's ear-to-ear distance for the ITD model.");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.head-radius-cm;
+                            minimum: 5;
+                            maximum: 15;
+                            step: 0.1;
+                            suffix: " cm";
+                            committed(value) => { root.change-omniphony-number("head_radius_cm", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Distance scale");
+                        description: @tr("Metres represented by one ADM unit.");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.unit-scale-m;
+                            minimum: 0.1;
+                            maximum: 10;
+                            step: 0.1;
+                            suffix: " m/unit";
+                            committed(value) => { root.change-omniphony-number("unit_scale_m", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Air absorption");
+                        description: @tr("Roll off high frequencies as sources move farther away.");
                         ToggleSwitch {
                             unit: root.unit;
-                            checked: root.surround-sound;
-                            toggled => { root.change-surround-sound(self.checked); }
+                            checked: root.omniphony-audio.air-absorption;
+                            toggled => { root.change-omniphony-bool("air_absorption", self.checked); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Early reflections");
+                        description: @tr("Use six first-order listening-room reflections for externalization.");
+                        ToggleSwitch {
+                            unit: root.unit;
+                            checked: root.omniphony-audio.reflections-enabled;
+                            toggled => { root.change-omniphony-bool("reflections_enabled", self.checked); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reflections-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Reflection level");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.reflection-level * 100;
+                            minimum: 0;
+                            maximum: 100;
+                            step: 1;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("reflection_level", value / 100); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reflections-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Listening room width");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.room-width-m;
+                            minimum: 1;
+                            maximum: 20;
+                            step: 0.1;
+                            suffix: " m";
+                            committed(value) => { root.change-omniphony-number("room_width_m", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reflections-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Listening room depth");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.room-depth-m;
+                            minimum: 1;
+                            maximum: 20;
+                            step: 0.1;
+                            suffix: " m";
+                            committed(value) => { root.change-omniphony-number("room_depth_m", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reflections-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Listening room height");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.room-height-m;
+                            minimum: 1;
+                            maximum: 20;
+                            step: 0.1;
+                            suffix: " m";
+                            committed(value) => { root.change-omniphony-number("room_height_m", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Late reverb");
+                        description: @tr("Add a short listening-room tail to improve externalization and distance cues.");
+                        ToggleSwitch {
+                            unit: root.unit;
+                            checked: root.omniphony-audio.reverb-enabled;
+                            toggled => { root.change-omniphony-bool("reverb_enabled", self.checked); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reverb-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Reverb level");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.reverb-level * 100;
+                            minimum: 0;
+                            maximum: 100;
+                            step: 1;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("reverb_level", value / 100); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reverb-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Reverb decay time (RT60)");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.reverb-rt60-s;
+                            minimum: 0.1;
+                            maximum: 3;
+                            step: 0.05;
+                            suffix: " s";
+                            committed(value) => { root.change-omniphony-number("reverb_rt60_s", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones && root.omniphony-audio.reverb-enabled) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Reverb pre-delay");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.reverb-predelay-ms;
+                            minimum: 0;
+                            maximum: 100;
+                            step: 1;
+                            suffix: " ms";
+                            committed(value) => { root.change-omniphony-number("reverb_predelay_ms", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Head-tracking OSC address");
+                        description: @tr("Leave empty to disable tracking. Sensors2OSC typically uses /gamerotationvector.");
+                        NativeTextField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            text: root.omniphony-audio.tracking-address;
+                            placeholder-text: "/gamerotationvector";
+                            accepted => { root.change-omniphony-string("tracking_address", self.text); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Head-tracking format");
+                        SelectField {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            field-width: 16 * root.unit;
+                            value: root.omniphony-audio.tracking-format == "quat" ? @tr("Quaternion")
+                                : (root.omniphony-audio.tracking-format == "rotvec" ? @tr("Rotation vector")
+                                : (root.omniphony-audio.tracking-format == "euler" ? @tr("Euler") : @tr("Auto")));
+                            options: [@tr("Auto"), @tr("Quaternion"), @tr("Rotation vector"), @tr("Euler")];
+                            open: root.omniphony-tracking-format-open;
+                            toggle => { root.omniphony-tracking-format-open = !root.omniphony-tracking-format-open; }
+                            selected(value) => {
+                                root.omniphony-tracking-format-open = false;
+                                root.change-omniphony-string("tracking_format",
+                                    value == @tr("Quaternion") ? "quat"
+                                    : (value == @tr("Rotation vector") ? "rotvec"
+                                    : (value == @tr("Euler") ? "euler" : "auto")));
+                            }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Head-tracking smoothing");
+                        SettingsSlider {
+                            unit: root.unit;
+                            value: root.omniphony-audio.tracking-smoothing * 100;
+                            minimum: 0;
+                            maximum: 99;
+                            step: 1;
+                            suffix: "%";
+                            committed(value) => { root.change-omniphony-number("tracking_smoothing", value / 100); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Invert head rotation");
+                        ToggleSwitch {
+                            unit: root.unit;
+                            checked: root.omniphony-audio.tracking-invert;
+                            toggled => { root.change-omniphony-bool("tracking_invert", self.checked); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Head-tracking receive port");
+                        description: @tr("UDP port used by Sensors2OSC and Omniphony live controls.");
+                        NumberInput {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            value: root.omniphony-audio.osc-rx-port;
+                            has-explicit-minimum: true;
+                            minimum: 1;
+                            has-maximum: true;
+                            maximum: 65535;
+                            submitted(value) => { root.change-omniphony-number("osc_rx_port", value); }
+                        }
+                    }
+
+                    if (root.spatial-audio-mode == "Omniphony 3D" && root.omniphony-audio.headphones) : SettingsOption {
+                        unit: root.unit;
+                        label: @tr("Head-tracking center");
+                        description: @tr("Look toward the screen, then set the current orientation as forward.");
+                        PillButton {
+                            width: 16 * root.unit;
+                            unit: root.unit;
+                            label: @tr("Recenter");
+                            outlined: true;
+                            enabled: root.omniphony-audio.tracking-address != "";
+                            clicked => { root.recenter-omniphony-head(); }
                         }
                     }
 
@@ -1101,7 +1599,7 @@ export component SettingsPage inherits Rectangle {
                                     border-radius: 0.25 * root.unit;
                                     drop-shadow-blur: 0px;
                                     drop-shadow-offset-y: 3px;
-                                    drop-shadow-color: #ffffff1a;
+                                    drop-shadow-color: Theme.card-border;
                                     HorizontalLayout {
                                         padding-left: root.unit;
                                         padding-right: root.unit;
@@ -1161,7 +1659,7 @@ export component SettingsPage inherits Rectangle {
                                     border-radius: 0.25 * root.unit;
                                     drop-shadow-blur: 0px;
                                     drop-shadow-offset-y: 3px;
-                                    drop-shadow-color: #ffffff1a;
+                                    drop-shadow-color: Theme.card-border;
                                     HorizontalLayout {
                                         padding-left: root.unit;
                                         padding-right: root.unit;
@@ -1217,7 +1715,7 @@ export component SettingsPage inherits Rectangle {
                                     border-radius: 0.25 * root.unit;
                                     drop-shadow-blur: 0px;
                                     drop-shadow-offset-y: 3px;
-                                    drop-shadow-color: #ffffff1a;
+                                    drop-shadow-color: Theme.card-border;
                                     HorizontalLayout {
                                         padding-left: root.unit;
                                         padding-right: root.unit;
@@ -1273,6 +1771,9 @@ export component SettingsPage inherits Rectangle {
 
         ColorPicker {
             unit: root.unit;
+            // Subtitle colours are single colours; a gradient tab here would
+            // offer something the player can't render.
+            allow-gradient: false;
             value: root.color-dialog-value;
             input(value) => { root.color-dialog-value = value; }
         }

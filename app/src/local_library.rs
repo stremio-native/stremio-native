@@ -112,7 +112,9 @@ impl LocalLibraryManager {
             return Err(LocalLibraryError::InvalidRoot);
         }
         let id = uuid::Uuid::new_v4().to_string();
-        let conn = crate::db::get_conn().map_err(|_| LocalLibraryError::Database)?;
+        let conn = crate::db::get_conn()
+            .await
+            .map_err(|_| LocalLibraryError::Database)?;
         conn.execute(
             "INSERT INTO local_roots(id, path, enabled, recursive) VALUES (?, ?, 1, 1)
              ON CONFLICT(path) DO UPDATE SET enabled = 1",
@@ -120,6 +122,7 @@ impl LocalLibraryManager {
         )
         .await
         .map_err(|_| LocalLibraryError::Database)?;
+        drop(conn);
         let root = list_roots()
             .await?
             .into_iter()
@@ -147,7 +150,10 @@ impl LocalLibraryManager {
     }
 
     pub fn watch_root(&self, root: LocalRoot) -> Result<LocalWatcher, LocalLibraryError> {
-        let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<()>(64);
+        let (events_tx, mut events_rx) = hotpath::channel!(
+            tokio::sync::mpsc::channel::<()>(64),
+            label = "local_library_events"
+        );
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 if event.is_ok() {
@@ -230,7 +236,9 @@ impl Drop for LocalWatcher {
 }
 
 pub async fn list_roots() -> Result<Vec<LocalRoot>, LocalLibraryError> {
-    let conn = crate::db::get_conn().map_err(|_| LocalLibraryError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| LocalLibraryError::Database)?;
     let mut rows = conn
         .query(
             "SELECT id, path, enabled, recursive, last_scan_at, last_error
@@ -257,7 +265,9 @@ pub async fn list_roots() -> Result<Vec<LocalRoot>, LocalLibraryError> {
 }
 
 pub async fn list_items() -> Result<Vec<LocalMediaItem>, LocalLibraryError> {
-    let conn = crate::db::get_conn().map_err(|_| LocalLibraryError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| LocalLibraryError::Database)?;
     let mut rows = conn
         .query(
             "SELECT id, root_id, path, size_bytes, modified_at, fingerprint,
@@ -544,7 +554,9 @@ fn inspect_media_file(root: &LocalRoot, path: &Path) -> Result<LocalMediaItem, L
 }
 
 async fn persist_scan(root: &LocalRoot, items: &[LocalMediaItem]) -> Result<(), LocalLibraryError> {
-    let mut conn = crate::db::get_conn().map_err(|_| LocalLibraryError::Database)?;
+    let mut conn = crate::db::get_conn()
+        .await
+        .map_err(|_| LocalLibraryError::Database)?;
     let transaction = conn
         .transaction()
         .await
@@ -626,7 +638,9 @@ pub async fn repair_index() -> Result<usize, LocalLibraryError> {
     if missing.is_empty() {
         return Ok(0);
     }
-    let mut conn = crate::db::get_conn().map_err(|_| LocalLibraryError::Database)?;
+    let mut conn = crate::db::get_conn()
+        .await
+        .map_err(|_| LocalLibraryError::Database)?;
     let transaction = conn
         .transaction()
         .await

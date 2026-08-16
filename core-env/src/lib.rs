@@ -4,10 +4,13 @@ use http::Request;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::OnceLock;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{
+    Arc, LazyLock, OnceLock, RwLock,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{Receiver, SyncSender, TrySendError},
+};
 use tokio::runtime::Handle;
-use tokio::sync::{OnceCell, mpsc};
+use tokio::sync::Mutex as AsyncMutex;
 
 use stremio_core::{
     constants::PROFILE_STORAGE_KEY,
@@ -22,7 +25,10 @@ static TOKIO_HANDLE: OnceLock<Handle> = OnceLock::new();
 #[cfg(feature = "in-process")]
 static IN_PROCESS_ROUTER: OnceLock<axum::Router> = OnceLock::new();
 type SequentialFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-static SEQUENTIAL_EXECUTOR: OnceLock<mpsc::UnboundedSender<SequentialFuture>> = OnceLock::new();
+const SEQUENTIAL_QUEUE_CAPACITY: usize = 64;
+const SEQUENTIAL_WORKER_STACK_BYTES: usize = 512 * 1024;
+static SEQUENTIAL_EXECUTOR: OnceLock<SyncSender<SequentialFuture>> = OnceLock::new();
+static SEQUENTIAL_SATURATED: AtomicBool = AtomicBool::new(false);
 
 /// Registers the application runtime so core work can be scheduled safely from
 /// native callback threads such as the libmpv actor.
@@ -41,13 +47,20 @@ pub fn spawn_on_runtime(future: impl Future<Output = ()> + Send + 'static) {
     }
 }
 
-fn start_sequential_executor(handle: &Handle) -> mpsc::UnboundedSender<SequentialFuture> {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    drop(handle.spawn(run_sequential(receiver)));
+fn start_sequential_executor(handle: &Handle) -> SyncSender<SequentialFuture> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(SEQUENTIAL_QUEUE_CAPACITY);
+    let handle = handle.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("stremio-core-sequential".to_owned())
+        .stack_size(SEQUENTIAL_WORKER_STACK_BYTES)
+        .spawn(move || run_sequential(&handle, receiver))
+    {
+        tracing::error!(%error, "could not start sequential core executor");
+    }
     sender
 }
 
-fn sequential_executor() -> Option<&'static mpsc::UnboundedSender<SequentialFuture>> {
+fn sequential_executor() -> Option<&'static SyncSender<SequentialFuture>> {
     if let Some(sender) = SEQUENTIAL_EXECUTOR.get() {
         return Some(sender);
     }
@@ -59,9 +72,33 @@ fn sequential_executor() -> Option<&'static mpsc::UnboundedSender<SequentialFutu
     Some(SEQUENTIAL_EXECUTOR.get_or_init(|| start_sequential_executor(&handle)))
 }
 
-async fn run_sequential(mut receiver: mpsc::UnboundedReceiver<SequentialFuture>) {
-    while let Some(future) = receiver.recv().await {
-        future.await;
+fn run_sequential(handle: &Handle, receiver: Receiver<SequentialFuture>) {
+    while let Ok(future) = receiver.recv() {
+        handle.block_on(future);
+    }
+}
+
+fn submit_sequential(
+    sender: &SyncSender<SequentialFuture>,
+    future: SequentialFuture,
+) -> Result<(), SequentialFuture> {
+    match sender.try_send(future) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(future)) => {
+            if SEQUENTIAL_SATURATED
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                tracing::warn!(
+                    capacity = SEQUENTIAL_QUEUE_CAPACITY,
+                    "sequential core executor saturated; applying producer backpressure"
+                );
+            }
+            let result = sender.send(future).map_err(|error| error.0);
+            SEQUENTIAL_SATURATED.store(false, Ordering::Release);
+            result
+        }
+        Err(TrySendError::Disconnected(future)) => Err(future),
     }
 }
 
@@ -207,8 +244,10 @@ impl DesktopEnv {
     }
 }
 
-static DB: OnceLock<turso::Database> = OnceLock::new();
-static DB_CONNECTION: OnceCell<turso::Connection> = OnceCell::const_new();
+static DB: OnceLock<RwLock<Option<turso::Database>>> = OnceLock::new();
+static DB_CONNECTION: LazyLock<RwLock<Option<turso::Connection>>> =
+    LazyLock::new(|| RwLock::new(None));
+static DB_CONNECTION_INIT: AsyncMutex<()> = AsyncMutex::const_new(());
 static CREDENTIAL_STORE: OnceLock<Arc<dyn credential_store::CredentialStore>> = OnceLock::new();
 static ACTIVE_PROFILE_ID: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("default".to_owned()));
@@ -427,31 +466,60 @@ impl std::error::Error for DatabaseAlreadyInstalled {}
 /// Shares the application's Turso database and its internal connection pool
 /// with the Stremio core storage environment.
 pub fn install_database(database: turso::Database) -> Result<(), DatabaseAlreadyInstalled> {
-    DB.set(database).map_err(|_| DatabaseAlreadyInstalled)
+    DB.set(RwLock::new(Some(database)))
+        .map_err(|_| DatabaseAlreadyInstalled)
 }
 
 pub(crate) async fn get_db_conn() -> Result<turso::Connection, EnvError> {
-    let conn = DB_CONNECTION
-        .get_or_try_init(|| async {
-            let db = DB.get().ok_or_else(|| {
-                EnvError::Other(
-                    "application database must be installed before core storage is used".to_owned(),
-                )
-            })?;
-            let conn = db.connect().map_err(|e| EnvError::Other(e.to_string()))?;
-            conn.execute_batch(
-                "PRAGMA synchronous = NORMAL;
-                 PRAGMA temp_store = MEMORY;
-                 PRAGMA cache_size = -10000;
-                 PRAGMA busy_timeout = 5000;",
-            )
-            .await
-            .map_err(|e| EnvError::Other(e.to_string()))?;
-            Ok::<turso::Connection, EnvError>(conn)
-        })
-        .await?;
+    if let Some(conn) = read_database_slot(&DB_CONNECTION) {
+        return Ok(conn);
+    }
 
-    Ok(conn.clone())
+    let _initializing = DB_CONNECTION_INIT.lock().await;
+    if let Some(conn) = read_database_slot(&DB_CONNECTION) {
+        return Ok(conn);
+    }
+
+    let db = DB.get().and_then(read_database_slot).ok_or_else(|| {
+        EnvError::Other(
+            "application database must be installed before core storage is used".to_owned(),
+        )
+    })?;
+    let conn = db.connect().map_err(|e| EnvError::Other(e.to_string()))?;
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA cache_size = -10000;
+         PRAGMA busy_timeout = 1000;",
+    )
+    .await
+    .map_err(|e| EnvError::Other(e.to_string()))?;
+    *DB_CONNECTION
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conn.clone());
+
+    Ok(conn)
+}
+
+fn read_database_slot<T: Clone>(slot: &RwLock<Option<T>>) -> Option<T> {
+    slot.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Prevents new core-storage database work and releases its retained handles.
+pub async fn shutdown_database() {
+    let _initializing = DB_CONNECTION_INIT.lock().await;
+    DB_CONNECTION
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(database) = DB.get() {
+        database
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
 }
 
 /// Runs bounded age/LRU maintenance for the shared HTTP response cache.
@@ -571,11 +639,11 @@ impl Env for DesktopEnv {
         let future: SequentialFuture = Box::pin(future);
         match sequential_executor() {
             Some(sender) => {
-                if let Err(error) = sender.send(future) {
+                if let Err(future) = submit_sequential(sender, future) {
                     tracing::error!(
                         "sequential core executor stopped; scheduling the pending effect directly"
                     );
-                    spawn_on_runtime(error.0);
+                    spawn_on_runtime(future);
                 }
             }
             None => {
@@ -610,14 +678,18 @@ impl Env for DesktopEnv {
 
 #[cfg(test)]
 mod tests {
-    use super::{SequentialFuture, run_sequential, sanitized_url_for_log};
-    use std::sync::{Arc, Mutex};
+    use super::{SequentialFuture, run_sequential, sanitized_url_for_log, submit_sequential};
+    use std::{
+        sync::{Arc, Mutex, mpsc},
+        time::Duration,
+    };
 
     #[tokio::test]
     async fn sequential_executor_awaits_each_effect_in_submission_order() {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<SequentialFuture>();
+        let (sender, receiver) = mpsc::sync_channel::<SequentialFuture>(2);
         let order = Arc::new(Mutex::new(Vec::new()));
-        let worker = tokio::spawn(run_sequential(receiver));
+        let handle = tokio::runtime::Handle::current();
+        let worker = std::thread::spawn(move || run_sequential(&handle, receiver));
 
         let first_order = order.clone();
         assert!(
@@ -638,8 +710,67 @@ mod tests {
         );
         drop(sender);
 
-        worker.await.unwrap();
+        worker.join().unwrap();
         assert_eq!(*order.lock().unwrap(), vec![1, 2]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_executor_blocks_the_third_producer_without_dropping_work() {
+        let (sender, receiver) = mpsc::sync_channel::<SequentialFuture>(1);
+        let handle = tokio::runtime::Handle::current();
+        let worker = std::thread::spawn(move || run_sequential(&handle, receiver));
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        assert!(
+            sender
+                .send(Box::pin(async move {
+                    started_sender.send(()).expect("started receiver");
+                    release_receiver.await.expect("release");
+                }))
+                .is_ok()
+        );
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first effect started");
+        assert!(sender.send(Box::pin(async {})).is_ok());
+
+        let third_sender = sender.clone();
+        let (submitted_sender, submitted_receiver) = mpsc::sync_channel(0);
+        let producer = std::thread::spawn(move || {
+            assert!(submit_sequential(&third_sender, Box::pin(async {})).is_ok());
+            submitted_sender.send(()).expect("submission receiver");
+        });
+
+        assert!(
+            submitted_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+        release_sender.send(()).expect("release worker");
+        submitted_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer unblocked");
+        producer.join().expect("producer");
+        drop(sender);
+        worker.join().expect("worker");
+    }
+
+    #[tokio::test]
+    async fn stopped_worker_returns_the_effect_for_direct_runtime_fallback() {
+        let (sender, receiver) = mpsc::sync_channel::<SequentialFuture>(1);
+        drop(receiver);
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_in_future = ran.clone();
+        let future = submit_sequential(
+            &sender,
+            Box::pin(async move {
+                ran_in_future.store(true, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )
+        .expect_err("disconnected worker");
+
+        future.await;
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

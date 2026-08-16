@@ -112,7 +112,9 @@ fn tidb_reference(profile_id: &str) -> Result<CredentialRef, CredentialError> {
 }
 
 async fn integration_configured(profile_id: &str) -> Result<bool, CredentialError> {
-    let conn = crate::db::get_conn().map_err(|_| CredentialError::OperationFailed)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| CredentialError::OperationFailed)?;
     let mut rows = conn
         .query(
             "SELECT enabled FROM profile_integrations
@@ -134,7 +136,9 @@ async fn persist_integration(
     reference: &CredentialRef,
     enabled: bool,
 ) -> Result<(), CredentialError> {
-    let conn = crate::db::get_conn().map_err(|_| CredentialError::OperationFailed)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| CredentialError::OperationFailed)?;
     conn.execute(
         "INSERT INTO profile_integrations(
             profile_id, provider, enabled, credential_ref, metadata_json

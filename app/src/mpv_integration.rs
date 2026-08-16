@@ -12,9 +12,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use playback_mpv::{
-    EndReason, HdrMode, PlaybackCommand, PlaybackController, PlaybackEvent, PlaybackRuntime,
-    PlaybackState, PlayerConfig, RenderContext, RenderOutcome, RenderSource, ThumbnailConfig,
-    ThumbnailRuntime, ThumbnailSource,
+    EndReason, HdrMode, OmniphonyAudioSettings, PlaybackCommand, PlaybackController, PlaybackEvent,
+    PlaybackRuntime, PlaybackState, PlayerConfig, PreviewConfig, PreviewRuntime, RenderContext,
+    RenderOutcome, RenderSource, SpatialAudioMode, ThumbnailConfig, ThumbnailRuntime,
+    ThumbnailSource,
 };
 use slint::{
     BorrowedOpenGLTextureBuilder, BorrowedOpenGLTextureOrigin, ComponentHandle, ModelRc,
@@ -552,6 +553,63 @@ struct PlayerEpisodeSelectorProjection {
     episodes: Vec<PlayerEpisodeProjection>,
 }
 
+#[cfg_attr(feature = "profiling", hotpath::measure)]
+pub(crate) fn format_player_title(
+    player: &Player,
+    library: Option<&stremio_core::types::library::LibraryBucket>,
+) -> Option<String> {
+    let selected = player.selected.as_ref()?;
+    let stream_request = selected.stream_request.as_ref()?;
+    let video_id = &stream_request.path.id;
+
+    if let Some(Loadable::Ready(meta_item)) =
+        player.meta_item.as_ref().and_then(|m| m.content.as_ref())
+    {
+        let meta_name = &meta_item.preview.name;
+        if meta_item.preview.behavior_hints.default_video_id.is_some() {
+            return Some(meta_name.clone());
+        }
+        if let Some(video) = meta_item.videos.iter().find(|v| v.id == *video_id) {
+            if let Some(series_info) = &video.series_info {
+                if !video.title.is_empty() && video.title != *meta_name {
+                    return Some(format!(
+                        "{} - {} ({}x{})",
+                        meta_name, video.title, series_info.season, series_info.episode
+                    ));
+                } else {
+                    return Some(format!(
+                        "{} ({}x{})",
+                        meta_name, series_info.season, series_info.episode
+                    ));
+                }
+            } else if !video.title.is_empty() && video.title != *meta_name {
+                return Some(format!("{} - {}", meta_name, video.title));
+            } else {
+                return Some(meta_name.clone());
+            }
+        }
+        return Some(meta_name.clone());
+    }
+
+    if let Some(library) = library {
+        let meta_id = stream_request
+            .path
+            .id
+            .split(':')
+            .next()
+            .unwrap_or(&stream_request.path.id);
+        if let Some(lib_item) = library
+            .items
+            .get(&stream_request.path.id)
+            .or_else(|| library.items.get(meta_id))
+        {
+            return Some(lib_item.name.clone());
+        }
+    }
+
+    None
+}
+
 fn selected_player_video_id(player: &Player) -> String {
     player
         .selected
@@ -609,7 +667,21 @@ fn player_episode_selector_projection(
     let next_episode_title = player
         .next_video
         .as_ref()
-        .map(|video| video.title.clone())
+        .map(|video| {
+            let base_title = if video.title.is_empty() {
+                format!(
+                    "Episode {}",
+                    video.series_info.as_ref().map(|i| i.episode).unwrap_or(1)
+                )
+            } else {
+                video.title.clone()
+            };
+            if let Some(info) = &video.series_info {
+                format!("{base_title} (S{}E{})", info.season, info.episode)
+            } else {
+                base_title
+            }
+        })
         .unwrap_or_default();
     let next_episode_thumbnail_url = player
         .next_video
@@ -779,6 +851,7 @@ fn apply_player_episode_selector(
     ui.set_player_series_runtime(projection.series_runtime.into());
     ui.set_player_series_release_year(projection.series_release_year.into());
     ui.set_player_series_description(projection.series_description.into());
+    ui.set_player_series_logo_url(projection.series_logo_url.into());
     ui.set_player_series_logo(series_logo);
     ui.set_player_active_season_watched(projection.active_season_watched);
 }
@@ -797,6 +870,7 @@ fn clear_player_episode_selector(ui: &MainWindow) {
     ui.set_player_series_runtime("".into());
     ui.set_player_series_release_year("".into());
     ui.set_player_series_description("".into());
+    ui.set_player_series_logo_url("".into());
     ui.set_player_series_logo(slint::Image::default());
     ui.set_player_active_season_watched(false);
     ui.set_player_show_playlist_drawer(false);
@@ -869,6 +943,7 @@ struct StatisticsPoll {
 #[derive(Clone)]
 pub struct NativePlaybackBridge {
     controller: PlaybackController,
+    omniphony_decoder_available: bool,
     core: Arc<Runtime<DesktopEnv, AppModel>>,
     state: SharedPlaybackState,
     session: Arc<Mutex<SessionState>>,
@@ -879,6 +954,7 @@ pub struct NativePlaybackBridge {
     runtime_handle: tokio::runtime::Handle,
     shaders: SharedShaderCoordinator,
     thumbnails: crate::thumbnail_preview::ThumbnailPreview,
+    previews: crate::preview_player::PreviewPlayer,
     capture_directory: Arc<PathBuf>,
     capture_sequence: Arc<AtomicU64>,
 }
@@ -886,6 +962,7 @@ pub struct NativePlaybackBridge {
 pub struct NativePlayback {
     runtime: PlaybackRuntime,
     thumbnail_runtime: Option<ThumbnailRuntime>,
+    preview_runtime: Option<PreviewRuntime>,
     bridge: NativePlaybackBridge,
     event_task: tokio::task::JoinHandle<()>,
 }
@@ -962,20 +1039,50 @@ impl NativePlayback {
             ui.as_weak(),
         );
         let thumbnail_events = thumbnails.clone();
-        let thumbnail_runtime =
-            match ThumbnailRuntime::start(ThumbnailConfig::default(), move |event| {
+        let thumbnail_runtime = match ThumbnailRuntime::start(
+            ThumbnailConfig {
+                hardware_decoding,
+                ..ThumbnailConfig::default()
+            },
+            move |event| {
                 thumbnail_events.handle_event(event);
-            }) {
-                Ok(runtime) => {
-                    thumbnails.attach_controller(runtime.controller());
-                    Some(runtime)
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "timeline thumbnail decoder could not be initialized");
-                    thumbnails.worker_failed(error.to_string());
-                    None
-                }
-            };
+            },
+        ) {
+            Ok(runtime) => {
+                thumbnails.attach_controller(runtime.controller());
+                Some(runtime)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "timeline thumbnail decoder could not be initialized");
+                thumbnails.worker_failed(error.to_string());
+                None
+            }
+        };
+        let previews = crate::preview_player::PreviewPlayer::new(
+            app_config.hover_trailer_previews_enabled,
+            ui.as_weak(),
+        );
+        let preview_events = previews.clone();
+        let preview_runtime = match PreviewRuntime::start(
+            PreviewConfig {
+                hardware_decoding,
+                ytdl_path: resolve_ytdl_path(),
+                ..PreviewConfig::default()
+            },
+            move |event| {
+                preview_events.handle_event(event);
+            },
+        ) {
+            Ok(runtime) => {
+                previews.attach_controller(runtime.controller());
+                Some(runtime)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "hover trailer preview decoder could not be initialized");
+                previews.worker_failed(error.to_string());
+                None
+            }
+        };
         let desired_shader_preset =
             crate::shaders::preset_from_config(app_config.active_shader_preset);
         let shader_coordinator = Arc::new(Mutex::new(
@@ -990,18 +1097,24 @@ impl NativePlayback {
             "loaded video shader preference"
         );
         let download_config_dir = config_dir.clone();
+        let spatial_audio_sofa_path = resolve_spatial_audio_sofa_path(&config_dir);
+        let omniphony_config_path = config_dir.join("omniphony").join("config.yaml");
         let event_inbox = Arc::new(PlaybackEventInbox::default());
         let runtime_event_inbox = event_inbox.clone();
         let runtime = PlaybackRuntime::start(
             PlayerConfig {
                 config_dir: Some(config_dir),
                 hardware_decoding,
+                spatial_audio_sofa_path,
+                omniphony_config_path: Some(omniphony_config_path),
+                ytdl_path: resolve_ytdl_path(),
             },
             move |event| {
                 runtime_event_inbox.push(event);
             },
         )
         .context("could not initialize the MPV playback engine")?;
+        let omniphony_decoder_available = runtime.omniphony_decoder_available();
         let controller = runtime.controller();
         controller_slot
             .set(controller.clone())
@@ -1101,6 +1214,7 @@ impl NativePlayback {
 
         let bridge = NativePlaybackBridge {
             controller,
+            omniphony_decoder_available,
             core: core.clone(),
             state,
             session,
@@ -1111,6 +1225,7 @@ impl NativePlayback {
             runtime_handle,
             shaders: shader_coordinator,
             thumbnails,
+            previews,
             capture_directory: Arc::new(capture_directory),
             capture_sequence: Arc::new(AtomicU64::new(1)),
         };
@@ -1118,6 +1233,7 @@ impl NativePlayback {
         Ok(Self {
             runtime,
             thumbnail_runtime,
+            preview_runtime,
             bridge,
             event_task,
         })
@@ -1135,14 +1251,46 @@ impl NativePlayback {
             .thumbnail_runtime
             .map(ThumbnailRuntime::shutdown)
             .transpose();
+        let preview_result = self
+            .preview_runtime
+            .map(PreviewRuntime::shutdown)
+            .transpose();
         let result = self.runtime.shutdown().map_err(Into::into);
         self.event_task.abort();
         thumbnail_result.context("thumbnail worker did not shut down cleanly")?;
+        preview_result.context("hover preview worker did not shut down cleanly")?;
         result
     }
 }
 
 impl NativePlaybackBridge {
+    pub fn omniphony_decoder_available(&self) -> bool {
+        self.omniphony_decoder_available
+    }
+
+    /// Handle onto the hover trailer preview engine for UI callback wiring.
+    pub fn previews(&self) -> crate::preview_player::PreviewPlayer {
+        self.previews.clone()
+    }
+
+    pub fn set_spatial_audio_mode(&self, mode: SpatialAudioMode) {
+        log_command(
+            self.controller
+                .send(PlaybackCommand::SetSpatialAudioMode(mode)),
+        );
+    }
+
+    pub fn configure_omniphony_audio(&self, settings: OmniphonyAudioSettings) {
+        log_command(
+            self.controller
+                .send(PlaybackCommand::ConfigureOmniphonyAudio(settings)),
+        );
+    }
+
+    pub fn recenter_omniphony_head(&self) {
+        log_command(self.controller.send(PlaybackCommand::RecenterOmniphonyHead));
+    }
+
     pub fn stop_for_profile_switch(&self) {
         self.cancel_statistics_poll();
         self.cancel_background_tasks();
@@ -1222,6 +1370,7 @@ impl NativePlaybackBridge {
         }));
     }
 
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     fn sync_episode_selector(
         &self,
         player: &Player,
@@ -1355,6 +1504,7 @@ impl NativePlaybackBridge {
     }
 
     #[tracing::instrument(skip_all)]
+    #[cfg_attr(feature = "profiling", hotpath::measure)]
     pub fn sync_player(
         &self,
         player: &Player,
@@ -1363,20 +1513,33 @@ impl NativePlaybackBridge {
         ui: &slint::Weak<MainWindow>,
         navigation: &NavigationController,
     ) {
-        let _span = tracing::info_span!("sync_player").entered();
+        // Per-model-update while the player is visible, so it is a `debug_span!`
+        // for the same reason as the event loop's spans.
+        let _span = tracing::debug_span!("sync_player").entered();
         if !navigation.is_player_visible() {
             return;
         }
         let route_revision = navigation.snapshot().revision;
         self.sync_statistics_poll(player);
-        let Some(Loadable::Ready((stream_urls, _))) = player.stream.as_ref() else {
+        if let Some(ui_upgraded) = ui.upgrade() {
+            let model_guard = self.core.model().ok();
+            let library = model_guard.as_ref().map(|m| &m.ctx.library);
+            if let Some(formatted_title) = format_player_title(player, library)
+                && ui_upgraded.get_player_title().as_str() != formatted_title
+            {
+                ui_upgraded.set_player_title(formatted_title.into());
+            }
+        }
+        let Some(Loadable::Ready((stream_urls, converted))) = player.stream.as_ref() else {
             self.sync_episode_selector(player, streams, ui);
             if let Some(Loadable::Err(error)) = player.stream.as_ref() {
                 show_player_error(ui, format!("Could not resolve this stream: {error}"));
             }
             return;
         };
-        let Some(url) = stream_urls.streaming_url.as_ref().map(ToString::to_string) else {
+        let Some(url) = youtube_watch_url(converted)
+            .or_else(|| stream_urls.streaming_url.as_ref().map(ToString::to_string))
+        else {
             show_player_error(
                 ui,
                 "This stream does not provide a playable URL.".to_owned(),
@@ -2188,26 +2351,22 @@ impl NativePlaybackBridge {
 
         ui.on_player_next_episode({
             let core = core.clone();
-            move || {
-                play_next(&core);
-            }
-        });
-
-        ui.on_player_play_saved_episode({
-            let core = core.clone();
+            let controller = self.controller.clone();
             let weak = ui.as_weak();
+            let statistics_poll = self.statistics_poll.clone();
+            let session = self.session.clone();
             let navigation = navigation.clone();
-            move |video_id| {
-                let video_id = video_id.to_string();
+            let discord_rpc = self.discord_rpc.clone();
+            let thumbnails = self.thumbnails.clone();
+            let pip_controller = pip_controller.clone();
+            move || {
+                if play_next(&core) {
+                    return;
+                }
                 let selection = core.model().ok().and_then(|model| {
                     let player = &model.player;
-                    if selected_player_video_id(player) == video_id {
-                        return Some((true, false, None));
-                    }
-                    let is_next = player
-                        .next_video
-                        .as_ref()
-                        .is_some_and(|video| video.id == video_id);
+                    let next_video = player.next_video.as_ref()?;
+                    let video_id = next_video.id.clone();
                     let meta_id = player
                         .meta_item
                         .as_ref()?
@@ -2222,64 +2381,33 @@ impl NativePlaybackBridge {
                         .streams
                         .items
                         .get(&StreamsItemKey {
-                            meta_id,
+                            meta_id: meta_id.clone(),
                             video_id: video_id.clone(),
                         })
                         .cloned();
-                    Some((false, is_next, saved_stream))
-                });
-                let Some((is_current, is_next, saved_stream)) = selection else {
-                    return;
-                };
-                if is_current {
-                    return;
-                }
-                if is_next {
-                    play_next(&core);
-                    return;
-                }
-                if let (Some(ui), Some(saved_stream)) = (weak.upgrade(), saved_stream) {
-                    crate::deep_link::open_saved_stream(&ui, &core, &navigation, saved_stream);
-                }
-            }
-        });
-
-        ui.on_player_play_episode({
-            let core = core.clone();
-            let controller = self.controller.clone();
-            let weak = ui.as_weak();
-            let statistics_poll = self.statistics_poll.clone();
-            let session = self.session.clone();
-            let navigation = navigation.clone();
-            let discord_rpc = self.discord_rpc.clone();
-            let thumbnails = self.thumbnails.clone();
-            let pip_controller = pip_controller.clone();
-            move |index, video_id| {
-                let video_id = video_id.to_string();
-                let selection = core.model().ok().map(|model| {
-                    let player = &model.player;
-                    let is_current = selected_player_video_id(player) == video_id;
-                    let is_next = player
-                        .next_video
-                        .as_ref()
-                        .is_some_and(|video| video.id == video_id);
-                    let season = player
+                    let (season, index) = player
                         .meta_item
                         .as_ref()
                         .and_then(|resource| resource.content.as_ref().and_then(Loadable::ready))
                         .and_then(|meta_item| {
-                            meta_item.videos.iter().find(|video| video.id == video_id)
+                            meta_item
+                                .videos
+                                .iter()
+                                .enumerate()
+                                .find(|(_, video)| video.id == video_id)
                         })
-                        .and_then(|video| video.series_info.as_ref())
-                        .map(|info| info.season as i32);
-                    (is_current, is_next, season)
+                        .map(|(idx, video)| {
+                            let s = video.series_info.as_ref().map(|info| info.season as i32);
+                            (s, idx as i32)
+                        })
+                        .unwrap_or((None, 0));
+                    Some((meta_id, video_id, saved_stream, season, index))
                 });
-                let (is_current, is_next, season) = selection.unwrap_or_default();
-                if is_current {
+                let Some((meta_id, video_id, saved_stream, season, index)) = selection else {
                     return;
-                }
-                if is_next {
-                    play_next(&core);
+                };
+                if let (Some(ui), Some(saved_stream)) = (weak.upgrade(), saved_stream) {
+                    crate::deep_link::open_saved_stream(&ui, &core, &navigation, saved_stream);
                     return;
                 }
 
@@ -2303,7 +2431,206 @@ impl NativePlaybackBridge {
                         ui.set_detail_active_season(season);
                         ui.invoke_details_season_changed(season);
                     }
-                    navigation.dispatch_and_project(&ui, NavigationIntent::Back);
+                    navigation.dispatch_and_project(
+                        &ui,
+                        NavigationIntent::OpenDetails { media_id: meta_id },
+                    );
+                    ui.set_player_active_episode_idx(index);
+                    ui.set_detail_active_episode_idx(index);
+                    ui.invoke_details_episode_changed(index, video_id.into());
+                    ui.set_player_loading(false);
+                    ui.set_player_buffering(false);
+                    ui.set_player_has_video_frame(false);
+                    ui.set_player_video_frame(slint::Image::default());
+                    clear_player_episode_selector(&ui);
+                    if ui.window().is_fullscreen() {
+                        ui.window().set_fullscreen(false);
+                    }
+                }
+            }
+        });
+
+        ui.on_player_play_saved_episode({
+            let core = core.clone();
+            let controller = self.controller.clone();
+            let weak = ui.as_weak();
+            let statistics_poll = self.statistics_poll.clone();
+            let session = self.session.clone();
+            let navigation = navigation.clone();
+            let discord_rpc = self.discord_rpc.clone();
+            let thumbnails = self.thumbnails.clone();
+            let pip_controller = pip_controller.clone();
+            move |video_id| {
+                let video_id = video_id.to_string();
+                let selection = core.model().ok().and_then(|model| {
+                    let player = &model.player;
+                    let is_current = selected_player_video_id(player) == video_id;
+                    let is_next = player
+                        .next_video
+                        .as_ref()
+                        .is_some_and(|video| video.id == video_id);
+                    let meta_id = player
+                        .meta_item
+                        .as_ref()?
+                        .content
+                        .as_ref()
+                        .and_then(Loadable::ready)?
+                        .preview
+                        .id
+                        .clone();
+                    let saved_stream = model
+                        .ctx
+                        .streams
+                        .items
+                        .get(&StreamsItemKey {
+                            meta_id: meta_id.clone(),
+                            video_id: video_id.clone(),
+                        })
+                        .cloned();
+                    let (season, index) = player
+                        .meta_item
+                        .as_ref()
+                        .and_then(|resource| resource.content.as_ref().and_then(Loadable::ready))
+                        .and_then(|meta_item| {
+                            meta_item
+                                .videos
+                                .iter()
+                                .enumerate()
+                                .find(|(_, video)| video.id == video_id)
+                        })
+                        .map(|(idx, video)| {
+                            let s = video.series_info.as_ref().map(|info| info.season as i32);
+                            (s, idx as i32)
+                        })
+                        .unwrap_or((None, 0));
+                    Some((is_current, is_next, meta_id, saved_stream, season, index))
+                });
+                let Some((is_current, is_next, meta_id, saved_stream, season, index)) = selection
+                else {
+                    return;
+                };
+                if is_current {
+                    return;
+                }
+                if is_next && play_next(&core) {
+                    return;
+                }
+                if let (Some(ui), Some(saved_stream)) = (weak.upgrade(), saved_stream) {
+                    crate::deep_link::open_saved_stream(&ui, &core, &navigation, saved_stream);
+                    return;
+                }
+
+                // Fallback: If no saved stream or play_next returned false, switch to Details for this episode
+                unload_player(
+                    &controller,
+                    &core,
+                    &statistics_poll,
+                    &session,
+                    &discord_rpc,
+                    &thumbnails,
+                );
+                if let Some(ui) = weak.upgrade() {
+                    if !navigation.is_player_visible() {
+                        return;
+                    }
+                    let _ = ui.window().with_winit_window(|window| {
+                        pip_controller.borrow_mut().exit(window);
+                    });
+                    ui.set_player_pip_active(false);
+                    if let Some(season) = season {
+                        ui.set_detail_active_season(season);
+                        ui.invoke_details_season_changed(season);
+                    }
+                    navigation.dispatch_and_project(
+                        &ui,
+                        NavigationIntent::OpenDetails { media_id: meta_id },
+                    );
+                    ui.set_player_active_episode_idx(index);
+                    ui.set_detail_active_episode_idx(index);
+                    ui.invoke_details_episode_changed(index, video_id.into());
+                    ui.set_player_loading(false);
+                    ui.set_player_buffering(false);
+                    ui.set_player_has_video_frame(false);
+                    ui.set_player_video_frame(slint::Image::default());
+                    clear_player_episode_selector(&ui);
+                    if ui.window().is_fullscreen() {
+                        ui.window().set_fullscreen(false);
+                    }
+                }
+            }
+        });
+
+        ui.on_player_play_episode({
+            let core = core.clone();
+            let controller = self.controller.clone();
+            let weak = ui.as_weak();
+            let statistics_poll = self.statistics_poll.clone();
+            let session = self.session.clone();
+            let navigation = navigation.clone();
+            let discord_rpc = self.discord_rpc.clone();
+            let thumbnails = self.thumbnails.clone();
+            let pip_controller = pip_controller.clone();
+            move |index, video_id| {
+                let video_id = video_id.to_string();
+                let selection = core.model().ok().map(|model| {
+                    let player = &model.player;
+                    let is_current = selected_player_video_id(player) == video_id;
+                    let is_next = player
+                        .next_video
+                        .as_ref()
+                        .is_some_and(|video| video.id == video_id);
+                    let meta_id = player
+                        .meta_item
+                        .as_ref()
+                        .and_then(|resource| resource.content.as_ref().and_then(Loadable::ready))
+                        .map(|meta_item| meta_item.preview.id.clone());
+                    let season = player
+                        .meta_item
+                        .as_ref()
+                        .and_then(|resource| resource.content.as_ref().and_then(Loadable::ready))
+                        .and_then(|meta_item| {
+                            meta_item.videos.iter().find(|video| video.id == video_id)
+                        })
+                        .and_then(|video| video.series_info.as_ref())
+                        .map(|info| info.season as i32);
+                    (is_current, is_next, meta_id, season)
+                });
+                let (is_current, is_next, meta_id, season) = selection.unwrap_or_default();
+                if is_current {
+                    return;
+                }
+                if is_next && play_next(&core) {
+                    return;
+                }
+
+                unload_player(
+                    &controller,
+                    &core,
+                    &statistics_poll,
+                    &session,
+                    &discord_rpc,
+                    &thumbnails,
+                );
+                if let Some(ui) = weak.upgrade() {
+                    if !navigation.is_player_visible() {
+                        return;
+                    }
+                    let _ = ui.window().with_winit_window(|window| {
+                        pip_controller.borrow_mut().exit(window);
+                    });
+                    ui.set_player_pip_active(false);
+                    if let Some(season) = season {
+                        ui.set_detail_active_season(season);
+                        ui.invoke_details_season_changed(season);
+                    }
+                    if let Some(meta_id) = meta_id {
+                        navigation.dispatch_and_project(
+                            &ui,
+                            NavigationIntent::OpenDetails { media_id: meta_id },
+                        );
+                    } else {
+                        navigation.dispatch_and_project(&ui, NavigationIntent::Back);
+                    }
                     ui.set_player_active_episode_idx(index);
                     ui.set_detail_active_episode_idx(index);
                     ui.invoke_details_episode_changed(index, video_id.into());
@@ -2847,6 +3174,23 @@ fn handle_event(
                 }
             });
         }
+        PlaybackEvent::SpatialAudioChanged {
+            requested,
+            applied,
+            message,
+        } => {
+            tracing::info!(?requested, ?applied, %message, "spatial audio state changed");
+            let fallback = requested != applied;
+            let ui = ui.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_settings_spatial_audio_status(message.clone().into());
+                    if fallback {
+                        ui.set_player_status_message(message.into());
+                    }
+                }
+            });
+        }
         PlaybackEvent::ClientMessage(args) => {
             tracing::debug!(argument_count = args.len(), "MPV client message received");
         }
@@ -2946,6 +3290,7 @@ struct CorePlaybackProjection {
     resolved_video_hash: Option<Option<String>>,
 }
 
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 fn project_core_playback_state(
     model: &AppModel,
     duration_secs: i64,
@@ -4324,6 +4669,41 @@ fn resolve_config_dir() -> PathBuf {
     crate::paths::get().mpv().to_path_buf()
 }
 
+/// Rewrites a YouTube selection back to its watch URL so MPV's `ytdl_hook`
+/// resolves it instead of the streaming server.
+///
+/// The server can only redirect to a single progressive rendition, and YouTube
+/// caps those at 360p; the hook merges the separate adaptive video and audio
+/// tracks and so reaches the source quality.
+fn youtube_watch_url(
+    stream: &stremio_core::types::resource::Stream<
+        stremio_core::types::streams::ConvertedStreamSource,
+    >,
+) -> Option<String> {
+    match &stream.source {
+        stremio_core::types::streams::ConvertedStreamSource::YouTube { yt_id, .. } => {
+            Some(format!("https://www.youtube.com/watch?v={yt_id}"))
+        }
+        _ => None,
+    }
+}
+
+/// Where MPV's `ytdl_hook` should look for `yt-dlp`.
+///
+/// The streaming server owns the binary — it downloads and refreshes it — so the
+/// path is taken from there rather than guessed, and [`None`] simply means the
+/// hook can find `yt-dlp` on `PATH` without help.
+fn resolve_ytdl_path() -> Option<PathBuf> {
+    stream_server::ytdlp::player_path(crate::paths::get().streaming_server())
+}
+
+fn resolve_spatial_audio_sofa_path(config_dir: &std::path::Path) -> Option<PathBuf> {
+    std::env::var_os("STREMIO_SOFA_PATH")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(config_dir.join("hrtf").join("default.sofa")))
+}
+
 fn format_time(seconds: f64) -> String {
     let total = seconds.round().max(0.0) as u64;
     let hours = total / 3_600;
@@ -4593,5 +4973,183 @@ fn reset_autohide_timer(
                 }
             });
         }));
+    }
+}
+
+#[cfg(test)]
+mod player_title_tests {
+    use super::format_player_title;
+    use stremio_core::{
+        models::{
+            common::{Loadable, ResourceLoadable},
+            player::{Player, Selected},
+        },
+        types::{
+            addon::{ResourcePath, ResourceRequest},
+            library::{LibraryBucket, LibraryItem, LibraryItemState},
+            resource::{
+                MetaItem, MetaItemBehaviorHints, MetaItemPreview, SeriesInfo, Stream, StreamSource,
+                Video,
+            },
+        },
+    };
+    use url::Url;
+
+    fn mock_stream() -> Stream {
+        Stream {
+            source: StreamSource::Url {
+                url: Url::parse("https://example.com/video.mp4").expect("valid stream URL"),
+            },
+            name: None,
+            description: None,
+            thumbnail: None,
+            subtitles: vec![],
+            behavior_hints: Default::default(),
+        }
+    }
+
+    fn mock_request(resource: &str, r#type: &str, id: &str) -> ResourceRequest {
+        ResourceRequest::new(
+            Url::parse("https://example.com/manifest.json").expect("valid manifest URL"),
+            ResourcePath::without_extra(resource, r#type, id),
+        )
+    }
+
+    fn mock_player_with_meta(
+        meta_name: &str,
+        is_movie: bool,
+        videos: Vec<Video>,
+        video_id: &str,
+    ) -> Player {
+        let default_video_id = if is_movie {
+            Some(video_id.to_string())
+        } else {
+            None
+        };
+
+        let meta_item = MetaItem {
+            preview: MetaItemPreview {
+                id: "tt12345".to_string(),
+                r#type: if is_movie { "movie" } else { "series" }.to_string(),
+                name: meta_name.to_string(),
+                poster: None,
+                background: None,
+                logo: None,
+                description: None,
+                release_info: None,
+                runtime: None,
+                released: None,
+                poster_shape: Default::default(),
+                links: vec![],
+                trailer_streams: vec![],
+                behavior_hints: MetaItemBehaviorHints {
+                    default_video_id,
+                    ..Default::default()
+                },
+            },
+            videos,
+        };
+
+        let media_type = if is_movie { "movie" } else { "series" };
+        let stream_request = mock_request("stream", media_type, video_id);
+        let meta_request = mock_request("meta", media_type, "tt12345");
+
+        let selected = Selected {
+            stream: mock_stream(),
+            stream_request: Some(stream_request),
+            meta_request: Some(meta_request.clone()),
+            subtitles_path: None,
+        };
+
+        Player {
+            selected: Some(selected),
+            meta_item: Some(ResourceLoadable {
+                request: meta_request,
+                content: Some(Loadable::Ready(meta_item)),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn movie_title_returns_meta_name() {
+        let player = mock_player_with_meta("Tenet", true, vec![], "tt6723592");
+        let title = format_player_title(&player, None);
+        assert_eq!(title, Some("Tenet".to_string()));
+    }
+
+    #[test]
+    fn series_episode_formats_with_title_and_season_episode() {
+        let video = Video {
+            id: "tt12345:1:1".to_string(),
+            title: "Pilot".to_string(),
+            released: None,
+            overview: None,
+            thumbnail: None,
+            streams: vec![],
+            series_info: Some(SeriesInfo {
+                season: 1,
+                episode: 1,
+            }),
+            trailer_streams: vec![],
+        };
+        let player = mock_player_with_meta("Breaking Bad", false, vec![video], "tt12345:1:1");
+        let title = format_player_title(&player, None);
+        assert_eq!(title, Some("Breaking Bad - Pilot (1x1)".to_string()));
+    }
+
+    #[test]
+    fn series_episode_without_unique_title_formats_season_episode() {
+        let video = Video {
+            id: "tt12345:1:2".to_string(),
+            title: "Breaking Bad".to_string(),
+            released: None,
+            overview: None,
+            thumbnail: None,
+            streams: vec![],
+            series_info: Some(SeriesInfo {
+                season: 1,
+                episode: 2,
+            }),
+            trailer_streams: vec![],
+        };
+        let player = mock_player_with_meta("Breaking Bad", false, vec![video], "tt12345:1:2");
+        let title = format_player_title(&player, None);
+        assert_eq!(title, Some("Breaking Bad (1x2)".to_string()));
+    }
+
+    #[test]
+    fn fallback_to_library_item_name_when_meta_not_ready() {
+        let stream_request = mock_request("stream", "series", "tt999:1:1");
+        let selected = Selected {
+            stream: mock_stream(),
+            stream_request: Some(stream_request),
+            meta_request: None,
+            subtitles_path: None,
+        };
+        let player = Player {
+            selected: Some(selected),
+            ..Default::default()
+        };
+        let mut library = LibraryBucket::new(None, vec![]);
+        library.items.insert(
+            "tt999".to_string(),
+            LibraryItem {
+                id: "tt999".to_string(),
+                r#type: "series".to_string(),
+                name: "The Mandalorian".to_string(),
+                poster: None,
+                poster_shape: Default::default(),
+                removed: false,
+                temp: false,
+                ctime: None,
+                mtime: chrono::Utc::now(),
+                state: LibraryItemState::default(),
+                behavior_hints: Default::default(),
+            },
+        );
+
+        let title = format_player_title(&player, Some(&library));
+        assert_eq!(title, Some("The Mandalorian".to_string()));
     }
 }

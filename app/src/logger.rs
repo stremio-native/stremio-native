@@ -12,7 +12,7 @@ fn should_record(metadata: &tracing::Metadata<'_>) -> bool {
 
 pub struct LoggerGuards {
     pub _file_guard: tracing_appender::non_blocking::WorkerGuard,
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "profiling"))]
     pub _chrome_guard: Option<tracing_chrome::FlushGuard>,
 }
 
@@ -22,7 +22,7 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
     let log_file = std::fs::File::create(&log_path)?;
     let (file_writer, file_guard) = tracing_appender::non_blocking(log_file);
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "profiling"))]
     let (chrome_layer, chrome_guard) = if profile.mode.enabled() {
         let output = profile
             .output
@@ -48,7 +48,7 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
         (None, None)
     };
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "profiling"))]
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -59,7 +59,7 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
         .with(chrome_layer)
         .init();
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "profiling")))]
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -88,6 +88,7 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
         default_panic_hook(panic_info);
     }));
 
+    crate::crash_handler::init_crash_handler(paths.logs());
     tracing::info!(path = %log_path.display(), "file logging initialized");
     if profile.mode.enabled() {
         let output = profile
@@ -102,7 +103,7 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
 
     Ok(LoggerGuards {
         _file_guard: file_guard,
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "profiling"))]
         _chrome_guard: chrome_guard,
     })
 }

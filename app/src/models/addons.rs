@@ -162,6 +162,11 @@ fn project_addon(
         logo: crate::image_cache::get_poster_image(&descriptor.manifest.logo, ui_weak),
         is_installed: installed,
         transport_url: descriptor.transport_url.as_str().into(),
+        configuration_url: descriptor
+            .transport_url
+            .as_str()
+            .replace("manifest.json", "configure")
+            .into(),
         types_label: addon_types_label(descriptor).into(),
         configurable: descriptor.manifest.behavior_hints.configurable,
         configuration_required: descriptor.manifest.behavior_hints.configuration_required,
@@ -494,10 +499,19 @@ pub fn setup(
         }
     });
 
-    ui.on_configure_addon(move |transport_url| {
-        let configure_url = transport_url.as_str().replace("manifest.json", "configure");
-        if let Err(error) = open::that(&configure_url) {
-            tracing::error!(%error, %configure_url, "failed to open addon configuration");
+    ui.on_configure_addon(move |configuration_url| {
+        let Ok(configuration_url) = Url::parse(configuration_url.as_str()) else {
+            tracing::warn!("refused invalid addon configuration URL");
+            return;
+        };
+        if configuration_url.scheme() != "https"
+            && configuration_url.host_str() != Some("localhost")
+        {
+            tracing::warn!("refused untrusted addon configuration URL");
+            return;
+        }
+        if let Err(error) = open::that(configuration_url.as_str()) {
+            tracing::error!(%error, "failed to open addon configuration");
         }
     });
 

@@ -19,6 +19,8 @@ const MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const REVALIDATE_AFTER_SECONDS: i64 = 60;
 const MAINTENANCE_WRITE_INTERVAL: usize = 64;
+const CATALOG_MAX_RETRIES: usize = 3;
+const CATALOG_RETRY_BASE_DELAY_MS: u64 = 250;
 
 static REVALIDATING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static WRITES_SINCE_MAINTENANCE: AtomicUsize = AtomicUsize::new(0);
@@ -29,6 +31,7 @@ pub(crate) enum ResourceKind {
     Catalog,
     AddonCatalog,
     Meta,
+    LegacyCatalog,
     LegacyMeta,
 }
 
@@ -39,6 +42,7 @@ impl ResourceKind {
             Self::Catalog => "catalog",
             Self::AddonCatalog => "addon_catalog",
             Self::Meta => "meta",
+            Self::LegacyCatalog => "legacy_catalog",
             Self::LegacyMeta => "legacy_meta",
         }
     }
@@ -160,7 +164,7 @@ where
         }
     }
 
-    let response = send_request(&client, &request, None).await?;
+    let response = send_request_with_retry(&client, &request, None).await?;
     let value = serde_json::from_slice::<OUT>(&response.body)
         .map_err(|error| EnvError::Fetch(error.to_string()))?;
 
@@ -242,6 +246,74 @@ where
 struct Validators {
     etag: Option<String>,
     last_modified: Option<String>,
+}
+
+async fn send_request_with_retry(
+    client: &reqwest::Client,
+    request: &CacheRequest,
+    validators: Option<&Validators>,
+) -> Result<NetworkResponse, EnvError> {
+    let max_retries = match request.resource_kind {
+        ResourceKind::Catalog | ResourceKind::LegacyCatalog => CATALOG_MAX_RETRIES,
+        _ => 0,
+    };
+    let mut retries = 0;
+
+    loop {
+        match send_request(client, request, validators).await {
+            Ok(response) if max_retries > 0 && is_transient_http_status(response.status) => {
+                if retries == max_retries {
+                    return Err(EnvError::Fetch(http_status_message(response.status)));
+                }
+                retries += 1;
+                log_catalog_retry(request, retries, Some(response.status), None);
+            }
+            Ok(response) => return Ok(response),
+            Err(error) if retries < max_retries => {
+                retries += 1;
+                log_catalog_retry(request, retries, None, Some(&error));
+            }
+            Err(error) => return Err(error),
+        }
+
+        tokio::time::sleep(catalog_retry_delay(retries)).await;
+    }
+}
+
+fn is_transient_http_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500..=599)
+}
+
+fn catalog_retry_delay(retry: usize) -> std::time::Duration {
+    let multiplier = 1_u64 << retry.saturating_sub(1).min(CATALOG_MAX_RETRIES - 1);
+    std::time::Duration::from_millis(CATALOG_RETRY_BASE_DELAY_MS * multiplier)
+}
+
+fn http_status_message(status: u16) -> String {
+    reqwest::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|parsed_status| {
+            parsed_status
+                .canonical_reason()
+                .map(|reason| format!("HTTP {status} {reason}"))
+        })
+        .unwrap_or_else(|| format!("HTTP {status}"))
+}
+
+fn log_catalog_retry(
+    request: &CacheRequest,
+    retry: usize,
+    status: Option<u16>,
+    error: Option<&EnvError>,
+) {
+    tracing::warn!(
+        url = %sanitized_url_for_log(&request.url),
+        retry,
+        max_retries = CATALOG_MAX_RETRIES,
+        status,
+        error = error.map(ToString::to_string),
+        "addon catalog request failed; retrying"
+    );
 }
 
 async fn send_request(
@@ -581,7 +653,8 @@ fn classify_legacy(url: &url::Url) -> Option<ResourceKind> {
         .ok()?;
     let value: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     match value.get("method").and_then(serde_json::Value::as_str) {
-        Some("meta" | "meta.find" | "meta.get") => Some(ResourceKind::LegacyMeta),
+        Some("meta.find") => Some(ResourceKind::LegacyCatalog),
+        Some("meta" | "meta.get") => Some(ResourceKind::LegacyMeta),
         _ => None,
     }
 }
@@ -616,9 +689,18 @@ impl Drop for RevalidationGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{CacheRequest, HttpCacheEntry, ResourceKind, cache_key};
+    use super::{
+        CATALOG_MAX_RETRIES, CacheRequest, HttpCacheEntry, ResourceKind, cache_key,
+        catalog_retry_delay, http_status_message, is_transient_http_status,
+        send_request_with_retry,
+    };
     use base64::Engine as _;
     use http::Request;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn classify(url: &str) -> Option<ResourceKind> {
         let (parts, ()) = Request::get(url)
@@ -673,12 +755,74 @@ mod tests {
 
         assert_eq!(
             classify(&format!("https://example.com/q.json?b={meta}")),
-            Some(ResourceKind::LegacyMeta)
+            Some(ResourceKind::LegacyCatalog)
         );
         assert_eq!(
             classify(&format!("https://example.com/q.json?b={stream}")),
             None
         );
+    }
+
+    #[test]
+    fn catalog_retry_policy_is_bounded_and_transient_only() {
+        assert_eq!(CATALOG_MAX_RETRIES, 3);
+        assert!(is_transient_http_status(408));
+        assert!(is_transient_http_status(429));
+        assert!(is_transient_http_status(500));
+        assert!(is_transient_http_status(504));
+        assert!(is_transient_http_status(599));
+        assert!(!is_transient_http_status(400));
+        assert!(!is_transient_http_status(404));
+        assert!(!is_transient_http_status(200));
+        assert_eq!(catalog_retry_delay(1).as_millis(), 250);
+        assert_eq!(catalog_retry_delay(2).as_millis(), 500);
+        assert_eq!(catalog_retry_delay(3).as_millis(), 1_000);
+        assert_eq!(http_status_message(504), "HTTP 504 Gateway Timeout");
+    }
+
+    #[tokio::test]
+    async fn catalog_request_succeeds_after_three_transient_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = attempts.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..=CATALOG_MAX_RETRIES {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await.expect("read request");
+                server_attempts.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = if attempt < CATALOG_MAX_RETRIES {
+                    ("504 Gateway Timeout", "retry")
+                } else {
+                    ("200 OK", "{}")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+        let request = CacheRequest {
+            cache_key: "retry-test".to_owned(),
+            resource_kind: ResourceKind::Catalog,
+            url: format!("http://{address}/catalog/movie/top.json"),
+            headers: http::HeaderMap::new(),
+        };
+
+        let response = send_request_with_retry(&reqwest::Client::new(), &request, None)
+            .await
+            .expect("fourth request succeeds");
+        server.await.expect("test server");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(attempts.load(Ordering::SeqCst), CATALOG_MAX_RETRIES + 1);
     }
 
     #[test]

@@ -9,6 +9,8 @@ export component SelectField inherits Rectangle {
     in-out property <string> value;
     in property <string> placeholder: @tr("SELECT" => "Select");
     in property <[string]> options: [];
+    // Empty keeps every option enabled, preserving existing callers.
+    in property <[bool]> option-enabled: [];
     in-out property <bool> open: false;
     in property <bool> enabled: true;
     in property <length> field-width: 15 * root.unit;
@@ -87,6 +89,7 @@ export component SelectField inherits Rectangle {
         enabled: root.enabled;
         accessible-name: root.value == "" ? translate-option(root.placeholder) : translate-option(root.value);
         clicked => {
+            root.open = !root.open;
             root.toggle();
             if (!root.open) {
                 popup.close();
@@ -174,14 +177,19 @@ export component SelectField inherits Rectangle {
                     width: 100%;
                     spacing: 0px;
 
-                    for option in root.options : option-button := ButtonSurface {
+                    for option[index] in root.options : option-button := ButtonSurface {
                         horizontal-stretch: 1;
                         height: 2.5 * root.unit;
+                        enabled: root.option-enabled.length == 0
+                            ? true
+                            : (index < root.option-enabled.length ? root.option-enabled[index] : true);
                         accessible-name: translate-option(option);
                         background: self.has-hover || self.has-focus
                             ? Theme.overlay-color
                             : transparent;
                         clicked => {
+                            root.value = option;
+                            root.open = false;
                             root.selected(option);
                             popup.close();
                         }

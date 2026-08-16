@@ -20,7 +20,9 @@ import { HorizontalNavBar, HorizontalNavButton, NavMenuPanel } from "components/
 import { KeyCap, ShortcutComboView, ShortcutCombosView, ShortcutsGroup } from "components/shortcuts.slint";
 import { SharePrompt } from "components/share_prompt.slint";
 import { ColorInput, ColorPicker } from "components/color_input.slint";
+import { ColorUtils, ParsedColor, CursorSample, SavedGradient } from "components/color_utils.slint";
 import { SeeAllButton, MetaRow, MetaRowPlaceholder } from "components/meta_row.slint";
+import { TrailerHoverPopup } from "components/trailer_popup.slint";
 import { MetaActionButton, MetaLinkChip, MetaLinks, MetaPreview, MetaPreviewPlaceholder } from "components/meta_preview.slint";
 import { AuthPage } from "pages/auth.slint";
 import { BoardPage, BoardSection } from "pages/board.slint";
@@ -28,7 +30,8 @@ import { DiscoverPage, DiscoverRow, DiscoverFilterOption } from "pages/discover.
 import { LibraryPage, LibraryRow } from "pages/library.slint";
 import { AddonsPage, AddonItem } from "pages/addons.slint";
 import { DetailsPage, StreamLink, EpisodeItem } from "pages/details.slint";
-import { SettingsPage } from "pages/settings.slint";
+import { SettingsPage, OmniphonyAudioSettings } from "pages/settings.slint";
+import { ThemePage } from "pages/theme.slint";
 import { PlayerPage, CastDevice } from "pages/player.slint";
 import { ProfilePicker, ProfileItem } from "components/profile_picker.slint";
 import { ProfileManager } from "components/profile_manager.slint";
@@ -88,7 +91,12 @@ component GuideSectionTitle inherits Text {
     vertical-alignment: center;
 }
 
+export { ColorUtils, ParsedColor, CursorSample, SavedGradient }
 export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, CastDevice, BoardSection, DiscoverRow, LibraryRow, AddonItem, CalendarRow, CalendarCell, CalendarMediaItem, SearchSuggestion, DownloadItem, HotkeyItem }
+
+// Windows drives the notification area itself and renders this panel instead of
+// the platform menu; see `tray/windows.rs`.
+export { TrayPanel } from "tray_panel.slint";
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/images/app_icon.png");
@@ -174,7 +182,8 @@ export component MainWindow inherits Window {
     min-width: 1000px;
     min-height: 600px;
     background: Theme.background;
-    default-font-family: "Plus Jakarta Sans";
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.root-font-size;
     forward-focus: app-shortcuts;
     property <length> ui-unit: root.width >= 2800px ? 18px :
         (root.width >= 2200px ? 16px : (root.width >= 1600px ? 15px : 14px));
@@ -220,7 +229,8 @@ export component MainWindow inherits Window {
         { label: @tr("STREMIO_TV_NAV_SEARCH" => "Search"), page: 6 },
         { label: @tr("Details"), page: 7 },
         { label: @tr("SETTINGS_NAV_PLAYER" => "Player"), page: 8 },
-        { label: @tr("DOWNLOADS_TITLE" => "Downloads"), page: 9 }
+        { label: @tr("DOWNLOADS_TITLE" => "Downloads"), page: 9 },
+        { label: @tr("Theme Studio"), page: 10 }
     ];
     private property <[DebugStateOption]> debug-auth-states: [
         { label: @tr("LOGIN_LABEL" => "Login"), value: "login" },
@@ -317,6 +327,18 @@ export component MainWindow inherits Window {
         { label: @tr("Playback error"), value: "player-error" },
         { label: @tr("Controls hidden"), value: "controls-hidden" }
     ];
+    private property <[DebugStateOption]> debug-theme-states: [
+        { label: @tr("Studio Overview"), value: "theme-studio" }
+    ];
+    private property <[DebugStateOption]> debug-downloads-states: [
+        { label: @tr("Active downloads"), value: "downloads-active" },
+        { label: @tr("Paused download"), value: "downloads-paused" },
+        { label: @tr("Completed download"), value: "downloads-completed" },
+        { label: @tr("Cancelled / Failed"), value: "downloads-cancelled" },
+        { label: @tr("Empty state"), value: "downloads-empty" },
+        { label: @tr("Loading state"), value: "downloads-loading" },
+        { label: @tr("Database Error"), value: "downloads-error" }
+    ];
     private property <[DebugStateOption]> debug-state-options:
         root.debug-preview-page == -1 ? root.debug-auth-states :
         (root.debug-preview-page == 0 ? root.debug-board-states :
@@ -326,12 +348,14 @@ export component MainWindow inherits Window {
         (root.debug-preview-page == 4 ? root.debug-settings-states :
         (root.debug-preview-page == 5 ? root.debug-calendar-states :
         (root.debug-preview-page == 6 ? root.debug-search-states :
-        (root.debug-preview-page == 7 ? root.debug-details-states : root.debug-player-states))))))));
+        (root.debug-preview-page == 7 ? root.debug-details-states :
+        (root.debug-preview-page == 9 ? root.debug-downloads-states :
+        (root.debug-preview-page == 10 ? root.debug-theme-states : root.debug-player-states))))))))));
 
     private property <int> effective-active-tab: root.debug-preview-enabled
         ? (root.debug-preview-page >= 0 && root.debug-preview-page <= 6
-            ? root.debug-preview-page : (root.debug-preview-page == 9 ? 7 : 0))
-        : root.active-tab;
+            ? root.debug-preview-page : (root.debug-preview-page == 9 ? 7 : (root.debug-preview-page == 10 ? 10 : 0)))
+        : (root.theme-studio-open ? 10 : root.active-tab);
     private property <bool> effective-show-details: root.debug-preview-enabled
         ? root.debug-preview-page == 7
         : root.show-details;
@@ -342,11 +366,15 @@ export component MainWindow inherits Window {
         ? root.debug-preview-page == -1
         : root.username == "";
     private property <bool> show-main-shell: root.debug-preview-enabled
-        ? (root.debug-preview-page >= 0 && root.debug-preview-page <= 6) || root.debug-preview-page == 9
+        ? (root.debug-preview-page >= 0 && root.debug-preview-page <= 6) || root.debug-preview-page == 9 || root.debug-preview-page == 10
         : root.username != "";
 
     // Bindings / API exposed to Rust code
     in-out property <int> active-tab: 0; // 0: Board, 1: Discover, 2: Library, 3: Addons, 4: Settings, 5: Calendar, 6: Search, 7: Downloads
+    in-out property <bool> theme-studio-open: false;
+    callback apply-theme-preset(color, color, color, color, color, color);
+    callback update-theme-color(string, color);
+    callback reset-theme-defaults();
     in-out property <string> username: "";
     in-out property <string> avatar-letter: "U";
     in-out property <image> avatar-image;
@@ -390,6 +418,8 @@ export component MainWindow inherits Window {
     in-out property <[AddonItem]> addons-list: [];
     in-out property <[AddonItem]> addons-community-list: [];
     in-out property <bool> addons-community-available: false;
+    in-out property <bool> addons-community-loading: false;
+    in-out property <bool> addons-community-has-next-page: false;
     in-out property <bool> addons-community-adult-unlocked: false;
     in-out property <string> addons-community-owner-pin: "";
     in-out property <string> addons-search-query: "";
@@ -431,6 +461,8 @@ export component MainWindow inherits Window {
     // Discover preview drawer parameters
     in-out property <bool> discover-has-preview: false;
     in-out property <string> discover-preview-title: "";
+    in-out property <image> discover-preview-logo;
+    in-out property <string> discover-preview-logo-url: "";
     in-out property <string> discover-preview-description: "";
     in-out property <string> discover-preview-rating: "";
     in-out property <string> discover-preview-year: "";
@@ -444,14 +476,117 @@ export component MainWindow inherits Window {
     in-out property <image> discover-preview-poster;
     in-out property <string> discover-preview-poster-url: "";
 
+    // Hover trailer preview popup. The backend owns everything except the
+    // anchor geometry, which only the hovered card knows.
+    in-out property <bool> hover-preview-enabled: false;
+    in-out property <int> hover-preview-delay-ms: 1200;
+    private property <bool> hover-preview-active: false;
+    in-out property <image> hover-preview-frame;
+    in-out property <bool> hover-preview-has-frame: false;
+    in-out property <bool> hover-preview-loading: false;
+    in-out property <bool> hover-preview-muted: true;
+    in-out property <string> hover-preview-status: "";
+    in-out property <string> hover-preview-title: "";
+    in-out property <string> hover-preview-year: "";
+    in-out property <string> hover-preview-runtime: "";
+    in-out property <string> hover-preview-rating: "";
+    in-out property <string> hover-preview-description: "";
+    in-out property <[string]> hover-preview-genres: [];
+    in-out property <image> hover-preview-poster;
+    in-out property <bool> hover-preview-in-library: false;
+    private property <length> hover-preview-anchor-x: 0px;
+    private property <length> hover-preview-anchor-y: 0px;
+    private property <length> hover-preview-anchor-width: 0px;
+    private property <length> hover-preview-anchor-height: 0px;
+    private property <bool> hover-preview-dismiss-pending: false;
+    private property <bool> hover-preview-popup-hovered: false;
+
+    callback hover-preview-requested(string, string);
+    callback hover-preview-dismissed();
+    callback hover-preview-toggle-muted();
+    callback hover-preview-play();
+    callback hover-preview-toggle-library();
+
+    function hover-preview-open(id: string, media-type: string, anchor-x: length,
+            anchor-y: length, anchor-width: length, anchor-height: length) {
+        if (!root.hover-preview-enabled || root.effective-show-player
+            || root.effective-show-details) {
+            return;
+        }
+        root.hover-preview-dismiss-pending = false;
+        root.hover-preview-popup-hovered = false;
+        root.hover-preview-anchor-x = anchor-x;
+        root.hover-preview-anchor-y = anchor-y;
+        root.hover-preview-anchor-width = anchor-width;
+        root.hover-preview-anchor-height = anchor-height;
+        root.hover-preview-active = true;
+        root.hover-preview-requested(id, media-type);
+    }
+
+    // The popup covers the card that opened it, so the pointer legitimately
+    // leaves the card on the way in. A short grace period keeps the session
+    // alive across that handover and across gaps between adjacent cards.
+    // The timer re-reads the popup's hover state when it fires rather than
+    // trusting the order the leave and enter callbacks arrived in.
+    function hover-preview-schedule-dismiss() {
+        if (root.hover-preview-active) {
+            root.hover-preview-dismiss-pending = true;
+        }
+    }
+
+    function hover-preview-keep() {
+        root.hover-preview-popup-hovered = true;
+        root.hover-preview-dismiss-pending = false;
+    }
+
+    // Public so the backend can retract a popup it cannot fill in.
+    public function hover-preview-close() {
+        root.hover-preview-dismiss-pending = false;
+        root.hover-preview-popup-hovered = false;
+        if (root.hover-preview-active) {
+            root.hover-preview-active = false;
+            root.hover-preview-dismissed();
+        }
+    }
+
+    hover-preview-dismiss-timer := Timer {
+        interval: 160ms;
+        running: root.hover-preview-dismiss-pending;
+        triggered => {
+            if (root.hover-preview-popup-hovered) {
+                root.hover-preview-dismiss-pending = false;
+            } else {
+                root.hover-preview-close();
+            }
+        }
+    }
+
+    // Leaving the browsing surface tears the preview down immediately: the
+    // cards that own the hover contract are gone, so nothing else would.
+    private property <bool> hover-preview-route-visible: !root.effective-show-details
+        && !root.effective-show-player;
+    changed hover-preview-route-visible => {
+        if (!root.hover-preview-route-visible) {
+            root.hover-preview-close();
+        }
+    }
+    changed effective-active-tab => { root.hover-preview-close(); }
+
     // Detailed view parameters
     in-out property <string> detail-title: "";
+    in-out property <image> detail-logo;
+    in-out property <string> detail-logo-url: "";
     in-out property <string> detail-description: "";
     in-out property <image> detail-poster;
     in-out property <string> detail-poster-url: "";
     in-out property <string> detail-year: "";
     in-out property <string> detail-runtime: "";
     in-out property <string> detail-rating: "";
+    in-out property <string> detail-rt-rating: "";
+    in-out property <string> detail-metacritic-rating: "";
+    in-out property <string> detail-letterboxd-rating: "";
+    in-out property <string> detail-anilist-rating: "";
+    in-out property <string> detail-kitsu-rating: "";
     in-out property <[string]> detail-genres: [];
     in-out property <[string]> detail-cast: [];
     in-out property <[string]> detail-directors: [];
@@ -541,6 +676,7 @@ export component MainWindow inherits Window {
     in-out property <string> player-series-release-year: "";
     in-out property <string> player-series-description: "";
     in-out property <image> player-series-logo;
+    in-out property <string> player-series-logo-url: "";
     in-out property <bool> player-active-season-watched: false;
     in-out property <image> player-next-episode-poster;
     in-out property <float> player-playback-speed: 1.0;
@@ -651,7 +787,10 @@ export component MainWindow inherits Window {
     in-out property <string> settings-next-video-popup-duration: "35";
     in-out property <string> settings-external-player: "";
     in-out property <string> settings-audio-language: "English";
-    in-out property <bool> settings-surround-sound: false;
+    in-out property <string> settings-spatial-audio-mode: "Disabled";
+    in-out property <string> settings-spatial-audio-status: "Spatial audio disabled";
+    in-out property <bool> settings-omniphony-audio-available: false;
+    in-out property <OmniphonyAudioSettings> settings-omniphony-audio;
     in-out property <bool> settings-ass-subtitles-styling: false;
     in-out property <color> settings-subtitles-text-color: #ffffffff;
     in-out property <color> settings-subtitles-background-color: #00000000;
@@ -721,7 +860,11 @@ export component MainWindow inherits Window {
     callback settings-change-next-video-popup-duration(string);
     callback settings-change-external-player(string);
     callback settings-change-audio-language(string);
-    callback settings-change-surround-sound(bool);
+    callback settings-change-spatial-audio-mode(string);
+    callback settings-change-omniphony-string(string, string);
+    callback settings-change-omniphony-number(string, float);
+    callback settings-change-omniphony-bool(string, bool);
+    callback settings-recenter-omniphony-head();
     callback settings-change-ass-subtitles-styling(bool);
     callback settings-change-subtitles-text-color(color);
     callback settings-change-subtitles-background-color(color);
@@ -847,7 +990,8 @@ export component MainWindow inherits Window {
     callback addons-load-next-page();
     callback addons-community-filters-changed(string, string, string, string);
     callback addons-community-load-next(string, string, string, string, int);
-    callback addons-community-unlock-adult(string);
+    callback addons-community-unlock-adult(string, string, string, string, string);
+    callback addons-community-open-directory;
 
     // Details callbacks
     callback details-toggle-library();
@@ -1506,6 +1650,7 @@ export component MainWindow inherits Window {
                     logout-icon: logout-icon;
 
                     change-tab(tab) => {
+                        root.theme-studio-open = false;
                         if (tab == 4) {
                             root.settings-active-category = 0;
                         } else if (tab == 2) {
@@ -1559,6 +1704,12 @@ export component MainWindow inherits Window {
                         reload-server => { board-reload-server(); }
                         open-server-settings => { board-open-server-settings(); }
                         poster-requested(url) => { request-poster(url); }
+                        enable-hover-preview: root.hover-preview-enabled;
+                        hover-preview-delay: root.hover-preview-delay-ms * 1ms;
+                        hover-preview-requested(id, media-type, x, y, w, h) => {
+                            root.hover-preview-open(id, media-type, x, y, w, h);
+                        }
+                        hover-preview-dismissed => { root.hover-preview-schedule-dismiss(); }
                     }
 
                     if (root.effective-active-tab == 1
@@ -1595,6 +1746,7 @@ export component MainWindow inherits Window {
                         preview-title: root.debug-preview-enabled && root.debug-preview-page == 1
                             && root.debug-preview-state == "movie-selected"
                             ? "Dune: Part Two" : discover-preview-title;
+                        preview-logo: discover-preview-logo;
                         preview-description: root.debug-preview-enabled && root.debug-preview-page == 1
                             && root.debug-preview-state == "movie-selected"
                             ? "Paul Atreides unites with Chani and the Fremen while seeking revenge against the conspirators who destroyed his family."
@@ -1644,6 +1796,12 @@ export component MainWindow inherits Window {
                         toggle-library-preview => { toggle-library-preview(); }
                         toggle-watched-preview => { details-toggle-watched(); }
                         play-trailer-preview(selection-id) => { play-stream(selection-id); }
+                        enable-hover-preview: root.hover-preview-enabled;
+                        hover-preview-delay: root.hover-preview-delay-ms * 1ms;
+                        hover-preview-requested(id, media-type, x, y, w, h) => {
+                            root.hover-preview-open(id, media-type, x, y, w, h);
+                        }
+                        hover-preview-dismissed => { root.hover-preview-schedule-dismiss(); }
                         scroll-y <=> discover-scroll-y;
                     }
 
@@ -1682,6 +1840,12 @@ export component MainWindow inherits Window {
                         watched-changed(id, watched) => { library-watched-changed(id, watched); }
                         play-item(id) => { library-play-item(id); }
                         dismiss-item(id) => { library-dismiss-item(id); }
+                        enable-hover-preview: root.hover-preview-enabled;
+                        hover-preview-delay: root.hover-preview-delay-ms * 1ms;
+                        hover-preview-requested(id, media-type, x, y, w, h) => {
+                            root.hover-preview-open(id, media-type, x, y, w, h);
+                        }
+                        hover-preview-dismissed => { root.hover-preview-schedule-dismiss(); }
                         local-add-root(path) => { library-local-add-root(path); }
                         local-rescan => { library-local-rescan(); }
                         local-play(id) => { library-local-play(id); }
@@ -1698,6 +1862,8 @@ export component MainWindow inherits Window {
                             ? [] : addons-list;
                         community-addons: addons-community-list;
                         community-available: addons-community-available;
+                        community-loading: addons-community-loading;
+                        community-has-next-page: addons-community-has-next-page;
                         community-adult-unlocked <=> addons-community-adult-unlocked;
                         community-owner-pin <=> addons-community-owner-pin;
                         has-next-page: addons-has-next-page;
@@ -1744,7 +1910,10 @@ export component MainWindow inherits Window {
                         community-load-next(media-type, sort, language, query, page) => {
                             addons-community-load-next(media-type, sort, language, query, page);
                         }
-                        community-unlock-adult(pin) => { addons-community-unlock-adult(pin); }
+                        community-unlock-adult(pin, media-type, sort, category, query) => {
+                            addons-community-unlock-adult(pin, media-type, sort, category, query);
+                        }
+                        community-open-directory => { addons-community-open-directory(); }
                     }
 
                     if (root.effective-active-tab == 4) : SettingsPage {
@@ -1792,7 +1961,10 @@ export component MainWindow inherits Window {
                         next-video-popup-duration: settings-next-video-popup-duration;
                         external-player: settings-external-player;
                         audio-language: settings-audio-language;
-                        surround-sound: settings-surround-sound;
+                        spatial-audio-mode: settings-spatial-audio-mode;
+                        spatial-audio-status: settings-spatial-audio-status;
+                        omniphony-audio-available: settings-omniphony-audio-available;
+                        omniphony-audio: settings-omniphony-audio;
                         ass-subtitles-styling: settings-ass-subtitles-styling;
                         subtitles-text-color: settings-subtitles-text-color;
                         subtitles-background-color: settings-subtitles-background-color;
@@ -1905,7 +2077,11 @@ export component MainWindow inherits Window {
                         change-next-video-popup-duration(val) => { settings-change-next-video-popup-duration(val); }
                         change-external-player(val) => { settings-change-external-player(val); }
                         change-audio-language(val) => { settings-change-audio-language(val); }
-                        change-surround-sound(val) => { settings-change-surround-sound(val); }
+                        change-spatial-audio-mode(val) => { settings-change-spatial-audio-mode(val); }
+                        change-omniphony-string(key, val) => { settings-change-omniphony-string(key, val); }
+                        change-omniphony-number(key, val) => { settings-change-omniphony-number(key, val); }
+                        change-omniphony-bool(key, val) => { settings-change-omniphony-bool(key, val); }
+                        recenter-omniphony-head => { settings-recenter-omniphony-head(); }
                         change-ass-subtitles-styling(val) => { settings-change-ass-subtitles-styling(val); }
                         change-subtitles-text-color(val) => { settings-change-subtitles-text-color(val); }
                         change-subtitles-background-color(val) => { settings-change-subtitles-background-color(val); }
@@ -1920,6 +2096,29 @@ export component MainWindow inherits Window {
                         change-pause-on-minimize(val) => { settings-change-pause-on-minimize(val); }
                         change-quit-on-close(val) => { settings-change-quit-on-close(val); }
                         open-external-url(url) => { root.open-external-url(url); }
+                        open-theme-studio => { root.theme-studio-open = true; }
+                    }
+
+                    if (root.effective-active-tab == 10) : ThemePage {
+                        width: parent.width;
+                        height: parent.height;
+                        unit: root.ui-unit;
+                        current-accent: Theme.primary-accent;
+                        current-background: Theme.background;
+                        current-secondary-bg: Theme.secondary-background;
+                        current-card-bg: Theme.card-background;
+                        current-card-border: Theme.card-border;
+                        current-text-primary: Theme.primary-foreground;
+                        close-page => { root.theme-studio-open = false; }
+                        apply-preset(accent, bg, sec_bg, card_bg, card_border, text) => {
+                            root.apply-theme-preset(accent, bg, sec_bg, card_bg, card_border, text);
+                        }
+                        change-color(key, val) => {
+                            root.update-theme-color(key, val);
+                        }
+                        reset-theme => {
+                            root.reset-theme-defaults();
+                        }
                     }
 
                     if (root.effective-active-tab == 5) : CalendarPage {
@@ -1967,6 +2166,12 @@ export component MainWindow inherits Window {
                         }
                         catalog-visible(index) => { search-catalog-visible(index); }
                         poster-requested(url) => { request-poster(url); }
+                        enable-hover-preview: root.hover-preview-enabled;
+                        hover-preview-delay: root.hover-preview-delay-ms * 1ms;
+                        hover-preview-requested(id, media-type, x, y, w, h) => {
+                            root.hover-preview-open(id, media-type, x, y, w, h);
+                        }
+                        hover-preview-dismissed => { root.hover-preview-schedule-dismiss(); }
                     }
 
                     if (root.effective-active-tab == 7) : DownloadsPage {
@@ -1987,6 +2192,46 @@ export component MainWindow inherits Window {
             }
         }
 
+        // Floats over the browsing surface but stays under the details and
+        // player routes, which replace it wholesale.
+        if (root.hover-preview-enabled) : TrailerHoverPopup {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            z: 400;
+            unit: root.ui-unit;
+            active: root.hover-preview-active;
+            frame: root.hover-preview-frame;
+            has-frame: root.hover-preview-has-frame;
+            loading: root.hover-preview-loading;
+            muted: root.hover-preview-muted;
+            status: root.hover-preview-status;
+            poster: root.hover-preview-poster;
+            title: root.hover-preview-title;
+            year: root.hover-preview-year;
+            runtime: root.hover-preview-runtime;
+            rating: root.hover-preview-rating;
+            description: root.hover-preview-description;
+            genres: root.hover-preview-genres;
+            in-library: root.hover-preview-in-library;
+            anchor-x: root.hover-preview-anchor-x;
+            anchor-y: root.hover-preview-anchor-y;
+            anchor-width: root.hover-preview-anchor-width;
+            anchor-height: root.hover-preview-anchor-height;
+            toggle-muted => { root.hover-preview-toggle-muted(); }
+            toggle-library-requested => { root.hover-preview-toggle-library(); }
+            play-requested => {
+                root.hover-preview-play();
+                root.hover-preview-close();
+            }
+            pointer-entered => { root.hover-preview-keep(); }
+            pointer-left => {
+                root.hover-preview-popup-hovered = false;
+                root.hover-preview-schedule-dismiss();
+            }
+        }
+
         if (root.effective-show-details) : DetailsPage {
             x: 0px;
             y: 0px;
@@ -1999,6 +2244,7 @@ export component MainWindow inherits Window {
                     || root.debug-preview-state == "movie-no-streams"
                     || root.debug-preview-state == "movie-filter")
                 ? "Dune: Part Two" : detail-title;
+            logo: detail-logo;
             description: root.debug-preview-enabled && root.debug-preview-page == 7
                 && (root.debug-preview-state == "movie-streams"
                     || root.debug-preview-state == "movie-no-streams"
@@ -2023,10 +2269,12 @@ export component MainWindow inherits Window {
                 && (root.debug-preview-state == "movie-streams"
                     || root.debug-preview-state == "movie-no-streams"
                     || root.debug-preview-state == "movie-filter") ? "166 min" : detail-runtime;
-            rating: root.debug-preview-enabled && root.debug-preview-page == 7
-                && (root.debug-preview-state == "movie-streams"
-                    || root.debug-preview-state == "movie-no-streams"
-                    || root.debug-preview-state == "movie-filter") ? "8.5" : detail-rating;
+            rating: root.debug-preview-enabled && root.debug-preview-page == 7 ? "8.5" : detail-rating;
+            rt-rating: root.debug-preview-enabled && root.debug-preview-page == 7 ? "92%" : detail-rt-rating;
+            metacritic-rating: root.debug-preview-enabled && root.debug-preview-page == 7 ? "90" : detail-metacritic-rating;
+            letterboxd-rating: root.debug-preview-enabled && root.debug-preview-page == 7 ? "4.5" : detail-letterboxd-rating;
+            anilist-rating: root.debug-preview-enabled && root.debug-preview-page == 7 ? "87%" : detail-anilist-rating;
+            kitsu-rating: root.debug-preview-enabled && root.debug-preview-page == 7 ? "8.6" : detail-kitsu-rating;
             genres: root.debug-preview-enabled && root.debug-preview-page == 7
                 && (root.debug-preview-state == "movie-streams"
                     || root.debug-preview-state == "movie-no-streams"
@@ -2775,7 +3023,9 @@ export component MainWindow inherits Window {
                 : (page == 4 ? "general"
                 : (page == 5 ? "loaded"
                 : (page == 6 ? "results"
-                : (page == 7 ? "series-episodes" : "paused"))))))));
+                : (page == 7 ? "series-episodes"
+                : (page == 9 ? "downloads-active"
+                : (page == 10 ? "theme-studio" : "paused"))))))))));
         }
         state-selected(state) => {
             root.profile-menu-open = root.debug-preview-page == 0 && state == "profile-menu";
@@ -2795,6 +3045,33 @@ export component MainWindow inherits Window {
                 root.player-show-options-menu = state == "options";
                 root.player-show-context-menu = state == "context-menu";
                 root.player-show-playlist-drawer = state == "episodes";
+            }
+            if (root.debug-preview-page == 9) {
+                root.downloads-loading = state == "downloads-loading";
+                root.downloads-error = state == "downloads-error" ? "download database operation failed" : "";
+                if (state == "downloads-active") {
+                    root.download-items = [
+                        { id: "mock-1", title: "Spider-Man: Far from Home", filename: "Spider-Man_ Far from Home.mp4", destination: "C:/Downloads", status: "2.4 GB / 8.5 GB (14.2 MB/s)", progress: 0.28, can-pause: true, can-resume: false, can-play: false, can-cancel: true, can-delete: false }
+                    ];
+                }
+                if (state == "downloads-paused") {
+                    root.download-items = [
+                        { id: "mock-1", title: "Spider-Man: Far from Home", filename: "Spider-Man_ Far from Home.mp4", destination: "C:/Downloads", status: "Paused", progress: 0.45, can-pause: false, can-resume: true, can-play: false, can-cancel: true, can-delete: false }
+                    ];
+                }
+                if (state == "downloads-completed") {
+                    root.download-items = [
+                        { id: "mock-1", title: "Spider-Man: Far from Home", filename: "Spider-Man_ Far from Home.mp4", destination: "C:/Downloads", status: "Completed", progress: 1.0, can-pause: false, can-resume: false, can-play: true, can-cancel: false, can-delete: true }
+                    ];
+                }
+                if (state == "downloads-cancelled") {
+                    root.download-items = [
+                        { id: "mock-1", title: "Spider-Man: Far from Home", filename: "Spider-Man_ Far from Home.mp4", destination: "C:/Downloads", status: "Cancelled", progress: 0.15, can-pause: false, can-resume: true, can-play: false, can-cancel: false, can-delete: true }
+                    ];
+                }
+                if (state == "downloads-empty" || state == "downloads-loading" || state == "downloads-error") {
+                    root.download-items = [];
+                }
             }
         }
     }

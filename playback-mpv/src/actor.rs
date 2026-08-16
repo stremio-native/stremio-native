@@ -1,6 +1,8 @@
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
-    path::PathBuf,
+    fs,
+    net::UdpSocket,
+    path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
         mpsc::{self, Receiver, SyncSender, TryRecvError},
@@ -19,6 +21,7 @@ use crate::{
         FORMAT_NODE_MAP, FORMAT_NONE, FORMAT_STRING, MpvApi, MpvClient, MpvError, MpvEvent,
         MpvEventClientMessage, MpvEventEndFile, MpvEventProperty, MpvNode, MpvNodeList,
     },
+    spatial_audio::{OrenderProbe, probe_orender},
 };
 
 const ADD_SUBTITLE_COMMAND_REPLY_ID: u64 = 1;
@@ -62,6 +65,168 @@ pub enum HdrMode {
     Disabled,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SpatialAudioMode {
+    #[default]
+    Disabled,
+    OmniphonySpatial,
+    BinauralHrtf,
+    SurroundMatrix,
+}
+
+impl SpatialAudioMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::OmniphonySpatial => "Omniphony 3D",
+            Self::BinauralHrtf => "Binaural HRTF",
+            Self::SurroundMatrix => "7.1 Virtual Surround",
+        }
+    }
+}
+
+/// Listener-facing controls supported by Omniphony's embedded renderer.
+///
+/// Values are kept host-neutral here: the app owns persistence while the MPV
+/// actor owns validation, renderer configuration, and live OSC dispatch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OmniphonyAudioSettings {
+    pub headphones: bool,
+    pub hrir_source: String,
+    pub sofa_path: String,
+    pub pinna_preset: String,
+    pub pinna_d_scale_pct: u16,
+    pub pinna_depth_pct: u16,
+    pub prtf_frequency_scale_pct: u16,
+    pub prtf_depth_pct: u16,
+    pub unit_scale_m: f32,
+    pub head_radius_m: f32,
+    pub reflections_enabled: bool,
+    pub reflection_level: f32,
+    pub room_width_m: f32,
+    pub room_depth_m: f32,
+    pub room_height_m: f32,
+    pub reverb_enabled: bool,
+    pub reverb_level: f32,
+    pub reverb_rt60_s: f32,
+    pub reverb_predelay_ms: f32,
+    pub air_absorption: bool,
+    pub tracking_address: String,
+    pub tracking_format: String,
+    pub tracking_smoothing: f32,
+    pub tracking_invert: bool,
+    pub osc_rx_port: u16,
+}
+
+impl Default for OmniphonyAudioSettings {
+    fn default() -> Self {
+        Self {
+            headphones: false,
+            hrir_source: "saf".to_owned(),
+            sofa_path: String::new(),
+            pinna_preset: "pbnh".to_owned(),
+            pinna_d_scale_pct: 100,
+            pinna_depth_pct: 100,
+            prtf_frequency_scale_pct: 100,
+            prtf_depth_pct: 100,
+            unit_scale_m: 1.0,
+            head_radius_m: 0.0875,
+            reflections_enabled: false,
+            reflection_level: 0.5,
+            room_width_m: 4.0,
+            room_depth_m: 5.0,
+            room_height_m: 2.7,
+            reverb_enabled: false,
+            reverb_level: 0.25,
+            reverb_rt60_s: 0.35,
+            reverb_predelay_ms: 20.0,
+            air_absorption: true,
+            tracking_address: String::new(),
+            tracking_format: "auto".to_owned(),
+            tracking_smoothing: 0.2,
+            tracking_invert: false,
+            osc_rx_port: 9_000,
+        }
+    }
+}
+
+impl OmniphonyAudioSettings {
+    pub fn sanitized(mut self) -> Self {
+        self.hrir_source = match self.hrir_source.trim().to_ascii_lowercase().as_str() {
+            "synthetic" => "synthetic",
+            "pinna" => "pinna",
+            "prtf" => "prtf",
+            "sofa" => "sofa",
+            _ => "saf",
+        }
+        .to_owned();
+        self.pinna_preset = if self.pinna_preset.eq_ignore_ascii_case("rd") {
+            "rd"
+        } else {
+            "pbnh"
+        }
+        .to_owned();
+        self.pinna_d_scale_pct = self.pinna_d_scale_pct.clamp(50, 150);
+        self.pinna_depth_pct = self.pinna_depth_pct.min(100);
+        self.prtf_frequency_scale_pct = self.prtf_frequency_scale_pct.clamp(50, 150);
+        self.prtf_depth_pct = self.prtf_depth_pct.min(100);
+        self.unit_scale_m = finite_clamp(self.unit_scale_m, 1.0, 0.1, 10.0);
+        self.head_radius_m = finite_clamp(self.head_radius_m, 0.0875, 0.05, 0.15);
+        self.reflection_level = finite_clamp(self.reflection_level, 0.5, 0.0, 1.0);
+        self.room_width_m = finite_clamp(self.room_width_m, 4.0, 1.0, 20.0);
+        self.room_depth_m = finite_clamp(self.room_depth_m, 5.0, 1.0, 20.0);
+        self.room_height_m = finite_clamp(self.room_height_m, 2.7, 1.0, 20.0);
+        self.reverb_level = finite_clamp(self.reverb_level, 0.25, 0.0, 1.0);
+        self.reverb_rt60_s = finite_clamp(self.reverb_rt60_s, 0.35, 0.1, 3.0);
+        self.reverb_predelay_ms = finite_clamp(self.reverb_predelay_ms, 20.0, 0.0, 100.0);
+        self.tracking_format = match self.tracking_format.trim().to_ascii_lowercase().as_str() {
+            "quat" => "quat",
+            "rotvec" => "rotvec",
+            "euler" => "euler",
+            _ => "auto",
+        }
+        .to_owned();
+        self.tracking_smoothing = finite_clamp(self.tracking_smoothing, 0.2, 0.0, 0.99);
+        if self.osc_rx_port == 0 {
+            self.osc_rx_port = 9_000;
+        }
+        self
+    }
+
+    fn output_mode(&self) -> &'static str {
+        if self.headphones {
+            "binaural"
+        } else {
+            "speaker"
+        }
+    }
+
+    fn hrir_selector(&self) -> String {
+        match self.hrir_source.as_str() {
+            "pinna" => format!(
+                "pinna:{}:{}:{}",
+                self.pinna_preset, self.pinna_d_scale_pct, self.pinna_depth_pct
+            ),
+            "prtf" => format!(
+                "prtf:{}:{}",
+                self.prtf_frequency_scale_pct, self.prtf_depth_pct
+            ),
+            "sofa" if !self.sofa_path.trim().is_empty() => {
+                format!("sofa:{}", self.sofa_path.trim())
+            }
+            other => other.to_owned(),
+        }
+    }
+}
+
+fn finite_clamp(value: f32, fallback: f32, minimum: f32, maximum: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(minimum, maximum)
+    } else {
+        fallback
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaybackState {
     pub loading: bool,
@@ -87,6 +252,8 @@ pub struct PlaybackState {
     pub hdr_mode: HdrMode,
     pub hdr_content: bool,
     pub hdr_passthrough_available: bool,
+    pub spatial_audio_requested: SpatialAudioMode,
+    pub spatial_audio_applied: SpatialAudioMode,
     pub video_primaries: Option<String>,
     pub video_transfer: Option<String>,
     pub filename: Option<String>,
@@ -123,6 +290,8 @@ impl Default for PlaybackState {
             hdr_mode: HdrMode::Auto,
             hdr_content: false,
             hdr_passthrough_available: true,
+            spatial_audio_requested: SpatialAudioMode::Disabled,
+            spatial_audio_applied: SpatialAudioMode::Disabled,
             video_primaries: None,
             video_transfer: None,
             filename: None,
@@ -177,6 +346,11 @@ pub enum PlaybackEvent {
         content_hdr: bool,
         passthrough_available: bool,
     },
+    SpatialAudioChanged {
+        requested: SpatialAudioMode,
+        applied: SpatialAudioMode,
+        message: String,
+    },
     Warning(String),
     Error(String),
     Shutdown,
@@ -223,6 +397,9 @@ pub enum PlaybackCommand {
         include_subtitles: bool,
     },
     SetHdrMode(HdrMode),
+    SetSpatialAudioMode(SpatialAudioMode),
+    ConfigureOmniphonyAudio(OmniphonyAudioSettings),
+    RecenterOmniphonyHead,
     ConfigureVideoShaders {
         request_id: u64,
         paths: Vec<String>,
@@ -235,6 +412,52 @@ pub enum PlaybackCommand {
 pub struct PlayerConfig {
     pub config_dir: Option<PathBuf>,
     pub hardware_decoding: bool,
+    pub spatial_audio_sofa_path: Option<PathBuf>,
+    pub omniphony_config_path: Option<PathBuf>,
+    /// Explicit `yt-dlp` location for MPV's `ytdl_hook`. [`None`] leaves the
+    /// hook to find the binary on `PATH` itself.
+    pub ytdl_path: Option<PathBuf>,
+}
+
+/// Sites whose streams MPV can only play by way of `ytdl_hook`.
+///
+/// YouTube hands out one signed URL per track, so the hook stitches the chosen
+/// video and audio back together as an EDL. Those URLs also reject the
+/// open-ended range requests FFmpeg issues when nothing buffers ahead of it,
+/// which is why the demuxer cache has to be forced on for them even though
+/// local streams are better off without it.
+fn needs_ytdl(url: &str) -> bool {
+    const HOSTS: [&str; 4] = [
+        "youtube.com/",
+        "youtu.be/",
+        "www.youtube.com/",
+        "m.youtube.com/",
+    ];
+    let trimmed = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    HOSTS.iter().any(|host| trimmed.starts_with(host))
+}
+
+/// Per-file `loadfile` options, or [`None`] when the defaults already suffice.
+fn load_file_options(url: &str, start_at: Option<f64>) -> Option<String> {
+    let mut options = Vec::new();
+    if needs_ytdl(url) {
+        options.push("cache=yes".to_owned());
+    }
+    if let Some(start_at) = start_at.filter(|time| time.is_finite() && *time > 0.0) {
+        options.push(format!("start={start_at:.3}"));
+    }
+    (!options.is_empty()).then(|| options.join(","))
+}
+
+/// Formats an explicit extractor path as an MPV `script-opts` entry.
+///
+/// The `%len%` prefix is MPV's escaping for key/value list entries; without it a
+/// comma anywhere in the path would be read as the start of another option.
+pub(crate) fn ytdl_script_opt(path: &std::path::Path) -> String {
+    let path = path.to_string_lossy();
+    format!("ytdl_hook-ytdl_path=%{}%{}", path.len(), path)
 }
 
 #[derive(Clone)]
@@ -266,6 +489,7 @@ impl PlaybackController {
 pub struct PlaybackRuntime {
     controller: PlaybackController,
     render_source: RenderSource,
+    omniphony_decoder_available: bool,
     actor: Option<JoinHandle<()>>,
 }
 
@@ -274,14 +498,31 @@ impl PlaybackRuntime {
         config: PlayerConfig,
         event_sink: impl Fn(PlaybackEvent) + Send + Sync + 'static,
     ) -> Result<Self, MpvError> {
-        let api = MpvApi::linked()?;
+        let PlayerConfig {
+            config_dir,
+            hardware_decoding,
+            spatial_audio_sofa_path,
+            omniphony_config_path,
+            ytdl_path,
+        } = config;
+        let api = MpvApi::playback_runtime()?;
         let client = MpvClient::create(api)?;
 
-        if let Some(config_dir) = config.config_dir {
+        if let Some(config_dir) = config_dir {
             client.set_option("config-dir", &config_dir.to_string_lossy())?;
             client.set_option("config", "yes")?;
             client.set_option("load-scripts", "yes")?;
         }
+        // `ytdl_hook` takes the extractor path as a script option; there is no
+        // top-level MPV option for it. A failure here is not fatal, it just
+        // leaves the hook searching `PATH`.
+        if let Some(ytdl_path) = ytdl_path.as_deref()
+            && let Err(error) = client.set_option("script-opts", &ytdl_script_opt(ytdl_path))
+        {
+            tracing::warn!(%error, path = %ytdl_path.display(), "could not point ytdl_hook at yt-dlp");
+        }
+        client.set_option("ytdl", "yes")?;
+        client.set_option("ytdl-format", "bestvideo+bestaudio/best")?;
         client.set_option("terminal", "no")?;
         client.set_option("input-default-bindings", "no")?;
         client.set_option("input-vo-keyboard", "no")?;
@@ -304,10 +545,13 @@ impl PlaybackRuntime {
         // D3D11 hardware surfaces require ANGLE in libmpv, so use copy-safe
         // decoding and keep decoder-to-texture direct rendering disabled.
         client.set_option("vd-lavc-dr", "no")?;
-        client.set_option("hwdec", hardware_decoding_option(config.hardware_decoding))?;
+        client.set_option("hwdec", hardware_decoding_option(hardware_decoding))?;
         client.initialize()?;
         let (_, _, hdr_result) = apply_hdr_mode(&client, HdrMode::Auto);
         hdr_result?;
+        let spatial_audio =
+            SpatialAudioRuntime::detect(&client, spatial_audio_sofa_path, omniphony_config_path);
+        let omniphony_decoder_available = spatial_audio.omniphony_available();
         observe_properties(&client)?;
 
         let (sender, receiver) = mpsc::sync_channel(128);
@@ -325,12 +569,13 @@ impl PlaybackRuntime {
         wake.signal();
         let actor = thread::Builder::new()
             .name("mpv-player".to_owned())
-            .spawn(move || actor_loop(client, receiver, sink, wake))
+            .spawn(move || actor_loop(client, receiver, sink, wake, spatial_audio))
             .map_err(|_| MpvError::ActorPanicked)?;
 
         Ok(Self {
             controller,
             render_source,
+            omniphony_decoder_available,
             actor: Some(actor),
         })
     }
@@ -341,6 +586,11 @@ impl PlaybackRuntime {
 
     pub fn render_source(&self) -> RenderSource {
         self.render_source.clone()
+    }
+
+    /// Whether a compatible Omniphony runtime is available to the active libmpv.
+    pub fn omniphony_decoder_available(&self) -> bool {
+        self.omniphony_decoder_available
     }
 
     pub fn shutdown(mut self) -> Result<(), MpvError> {
@@ -364,6 +614,540 @@ fn hardware_decoding_option(enabled: bool) -> &'static str {
     {
         "auto-copy"
     }
+}
+
+#[derive(Debug)]
+struct SpatialAudioRuntime {
+    base_ad: String,
+    base_af: String,
+    base_audio_channels: String,
+    sofa_path: Option<PathBuf>,
+    omniphony_config_path: Option<PathBuf>,
+    omniphony_settings: OmniphonyAudioSettings,
+    omniphony_decoder: bool,
+    omniphony_engine: Result<OrenderProbe, String>,
+}
+
+struct SpatialAudioResolution {
+    applied: SpatialAudioMode,
+    message: String,
+}
+
+impl SpatialAudioRuntime {
+    fn detect(
+        client: &MpvClient,
+        sofa_path: Option<PathBuf>,
+        omniphony_config_path: Option<PathBuf>,
+    ) -> Self {
+        let base_ad = client.get_string("ad").unwrap_or_default();
+        let base_af = client.get_string("af").unwrap_or_default();
+        let base_audio_channels = client
+            .get_string("audio-channels")
+            .unwrap_or_else(|_| "auto-safe".to_owned());
+        // `orender` is a dynamically selected audio decoder, so it is not
+        // guaranteed to appear in MPV's decoder-list before a file is loaded.
+        // The decoder patch does, however, register this private option.
+        let omniphony_decoder = client.get_node("option-info/ad-orender-library").is_ok();
+        let omniphony_engine = probe_orender();
+        let omniphony_available = omniphony_decoder && omniphony_engine.is_ok();
+
+        match &omniphony_engine {
+            Ok(engine) => tracing::info!(
+                path = %engine.path.display(),
+                abi_major = 0,
+                abi_minor = engine.minor,
+                build_id = engine.build_id.as_deref().unwrap_or("unknown"),
+                spatial_query = engine.spatial_query,
+                omniphony_decoder,
+                omniphony_available,
+                "detected Omniphony runtime"
+            ),
+            Err(error) => tracing::info!(
+                omniphony_decoder,
+                omniphony_available,
+                %error,
+                "Omniphony runtime is unavailable"
+            ),
+        }
+
+        Self {
+            base_ad,
+            base_af,
+            base_audio_channels,
+            sofa_path,
+            omniphony_config_path,
+            omniphony_settings: OmniphonyAudioSettings::default(),
+            omniphony_decoder,
+            omniphony_engine,
+        }
+    }
+
+    fn omniphony_available(&self) -> bool {
+        self.omniphony_decoder && self.omniphony_engine.is_ok()
+    }
+
+    fn apply(
+        &self,
+        client: &MpvClient,
+        requested: SpatialAudioMode,
+        loaded: bool,
+        active_audio_track: Option<&str>,
+    ) -> Result<SpatialAudioResolution, MpvError> {
+        let candidates: &[SpatialAudioMode] = match requested {
+            SpatialAudioMode::Disabled => &[SpatialAudioMode::Disabled],
+            SpatialAudioMode::OmniphonySpatial => &[
+                SpatialAudioMode::OmniphonySpatial,
+                SpatialAudioMode::BinauralHrtf,
+                SpatialAudioMode::SurroundMatrix,
+                SpatialAudioMode::Disabled,
+            ],
+            SpatialAudioMode::BinauralHrtf => &[
+                SpatialAudioMode::BinauralHrtf,
+                SpatialAudioMode::SurroundMatrix,
+                SpatialAudioMode::Disabled,
+            ],
+            SpatialAudioMode::SurroundMatrix => {
+                &[SpatialAudioMode::SurroundMatrix, SpatialAudioMode::Disabled]
+            }
+        };
+        let mut failures = Vec::new();
+
+        for &candidate in candidates {
+            if let Some(reason) = self.unavailable_reason(candidate) {
+                failures.push(format!("{}: {reason}", candidate.label()));
+                continue;
+            }
+            let result = self
+                .configure(client, candidate)
+                .and_then(|()| {
+                    if loaded {
+                        reselect_audio_track(client, active_audio_track)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .map(|()| {
+                    if candidate == SpatialAudioMode::OmniphonySpatial && loaded {
+                        self.send_live_controls();
+                    }
+                });
+            match result {
+                Ok(()) => {
+                    let message = if candidate == requested {
+                        self.active_message(candidate)
+                    } else {
+                        format!(
+                            "{} unavailable ({}); using {}",
+                            requested.label(),
+                            failures.join("; "),
+                            candidate.label()
+                        )
+                    };
+                    return Ok(SpatialAudioResolution {
+                        applied: candidate,
+                        message,
+                    });
+                }
+                Err(error) if candidate != SpatialAudioMode::Disabled => {
+                    failures.push(format!("{}: {error}", candidate.label()));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(MpvError::InvalidNode(
+            "spatial-audio fallback resolution exhausted unexpectedly".to_owned(),
+        ))
+    }
+
+    fn unavailable_reason(&self, mode: SpatialAudioMode) -> Option<String> {
+        match mode {
+            SpatialAudioMode::OmniphonySpatial if !self.omniphony_decoder => Some(
+                "the active libmpv does not expose the Omniphony decoder option".to_owned(),
+            ),
+            SpatialAudioMode::OmniphonySpatial => self
+                .omniphony_engine
+                .as_ref()
+                .err()
+                .map(|error| format!("liborender probe failed: {error}")),
+            SpatialAudioMode::BinauralHrtf => match self.sofa_path.as_deref() {
+                Some(path) if path.is_file() => None,
+                Some(path) => Some(format!("SOFA file not found at {}", path.display())),
+                None => Some(
+                    "no SOFA file is configured (set STREMIO_SOFA_PATH or install hrtf/default.sofa in the MPV config directory)"
+                        .to_owned(),
+                ),
+            },
+            _ => None,
+        }
+    }
+
+    fn configure(&self, client: &MpvClient, mode: SpatialAudioMode) -> Result<(), MpvError> {
+        self.restore_base(client)?;
+        match mode {
+            SpatialAudioMode::Disabled => Ok(()),
+            SpatialAudioMode::OmniphonySpatial => {
+                let engine = self.omniphony_engine.as_ref().map_err(|error| {
+                    MpvError::InvalidNode(format!("liborender probe failed: {error}"))
+                })?;
+                client.set_string("ad-orender-library", engine.path.to_string_lossy().as_ref())?;
+                if let Some(path) = self.omniphony_config_path.as_deref() {
+                    client.set_string("ad-orender-config", path.to_string_lossy().as_ref())?;
+                }
+                client.set_flag("ad-orender-osc", true)?;
+                client.set_string(
+                    "ad-orender-osc-rx-port",
+                    &self.omniphony_settings.osc_rx_port.to_string(),
+                )?;
+                client.set_string("ad", &prepend_decoder(&self.base_ad, "orender"))
+            }
+            SpatialAudioMode::BinauralHrtf => {
+                let Some(path) = self.sofa_path.as_deref() else {
+                    return Err(MpvError::InvalidNode(
+                        "binaural HRTF requested without a SOFA path".to_owned(),
+                    ));
+                };
+                let filter = format!(
+                    "lavfi=[sofalizer=sofa='{}':type=freq:normalize=1]",
+                    escape_lavfi_value(&path.to_string_lossy())
+                );
+                client
+                    .set_string("audio-channels", "auto")
+                    .and_then(|()| client.set_string("af", &append_filter(&self.base_af, &filter)))
+            }
+            SpatialAudioMode::SurroundMatrix => {
+                client.set_string("audio-channels", "7.1").and_then(|()| {
+                    client.set_string(
+                        "af",
+                        &append_filter(&self.base_af, "lavfi=[surround=chl_out=7.1:chl_in=stereo]"),
+                    )
+                })
+            }
+        }
+    }
+
+    fn restore_base(&self, client: &MpvClient) -> Result<(), MpvError> {
+        client
+            .set_string("ad", &self.base_ad)
+            .and_then(|()| client.set_string("af", &self.base_af))
+            .and_then(|()| client.set_string("audio-channels", &self.base_audio_channels))
+    }
+
+    fn active_message(&self, mode: SpatialAudioMode) -> String {
+        match mode {
+            SpatialAudioMode::Disabled => "Spatial audio disabled".to_owned(),
+            SpatialAudioMode::OmniphonySpatial => self.omniphony_engine.as_ref().map_or_else(
+                |_| "Omniphony 3D active".to_owned(),
+                |engine| {
+                    let output = if self.omniphony_settings.headphones {
+                        "headphones"
+                    } else {
+                        "speakers"
+                    };
+                    format!(
+                        "Omniphony 3D active for {output} (liborender ABI 0.{})",
+                        engine.minor
+                    )
+                },
+            ),
+            SpatialAudioMode::BinauralHrtf => "Binaural HRTF active".to_owned(),
+            SpatialAudioMode::SurroundMatrix => "7.1 virtual surround active".to_owned(),
+        }
+    }
+
+    fn configure_omniphony(&mut self, settings: OmniphonyAudioSettings) -> Result<(), MpvError> {
+        self.omniphony_settings = settings.sanitized();
+        if let Some(path) = self.omniphony_config_path.as_deref() {
+            write_omniphony_config(path, &self.omniphony_settings).map_err(|error| {
+                MpvError::InvalidNode(format!(
+                    "could not write Omniphony config {}: {error}",
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn send_live_controls(&self) {
+        let target = ("127.0.0.1", self.omniphony_settings.osc_rx_port);
+        let Ok(socket) = UdpSocket::bind(("127.0.0.1", 0)) else {
+            tracing::warn!("could not bind local socket for Omniphony controls");
+            return;
+        };
+        let settings = &self.omniphony_settings;
+        let string_controls = [
+            ("/omniphony/control/output_mode", settings.output_mode()),
+            (
+                "/omniphony/control/head/tracking/address",
+                settings.tracking_address.as_str(),
+            ),
+            (
+                "/omniphony/control/head/tracking/format",
+                settings.tracking_format.as_str(),
+            ),
+        ];
+        for (address, value) in string_controls {
+            send_osc_packet(&socket, target, osc_string_packet(address, value));
+        }
+        let hrir_selector = settings.hrir_selector();
+        send_osc_packet(
+            &socket,
+            target,
+            osc_string_packet("/omniphony/control/binaural/hrir_source", &hrir_selector),
+        );
+        let float_controls = [
+            (
+                "/omniphony/control/binaural/unit_scale",
+                settings.unit_scale_m,
+            ),
+            (
+                "/omniphony/control/binaural/head_radius",
+                settings.head_radius_m,
+            ),
+            (
+                "/omniphony/control/binaural/reflections/level",
+                settings.reflection_level,
+            ),
+            (
+                "/omniphony/control/binaural/reflections/room_width",
+                settings.room_width_m,
+            ),
+            (
+                "/omniphony/control/binaural/reflections/room_depth",
+                settings.room_depth_m,
+            ),
+            (
+                "/omniphony/control/binaural/reflections/room_height",
+                settings.room_height_m,
+            ),
+            (
+                "/omniphony/control/binaural/reverb/level",
+                settings.reverb_level,
+            ),
+            (
+                "/omniphony/control/binaural/reverb/rt60",
+                settings.reverb_rt60_s,
+            ),
+            (
+                "/omniphony/control/binaural/reverb/predelay",
+                settings.reverb_predelay_ms,
+            ),
+            (
+                "/omniphony/control/head/tracking/smoothing",
+                settings.tracking_smoothing,
+            ),
+        ];
+        for (address, value) in float_controls {
+            send_osc_packet(&socket, target, osc_float_packet(address, value));
+        }
+        let bool_controls = [
+            (
+                "/omniphony/control/binaural/reflections/enabled",
+                settings.reflections_enabled,
+            ),
+            (
+                "/omniphony/control/binaural/reverb/enabled",
+                settings.reverb_enabled,
+            ),
+            (
+                "/omniphony/control/binaural/air_absorption",
+                settings.air_absorption,
+            ),
+            (
+                "/omniphony/control/head/tracking/invert",
+                settings.tracking_invert,
+            ),
+        ];
+        for (address, value) in bool_controls {
+            send_osc_packet(&socket, target, osc_int_packet(address, i32::from(value)));
+        }
+    }
+
+    fn recenter_head(&self) -> Result<(), MpvError> {
+        if !self.omniphony_available() {
+            return Err(MpvError::InvalidNode(
+                "Omniphony head tracking is unavailable".to_owned(),
+            ));
+        }
+        let socket = UdpSocket::bind(("127.0.0.1", 0)).map_err(|error| {
+            MpvError::InvalidNode(format!("could not bind Omniphony control socket: {error}"))
+        })?;
+        socket
+            .send_to(
+                &osc_empty_packet("/omniphony/control/head/recenter"),
+                ("127.0.0.1", self.omniphony_settings.osc_rx_port),
+            )
+            .map_err(|error| {
+                MpvError::InvalidNode(format!("could not recenter Omniphony head pose: {error}"))
+            })?;
+        Ok(())
+    }
+}
+
+fn reselect_audio_track(
+    client: &MpvClient,
+    active_audio_track: Option<&str>,
+) -> Result<(), MpvError> {
+    let Some(active_audio_track) = active_audio_track.filter(|track| *track != "no") else {
+        return Ok(());
+    };
+    client
+        .set_string("aid", "no")
+        .and_then(|()| client.set_string("aid", active_audio_track))
+}
+
+fn prepend_decoder(base: &str, decoder: &str) -> String {
+    if base.split(',').any(|item| item.trim() == decoder) {
+        base.to_owned()
+    } else if base.trim().is_empty() {
+        decoder.to_owned()
+    } else {
+        format!("{decoder},{base}")
+    }
+}
+
+fn append_filter(base: &str, filter: &str) -> String {
+    if base.trim().is_empty() {
+        filter.to_owned()
+    } else {
+        format!("{base},{filter}")
+    }
+}
+
+fn write_omniphony_config(path: &Path, settings: &OmniphonyAudioSettings) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let reference_quat = fs::read_to_string(path)
+        .ok()
+        .and_then(|yaml| preserved_reference_quat(&yaml));
+    let hrir_selector = settings.hrir_selector();
+    let mut yaml = format!(
+        "render:\n  osc: true\n  osc_rx_port: {}\n  binaural:\n    output_mode: {}\n    unit_scale_m: {:.4}\n    head_radius_m: {:.4}\n    hrir_source: {}\n",
+        settings.osc_rx_port,
+        settings.output_mode(),
+        settings.unit_scale_m,
+        settings.head_radius_m,
+        yaml_string(&hrir_selector),
+    );
+    if settings.hrir_source == "sofa" && !settings.sofa_path.trim().is_empty() {
+        yaml.push_str(&format!(
+            "    hrtf_sofa_path: {}\n",
+            yaml_string(settings.sofa_path.trim())
+        ));
+    }
+    yaml.push_str("    head_tracking:\n");
+    yaml.push_str(&format!(
+        "      osc_address: {}\n      format: {}\n",
+        yaml_string(settings.tracking_address.trim()),
+        settings.tracking_format,
+    ));
+    if let Some(reference) = reference_quat {
+        yaml.push_str(&format!("      reference_quat: {reference}\n"));
+    }
+    yaml.push_str(&format!(
+        concat!(
+            "    reflections:\n",
+            "      enabled: {}\n",
+            "      room_width_m: {:.3}\n",
+            "      room_depth_m: {:.3}\n",
+            "      room_height_m: {:.3}\n",
+            "      level: {:.3}\n",
+            "    reverb:\n",
+            "      enabled: {}\n",
+            "      level: {:.3}\n",
+            "      rt60_s: {:.3}\n",
+            "      predelay_ms: {:.3}\n",
+            "    air_absorption: {}\n"
+        ),
+        settings.reflections_enabled,
+        settings.room_width_m,
+        settings.room_depth_m,
+        settings.room_height_m,
+        settings.reflection_level,
+        settings.reverb_enabled,
+        settings.reverb_level,
+        settings.reverb_rt60_s,
+        settings.reverb_predelay_ms,
+        settings.air_absorption,
+    ));
+    fs::write(path, yaml)
+}
+
+fn preserved_reference_quat(yaml: &str) -> Option<String> {
+    yaml.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("reference_quat:")?.trim();
+        (!value.is_empty()
+            && value.chars().all(|character| {
+                character.is_ascii_digit()
+                    || matches!(
+                        character,
+                        '[' | ']' | ',' | '.' | '-' | '+' | 'e' | 'E' | ' ' | '\t'
+                    )
+            }))
+        .then(|| value.to_owned())
+    })
+}
+
+fn yaml_string(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    format!("\"{escaped}\"")
+}
+
+fn osc_padded_string(buffer: &mut Vec<u8>, value: &str) {
+    buffer.extend_from_slice(value.as_bytes());
+    buffer.push(0);
+    while !buffer.len().is_multiple_of(4) {
+        buffer.push(0);
+    }
+}
+
+fn osc_empty_packet(address: &str) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(address.len() + 8);
+    osc_padded_string(&mut packet, address);
+    osc_padded_string(&mut packet, ",");
+    packet
+}
+
+fn osc_string_packet(address: &str, value: &str) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(address.len() + value.len() + 12);
+    osc_padded_string(&mut packet, address);
+    osc_padded_string(&mut packet, ",s");
+    osc_padded_string(&mut packet, value);
+    packet
+}
+
+fn osc_float_packet(address: &str, value: f32) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(address.len() + 12);
+    osc_padded_string(&mut packet, address);
+    osc_padded_string(&mut packet, ",f");
+    packet.extend_from_slice(&value.to_bits().to_be_bytes());
+    packet
+}
+
+fn osc_int_packet(address: &str, value: i32) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(address.len() + 12);
+    osc_padded_string(&mut packet, address);
+    osc_padded_string(&mut packet, ",i");
+    packet.extend_from_slice(&value.to_be_bytes());
+    packet
+}
+
+fn send_osc_packet(socket: &UdpSocket, target: (&str, u16), packet: Vec<u8>) {
+    if let Err(error) = socket.send_to(&packet, target) {
+        tracing::debug!(%error, "could not send an Omniphony live control");
+    }
+}
+
+fn escape_lavfi_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
 }
 
 impl Drop for PlaybackRuntime {
@@ -412,6 +1196,7 @@ fn actor_loop(
     receiver: Receiver<PlaybackCommand>,
     sink: Arc<dyn Fn(PlaybackEvent) + Send + Sync>,
     wake: Arc<ActorWake>,
+    mut spatial_audio: SpatialAudioRuntime,
 ) {
     let mut state = PlaybackState::default();
     let mut running = true;
@@ -421,7 +1206,8 @@ fn actor_loop(
         loop {
             match receiver.try_recv() {
                 Ok(command) => {
-                    running = handle_command(&client, command, &mut state, &sink);
+                    running =
+                        handle_command(&client, command, &mut state, &sink, &mut spatial_audio);
                     if !running {
                         break;
                     }
@@ -437,7 +1223,7 @@ fn actor_loop(
             break;
         }
 
-        drain_events(&client, &mut state, &sink, &mut running);
+        drain_events(&client, &mut state, &sink, &mut running, &spatial_audio);
     }
 
     client.set_wakeup_callback(None, std::ptr::null_mut());
@@ -493,31 +1279,32 @@ fn handle_command(
     command: PlaybackCommand,
     state: &mut PlaybackState,
     sink: &Arc<dyn Fn(PlaybackEvent) + Send + Sync>,
+    spatial_audio: &mut SpatialAudioRuntime,
 ) -> bool {
     let fatal_error = matches!(&command, PlaybackCommand::Load { .. });
     let result = match command {
         PlaybackCommand::Load { url, start_at } => {
             let hdr_mode = state.hdr_mode;
             let hdr_passthrough_available = state.hdr_passthrough_available;
+            let spatial_audio_requested = state.spatial_audio_requested;
+            let spatial_audio_applied = state.spatial_audio_applied;
             *state = PlaybackState {
                 loading: true,
                 paused: false,
                 hdr_mode,
                 hdr_passthrough_available,
+                spatial_audio_requested,
+                spatial_audio_applied,
                 ..PlaybackState::default()
             };
             sink(PlaybackEvent::State(Arc::new(state.clone())));
+            let file_options = load_file_options(&url, start_at);
             set_optional_double(client, "ab-loop-a", None)
                 .and_then(|()| set_optional_double(client, "ab-loop-b", None))
-                .and_then(
-                    |()| match start_at.filter(|time| time.is_finite() && *time > 0.0) {
-                        Some(start_at) => {
-                            let options = format!("start={start_at:.3}");
-                            client.command(&["loadfile", &url, "replace", "-1", &options])
-                        }
-                        None => client.command(&["loadfile", &url, "replace"]),
-                    },
-                )
+                .and_then(|()| match file_options {
+                    Some(options) => client.command(&["loadfile", &url, "replace", "-1", &options]),
+                    None => client.command(&["loadfile", &url, "replace"]),
+                })
         }
         PlaybackCommand::Stop => {
             client.abort_async_command(ADD_SUBTITLE_COMMAND_REPLY_ID);
@@ -650,6 +1437,54 @@ fn handle_command(
             sink(PlaybackEvent::State(Arc::new(state.clone())));
             result
         }
+        PlaybackCommand::SetSpatialAudioMode(requested) => {
+            match spatial_audio.apply(
+                client,
+                requested,
+                state.loaded,
+                state.active_audio_track.as_deref(),
+            ) {
+                Ok(resolution) => {
+                    state.spatial_audio_requested = requested;
+                    state.spatial_audio_applied = resolution.applied;
+                    sink(PlaybackEvent::SpatialAudioChanged {
+                        requested,
+                        applied: resolution.applied,
+                        message: resolution.message,
+                    });
+                    sink(PlaybackEvent::State(Arc::new(state.clone())));
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+        PlaybackCommand::ConfigureOmniphonyAudio(settings) => {
+            match spatial_audio.configure_omniphony(settings) {
+                Err(error) => Err(error),
+                Ok(()) if state.spatial_audio_requested == SpatialAudioMode::OmniphonySpatial => {
+                    match spatial_audio.apply(
+                        client,
+                        SpatialAudioMode::OmniphonySpatial,
+                        state.loaded,
+                        state.active_audio_track.as_deref(),
+                    ) {
+                        Ok(resolution) => {
+                            state.spatial_audio_applied = resolution.applied;
+                            sink(PlaybackEvent::SpatialAudioChanged {
+                                requested: SpatialAudioMode::OmniphonySpatial,
+                                applied: resolution.applied,
+                                message: resolution.message,
+                            });
+                            sink(PlaybackEvent::State(Arc::new(state.clone())));
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Ok(()) => Ok(()),
+            }
+        }
+        PlaybackCommand::RecenterOmniphonyHead => spatial_audio.recenter_head(),
         PlaybackCommand::ConfigureVideoShaders { request_id, paths } => {
             match client.set_string_list("glsl-shaders", &paths) {
                 Ok(()) => sink(PlaybackEvent::VideoShadersConfigured { request_id }),
@@ -746,6 +1581,7 @@ fn drain_events(
     state: &mut PlaybackState,
     sink: &Arc<dyn Fn(PlaybackEvent) + Send + Sync>,
     running: &mut bool,
+    spatial_audio: &SpatialAudioRuntime,
 ) {
     loop {
         let event = client.wait_event(0.0);
@@ -770,6 +1606,9 @@ fn drain_events(
             EVENT_FILE_LOADED => {
                 state.loading = false;
                 state.loaded = true;
+                if state.spatial_audio_applied == SpatialAudioMode::OmniphonySpatial {
+                    spatial_audio.send_live_controls();
+                }
                 sink(PlaybackEvent::FileLoaded);
                 sink(PlaybackEvent::State(Arc::new(state.clone())));
             }
@@ -1023,6 +1862,9 @@ mod tests {
             PlayerConfig {
                 config_dir: None,
                 hardware_decoding: false,
+                spatial_audio_sofa_path: None,
+                omniphony_config_path: None,
+                ytdl_path: None,
             },
             |_| {},
         )
@@ -1246,7 +2088,31 @@ fn node_flag(node: &MpvNode) -> Option<bool> {
 
 #[cfg(test)]
 mod logic_tests {
-    use super::{Chapter, HdrMode, hdr_properties, normalize_chapter_ends, validate_ab_loop};
+    use super::{
+        Chapter, HdrMode, append_filter, escape_lavfi_value, hdr_properties,
+        normalize_chapter_ends, prepend_decoder, validate_ab_loop,
+    };
+
+    #[test]
+    fn prepend_decoder_should_preserve_existing_preferences() {
+        assert_eq!(prepend_decoder("lavc", "orender"), "orender,lavc");
+    }
+
+    #[test]
+    fn append_filter_should_preserve_existing_filters() {
+        assert_eq!(
+            append_filter("scaletempo", "lavfi=[surround]"),
+            "scaletempo,lavfi=[surround]"
+        );
+    }
+
+    #[test]
+    fn lavfi_value_should_escape_windows_path_separators_and_drive_colon() {
+        assert_eq!(
+            escape_lavfi_value(r"C:\HRTF\default.sofa"),
+            r"C\:\\HRTF\\default.sofa"
+        );
+    }
 
     #[test]
     fn validate_ab_loop_should_accept_a_without_b() {

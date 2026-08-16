@@ -218,6 +218,7 @@ pub fn setup(
 }
 
 #[tracing::instrument(skip_all)]
+#[cfg_attr(feature = "profiling", hotpath::measure)]
 pub fn sync(
     ui: &MainWindow,
     continue_watching: &ContinueWatchingPreview,

@@ -136,7 +136,7 @@ component PlayerSideDrawerButton inherits ButtonSurface {
     focus-outline-size: 0px;
     background: Theme.modal-background;
     drop-shadow-blur: 10px;
-    drop-shadow-color: #0000001a;
+    drop-shadow-color: Theme.scrim;
     accessible-name: root.drawer-open
         ? @tr("Close media details")
         : @tr("Open media details");
@@ -526,6 +526,13 @@ export component PlayerPage inherits Rectangle {
     changed controls-visible => {
         if (!root.controls-visible) {
             root.seek-leave();
+            root.show-upscaler-menu = false;
+            root.show-subtitles-menu = false;
+            root.show-audio-menu = false;
+            root.show-speed-menu = false;
+            root.show-stats-menu = false;
+            root.show-options-menu = false;
+            root.show-cast-menu = false;
         }
     }
 
@@ -696,7 +703,7 @@ export component PlayerPage inherits Rectangle {
             }
             if (!show-subtitles-menu && !show-audio-menu && !show-speed-menu &&
                 !show-stats-menu && !show-options-menu && !show-tools-menu
-                && !show-streams-menu && !show-playlist-drawer) {
+                && !show-streams-menu && !show-playlist-drawer && !show-upscaler-menu) {
                 toggle-pause();
             }
             show-subtitles-menu = false;
@@ -707,6 +714,7 @@ export component PlayerPage inherits Rectangle {
             show-tools-menu = false;
             show-streams-menu = false;
             show-cast-menu = false;
+            show-upscaler-menu = false;
             show-playlist-drawer = false;
             season-menu-open = false;
             
@@ -837,7 +845,7 @@ export component PlayerPage inherits Rectangle {
         y: 0px;
         width: 100%;
         height: 128px;
-        background: @linear-gradient(180deg, #00000059 0%, #00000000 100%);
+        background: @linear-gradient(180deg, Theme.scrim.with-alpha(0.35) 0%, Theme.scrim.with-alpha(0) 100%);
         z: 150;
 
         PlayerIconButton {
@@ -1180,7 +1188,7 @@ export component PlayerPage inherits Rectangle {
         y: parent.height - 160px;
         width: 100%;
         height: 160px;
-        background: @linear-gradient(0deg, #00000059 0%, #0000002e 45%, #00000000 100%);
+        background: @linear-gradient(0deg, Theme.scrim.with-alpha(0.35) 0%, Theme.scrim.with-alpha(0.18) 45%, Theme.scrim.with-alpha(0) 100%);
         z: 150;
 
         Text {
@@ -1189,7 +1197,7 @@ export component PlayerPage inherits Rectangle {
             width: 88px;
             height: 40px;
             text: elapsed-time-str;
-            color: #ffffffe6;
+            color: Theme.primary-foreground;
             font-size: 17px;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -1210,13 +1218,13 @@ export component PlayerPage inherits Rectangle {
             track-size: 6px;
             thumb-size: 19px;
             hover-thumb-size: 23px;
-            track-color: #ffffff;
+            track-color: Theme.primary-foreground;
             track-opacity: 0.3;
-            buffered-color: #ffffff80;
+            buffered-color: Theme.primary-foreground.with-alpha(0.5);
             progress-color: Theme.accent;
             thumb-color: Theme.accent;
             thumb-border-width: 4px;
-            thumb-border-color: #a891ff;
+            thumb-border-color: Theme.primary-accent.with-alpha(0.6);
             completed(value) => { root.seek(value); }
             hover-position-changed(val) => { root.seek-hover(val); }
             hover-left => { root.seek-leave(); }
@@ -1228,7 +1236,7 @@ export component PlayerPage inherits Rectangle {
             width: 3px;
             height: 34px;
             border-radius: 2px;
-            background: #7ee7ff;
+            background: Theme.primary-accent;
         }
 
         if (ab-loop-b >= 0 && duration-seconds > 0) : Rectangle {
@@ -1237,7 +1245,7 @@ export component PlayerPage inherits Rectangle {
             width: 3px;
             height: 34px;
             border-radius: 2px;
-            background: #ffcf67;
+            background: Theme.secondary-accent;
         }
 
         if (thumbnail-visible) : Rectangle {
@@ -1303,7 +1311,7 @@ export component PlayerPage inherits Rectangle {
             width: 88px;
             height: 40px;
             text: total-time-str;
-            color: #ffffffe6;
+            color: Theme.primary-foreground;
             font-size: 17px;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -1356,11 +1364,11 @@ export component PlayerPage inherits Rectangle {
                 track-inset: 8px;
                 track-size: 6px;
                 thumb-size: 16px;
-                track-color: #ffffff;
+                track-color: Theme.primary-foreground;
                 track-opacity: 0.2;
                 buffered-color: transparent;
-                progress-color: #ffffff;
-                thumb-color: #ffffff;
+                progress-color: Theme.primary-accent;
+                thumb-color: Theme.primary-accent;
                 changed(value) => { change-volume(value); }
             }
         }
@@ -2490,6 +2498,17 @@ export component PlayerPage inherits Rectangle {
         border-width: 1px;
         border-color: Theme.divider;
         z: 180;
+        forward-focus: upscaler-focus;
+
+        upscaler-focus := FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    show-upscaler-menu = false;
+                    return accept;
+                }
+                reject
+            }
+        }
 
         VerticalLayout {
             padding: 16px;

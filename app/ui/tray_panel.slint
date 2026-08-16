@@ -1,0 +1,276 @@
+import { Theme } from "theme.slint";
+
+component TrayMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <color> label-color: Theme.primary-foreground;
+    in property <image> icon;
+    in property <color> icon-color: Theme.text-secondary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 42px;
+    background: touch.has-hover ? Theme.overlay-hover : transparent;
+    border-radius: 6px;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    animate background { duration: 100ms; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 14px;
+
+        // Fixed-width container so every label starts on the same column.
+        Rectangle {
+            width: 20px;
+            horizontal-stretch: 0;
+
+            Image {
+                width: 17px;
+                height: 17px;
+                source: root.icon;
+                colorize: root.icon-color;
+                image-fit: contain;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: root.label-color;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+    }
+}
+
+export component TrayPanel inherits Window {
+    in property <string> version: "";
+    in property <int> update-state: 0;
+    in property <string> update-version: "";
+    in property <bool> update-can-install: false;
+    in property <bool> update-installing: false;
+
+    // The Win32 host reads these to size and place the popup, so the geometry
+    // stays declared in exactly one place.
+    out property <length> panel-width: 320px;
+    out property <length> panel-height: 391px;
+
+    callback open-window();
+    callback open-settings();
+    callback open-logs();
+    callback check-update();
+    callback install-update();
+    callback quit();
+    callback dismiss();
+
+    title: "Stremio";
+    width: root.panel-width;
+    height: root.panel-height;
+    background: Theme.background;
+    always-on-top: true;
+    no-frame: true;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Theme.background;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        clip: true;
+
+        VerticalLayout {
+            padding: 0px;
+            spacing: 0px;
+
+            // ─── Header ───
+            Rectangle {
+                height: 56px;
+                background: Theme.background;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 12px;
+                    spacing: 12px;
+
+                    Rectangle {
+                        width: 36px;
+                        height: 36px;
+                        horizontal-stretch: 0;
+                        y: parent.height / 2 - 18px;
+
+                        Image {
+                            source: @image-url("assets/images/app_icon.png");
+                            width: 32px;
+                            height: 32px;
+                            image-fit: contain;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+
+                        Text {
+                            text: "STREMIO NATIVE";
+                            color: Theme.primary-foreground;
+                            font-size: 13px;
+                            font-weight: 700;
+                            letter-spacing: 0.8px;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.secondary-accent;
+                                y: parent.height / 2 - 4px;
+                            }
+
+                            Text {
+                                text: "v" + root.version + " • " + @tr("Running");
+                                color: Theme.secondary-accent;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        horizontal-stretch: 0;
+                        border-radius: 4px;
+                        background: close-touch.has-hover ? Theme.overlay-hover : transparent;
+                        animate background { duration: 100ms; }
+                        y: parent.height / 2 - 14px;
+
+                        close-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.dismiss(); }
+                        }
+
+                        Image {
+                            x: parent.width / 2 - 6px;
+                            y: parent.height / 2 - 6px;
+                            width: 12px;
+                            height: 12px;
+                            source: @image-url("assets/images/icons/close.svg");
+                            colorize: Theme.text-secondary;
+                            image-fit: contain;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.card-border;
+            }
+
+            // ─── Primary actions ───
+            VerticalLayout {
+                padding: 8px;
+                spacing: 2px;
+
+                TrayMenuItem {
+                    icon: @image-url("assets/images/icons/play.svg");
+                    label: @tr("Open Stremio");
+                    clicked => { root.open-window(); }
+                }
+
+                TrayMenuItem {
+                    icon: @image-url("assets/images/icons/settings.svg");
+                    label: @tr("SETTINGS" => "Settings");
+                    clicked => { root.open-settings(); }
+                }
+
+                TrayMenuItem {
+                    icon: @image-url("assets/images/icons/open-in-browser.svg");
+                    label: @tr("Open Logs Folder");
+                    clicked => { root.open-logs(); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.card-border;
+            }
+
+            // ─── Updates ───
+            VerticalLayout {
+                padding: 8px;
+                spacing: 2px;
+
+                Text {
+                    height: 24px;
+                    text: root.update-installing
+                        ? @tr("Downloading update…")
+                        : (root.update-state == 1
+                            ? @tr("Checking for updates…")
+                            : (root.update-state == 2
+                                ? @tr("Update available") + ": v" + root.update-version
+                                : (root.update-state == 3
+                                    ? @tr("Stremio is up to date")
+                                    : (root.update-state == 4
+                                        ? @tr("Update check failed")
+                                        : @tr("Current version") + ": v" + root.update-version))));
+                    color: root.update-state == 2 ? Theme.tertiary-accent : Theme.text-muted;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    overflow: elide;
+                }
+
+                TrayMenuItem {
+                    icon: @image-url("assets/images/icons/cloud-sync.svg");
+                    label: @tr("Check for Updates");
+                    enabled: root.update-state != 1 && !root.update-installing;
+                    clicked => { root.check-update(); }
+                }
+
+                TrayMenuItem {
+                    icon: @image-url("assets/images/icons/download.svg");
+                    label: root.update-can-install ? @tr("Install Update") : @tr("View Update");
+                    enabled: root.update-state == 2 && !root.update-installing;
+                    clicked => { root.install-update(); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.card-border;
+            }
+
+            // ─── Quit ───
+            VerticalLayout {
+                padding: 8px;
+                spacing: 0px;
+
+                TrayMenuItem {
+                    icon: @image-url("assets/images/icons/exit.svg");
+                    icon-color: Theme.danger;
+                    label: @tr("Quit Stremio");
+                    label-color: Theme.danger;
+                    clicked => { root.quit(); }
+                }
+            }
+        }
+    }
+}

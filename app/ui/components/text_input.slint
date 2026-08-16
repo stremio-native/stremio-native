@@ -71,6 +71,7 @@ export component NativeTextField inherits Rectangle {
     in property <InputType> input-type: InputType.text;
     in property <brush> surface-color: Theme.overlay-color;
     in property <brush> focus-color: Theme.primary-foreground;
+    in property <brush> text-color: Theme.primary-foreground;
     out property <bool> has-focus: field.has-focus;
     callback accepted;
     callback edited;
@@ -89,6 +90,7 @@ export component NativeTextField inherits Rectangle {
         height: parent.height;
         text <=> root.text;
         placeholder-text: root.placeholder-text;
+        text-color: root.text-color;
         enabled: root.enabled;
         read-only: root.read-only;
         input-type: root.input-type;

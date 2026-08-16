@@ -157,7 +157,7 @@ export component ModalDialog inherits Rectangle {
     callback action-triggered(string);
 
     visible: root.open;
-    background: transparent;
+    background: root.open ? Theme.scrim : transparent;
     forward-focus: dialog-focus;
 
     close-layer := TouchArea {
@@ -169,8 +169,8 @@ export component ModalDialog inherits Rectangle {
     dialog := Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: min(root.dialog-width, parent.width * 0.8);
-        height: min(root.dialog-height, parent.height * 0.8);
+        width: min(root.dialog-width, parent.width * 0.9);
+        height: min(root.dialog-height, parent.height * 0.9);
         border-radius: Theme.border-radius;
         background: Theme.modal-color;
         drop-shadow-blur: Theme.outer-glow-blur;
@@ -231,7 +231,13 @@ export component ModalDialog inherits Rectangle {
                 - (root.actions.length > 0 ? 5.5 * root.unit : 0px);
             clip: true;
 
-            @children
+            ScrollView {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.width;
+
+                @children
+            }
         }
 
         if (root.actions.length > 0) : HorizontalLayout {

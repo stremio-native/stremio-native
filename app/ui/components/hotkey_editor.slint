@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 import { PillButton } from "button.slint";
-import { LineEdit } from "std-widgets.slint";
+import { StremioTextInput } from "text_input.slint";
 
 export struct HotkeyItem {
     id: string,
@@ -45,12 +45,12 @@ export component HotkeyEditor inherits VerticalLayout {
                         border-radius: 0.25 * root.unit;
                         drop-shadow-blur: 0px;
                         drop-shadow-offset-y: 3px;
-                        drop-shadow-color: #ffffff1a;
+                        drop-shadow-color: Theme.card-border;
                         HorizontalLayout {
                             padding-left: root.unit;
                             padding-right: root.unit;
                             alignment: center;
-                            LineEdit {
+                            StremioTextInput {
                                 font-size: root.unit;
                                 text: item.binding;
                                 input-type: InputType.text;

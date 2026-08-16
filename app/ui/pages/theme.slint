@@ -1,0 +1,1483 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ButtonSurface, PillButton } from "../components/button.slint";
+import { ColorInput, ColorPicker } from "../components/color_input.slint";
+import { ModalDialog } from "../components/overlays.slint";
+import { NativeTextField } from "../components/text_input.slint";
+import { SelectField } from "../components/select.slint";
+import { Slider } from "../components/slider.slint";
+import { ColorUtils } from "../components/color_utils.slint";
+import { MediaCard, MediaCardItem } from "../components/media_card.slint";
+import { Chip } from "../components/chip.slint";
+
+struct ThemePreset {
+    name: string,
+    accent: color,
+    background: color,
+    secondary: color,
+    card: color,
+    border: color,
+    text: color,
+}
+
+// ── Left Sidebar Accordion Category ──
+component AccordionSection inherits VerticalLayout {
+    in property <length> unit: 16px;
+    in property <string> title;
+    in-out property <bool> expanded: true;
+    callback toggle;
+
+    spacing: root.expanded ? 0.5 * root.unit : 0px;
+
+    header := ButtonSurface {
+        height: 2.2 * root.unit;
+        background: transparent;
+        clicked => {
+            root.expanded = !root.expanded;
+            root.toggle();
+        }
+
+        HorizontalLayout {
+            padding-left: 0.5 * root.unit;
+            padding-right: 0.5 * root.unit;
+            spacing: 0.5 * root.unit;
+            alignment: start;
+
+            Image {
+                y: (parent.height - self.height) / 2;
+                width: 1 * root.unit;
+                height: 1 * root.unit;
+                source: root.expanded
+                    ? @image-url("../assets/images/icons/chevron-down.svg")
+                    : @image-url("../assets/images/icons/chevron-forward.svg");
+                colorize: Theme.text-muted;
+                image-fit: contain;
+            }
+
+            Text {
+                text: root.title;
+                color: Theme.text-muted;
+                font-size: 0.75 * root.unit;
+                font-weight: 700;
+                letter-spacing: 0.05 * root.unit;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    content-box := Rectangle {
+        height: root.expanded ? content-layout.preferred-height : 0px;
+        clip: true;
+        visible: self.height > 0px;
+
+        animate height { duration: 150ms; easing: ease-in-out; }
+
+        content-layout := VerticalLayout {
+            padding-left: 0.5 * root.unit;
+            spacing: 0.6 * root.unit;
+            @children
+        }
+    }
+}
+
+// ── Color Row Token inside Tweakcn Accordion ──
+component TweakcnColorRow inherits HorizontalLayout {
+    in property <length> unit: 16px;
+    in property <string> label;
+    in property <color> value;
+    in property <brush> fill-brush: root.value;
+    in property <bool> allow-gradient: false;
+    in property <bool> is-gradient: false;
+    callback edited(color);
+    callback gradient-edited(brush, color, color);
+
+    spacing: 0.75 * root.unit;
+    height: 2.6 * root.unit;
+
+    // Swatch box
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 1.6 * root.unit;
+        height: 1.6 * root.unit;
+        border-radius: 0.3 * root.unit;
+        background: root.fill-brush;
+        border-width: 1px;
+        border-color: Theme.card-border;
+    }
+
+    Text {
+        horizontal-stretch: 1;
+        text: root.label;
+        color: Theme.primary-foreground;
+        font-size: 0.9 * root.unit;
+        font-weight: 500;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Text {
+        text: ColorUtils.hex(root.value);
+        color: Theme.text-muted;
+        font-size: 0.8 * root.unit;
+        font-weight: 500;
+        vertical-alignment: center;
+    }
+
+    ColorInput {
+        y: (parent.height - self.height) / 2;
+        unit: root.unit;
+        width: 4.5 * root.unit;
+        value: root.value;
+        fill-brush: root.fill-brush;
+        is-gradient: root.is-gradient;
+        allow-gradient: root.allow-gradient;
+        color-changed(val) => { root.edited(val); }
+        gradient-changed(gradient, start, end) => { root.gradient-edited(gradient, start, end); }
+    }
+}
+
+// ── Studio Preview Card Shell ──
+component StudioPreviewCard inherits Rectangle {
+    in property <length> unit: 16px;
+    background: Theme.card-background;
+    border-radius: Theme.border-radius;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    clip: true;
+
+    @children
+}
+
+// ── Stremio Native Card 1: Featured Hero & Media Details Preview ──
+component StremioMediaHeroCard inherits StudioPreviewCard {
+    VerticalLayout {
+        padding: 1.5 * root.unit;
+        spacing: 1 * root.unit;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Text {
+                text: "FEATURED MEDIA PREVIEW";
+                color: Theme.primary-accent;
+                font-size: 0.75 * root.unit;
+                font-weight: 700;
+                letter-spacing: 0.05 * root.unit;
+            }
+
+            Rectangle {
+                height: 1.6 * root.unit;
+                border-radius: 0.8 * root.unit;
+                background: Theme.imdb;
+                border-width: 1px;
+                border-color: Theme.card-border;
+
+                HorizontalLayout {
+                    padding-left: 0.6 * root.unit;
+                    padding-right: 0.6 * root.unit;
+                    spacing: 0.4 * root.unit;
+
+                    Image {
+                        y: (parent.height - self.height) / 2;
+                        width: 0.9 * root.unit;
+                        height: 0.9 * root.unit;
+                        source: @image-url("../assets/images/icons/star.svg");
+                        colorize: Theme.secondary-foreground;
+                        image-fit: contain;
+                    }
+
+                    Text {
+                        text: "8.6 IMDb";
+                        color: Theme.secondary-foreground;
+                        font-size: 0.75 * root.unit;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: "Dune: Part Two (2024)";
+            color: Theme.primary-foreground;
+            font-size: 1.8 * root.unit;
+            font-weight: 700;
+        }
+
+        // Technical badges row
+        HorizontalLayout {
+            spacing: 0.5 * root.unit;
+
+            for badge in ["4K HDR", "Dolby Atmos", "AV1 10-bit", "2h 46m"] : Rectangle {
+                height: 1.5 * root.unit;
+                border-radius: 0.3 * root.unit;
+                background: Theme.overlay-hover;
+                border-width: 1px;
+                border-color: Theme.card-border;
+
+                HorizontalLayout {
+                    padding-left: 0.5 * root.unit;
+                    padding-right: 0.5 * root.unit;
+                    Text {
+                        text: badge;
+                        color: Theme.primary-foreground;
+                        font-size: 0.75 * root.unit;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: @tr("Paul Atreides unites with Chani and the Fremen while seeking revenge against the conspirators who destroyed his family.");
+            color: Theme.text-secondary;
+            font-size: 0.85 * root.unit;
+            wrap: word-wrap;
+        }
+
+        Rectangle { height: 0.5 * root.unit; }
+
+        // Action Buttons Row
+        HorizontalLayout {
+            spacing: 0.75 * root.unit;
+
+            PillButton {
+                unit: root.unit;
+                height: 2.8 * root.unit;
+                label: @tr("Play Stream");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/play.svg");
+                primary: true;
+            }
+
+            PillButton {
+                unit: root.unit;
+                height: 2.8 * root.unit;
+                label: @tr("Add to Library");
+                show-icon: true;
+                icon-source: @image-url("../assets/images/icons/add-to-library.svg");
+                outlined: true;
+            }
+        }
+    }
+}
+
+// ── Stremio Native Card 2: Streams & Torrent Health List Preview ──
+component StremioStreamsCard inherits StudioPreviewCard {
+    VerticalLayout {
+        padding: 1.25 * root.unit;
+        spacing: 0.8 * root.unit;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Text {
+                text: @tr("Available Streams");
+                color: Theme.primary-foreground;
+                font-size: 1.1 * root.unit;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "Torrentio v4.2";
+                color: Theme.text-muted;
+                font-size: 0.8 * root.unit;
+            }
+        }
+
+        // Stream 1 (4K Ultra HD)
+        ButtonSurface {
+            height: 3.6 * root.unit;
+            border-radius: Theme.compact-radius;
+            background: self.has-hover ? Theme.overlay-hover : Theme.overlay;
+            border-width: 1px;
+            border-color: Theme.primary-accent;
+
+            HorizontalLayout {
+                padding: 0.75 * root.unit;
+                spacing: 0.75 * root.unit;
+                alignment: space-between;
+
+                VerticalLayout {
+                    alignment: center;
+                    Text { text: "Torrentio 4K HDR • 21.4 GB"; color: Theme.primary-foreground; font-size: 0.85 * root.unit; font-weight: 700; }
+
+                    HorizontalLayout {
+                        spacing: 0.4 * root.unit;
+
+                        Image {
+                            y: (parent.height - self.height) / 2;
+                            width: 0.85 * root.unit;
+                            height: 0.85 * root.unit;
+                            source: @image-url("../assets/images/icons/speed.svg");
+                            colorize: Theme.secondary-accent;
+                            image-fit: contain;
+                        }
+
+                        Text { text: "1,420 Seeders • 2160p HEVC Remux"; color: Theme.secondary-accent; font-size: 0.75 * root.unit; font-weight: 600; }
+                    }
+                }
+
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    height: 1.6 * root.unit;
+                    border-radius: 0.3 * root.unit;
+                    background: Theme.primary-accent;
+
+                    HorizontalLayout {
+                        padding-left: 0.6 * root.unit;
+                        padding-right: 0.6 * root.unit;
+                        Text { text: "4K UHD"; color: Theme.primary-foreground; font-size: 0.75 * root.unit; font-weight: 700; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+
+        // Stream 2 (RealDebrid 1080p)
+        ButtonSurface {
+            height: 3.6 * root.unit;
+            border-radius: Theme.compact-radius;
+            background: self.has-hover ? Theme.overlay-hover : transparent;
+            border-width: 1px;
+            border-color: Theme.card-border;
+
+            HorizontalLayout {
+                padding: 0.75 * root.unit;
+                spacing: 0.75 * root.unit;
+                alignment: space-between;
+
+                VerticalLayout {
+                    alignment: center;
+                    Text { text: "RD+ Torrentio 1080p • 4.2 GB"; color: Theme.primary-foreground; font-size: 0.85 * root.unit; font-weight: 600; }
+
+                    HorizontalLayout {
+                        spacing: 0.4 * root.unit;
+
+                        Image {
+                            y: (parent.height - self.height) / 2;
+                            width: 0.85 * root.unit;
+                            height: 0.85 * root.unit;
+                            source: @image-url("../assets/images/icons/cloud-sync.svg");
+                            colorize: Theme.tertiary-accent;
+                            image-fit: contain;
+                        }
+
+                        Text { text: "RealDebrid High Speed Cached"; color: Theme.tertiary-accent; font-size: 0.75 * root.unit; font-weight: 600; }
+                    }
+                }
+
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    height: 1.6 * root.unit;
+                    border-radius: 0.3 * root.unit;
+                    background: Theme.overlay-hover;
+                    border-width: 1px;
+                    border-color: Theme.card-border;
+
+                    HorizontalLayout {
+                        padding-left: 0.6 * root.unit;
+                        padding-right: 0.6 * root.unit;
+                        Text { text: "1080p"; color: Theme.text-secondary; font-size: 0.75 * root.unit; font-weight: 600; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Stremio Native Card 3: Native Video Player & OSD Controls Preview ──
+component StremioPlayerCard inherits StudioPreviewCard {
+    property <float> progress: 0.52;
+
+    VerticalLayout {
+        padding: 1.25 * root.unit;
+        spacing: 1 * root.unit;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Text {
+                text: @tr("Player OSD Controls");
+                color: Theme.primary-foreground;
+                font-size: 1.1 * root.unit;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "libmpv • Hardware Accelerated";
+                color: Theme.secondary-accent;
+                font-size: 0.8 * root.unit;
+                font-weight: 600;
+            }
+        }
+
+        // Player Canvas Preview Box
+        Rectangle {
+            height: 9 * root.unit;
+            border-radius: Theme.compact-radius;
+            background: Theme.main-gradient;
+            border-width: 1px;
+            border-color: Theme.card-border;
+
+            // Player Overlay OSD Controls
+            VerticalLayout {
+                padding: 1 * root.unit;
+                alignment: space-between;
+
+                // OSD Top Bar
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "Dune: Part Two"; color: Theme.primary-foreground; font-size: 0.9 * root.unit; font-weight: 700; }
+                    Text { text: "HDR10 • 4K"; color: Theme.primary-accent; font-size: 0.8 * root.unit; font-weight: 700; }
+                }
+
+                // Center Play Icon Button
+                Rectangle {
+                    width: 3 * root.unit;
+                    height: 3 * root.unit;
+                    x: (parent.width - self.width) / 2;
+                    border-radius: 1.5 * root.unit;
+                    background: Theme.scrim.with-alpha(0.8);
+                    border-width: 1px;
+                    border-color: Theme.primary-accent;
+
+                    Image {
+                        x: (parent.width - self.width) / 2 + 1px;
+                        y: (parent.height - self.height) / 2;
+                        width: 1.4 * root.unit;
+                        height: 1.4 * root.unit;
+                        source: @image-url("../assets/images/icons/play.svg");
+                        colorize: Theme.primary-foreground;
+                        image-fit: contain;
+                    }
+                }
+
+                // Bottom Seekbar & Time
+                VerticalLayout {
+                    spacing: 0.4 * root.unit;
+
+                    Slider {
+                        height: 1.5 * root.unit;
+                        unit: root.unit;
+                        value: 52;
+                        minimum: 0;
+                        maximum: 100;
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "01:24:15"; color: Theme.primary-foreground; font-size: 0.75 * root.unit; font-weight: 600; }
+                        Text { text: "02:46:00"; color: Theme.text-muted; font-size: 0.75 * root.unit; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Stremio Native Card 4: Library Progress & Activity Stats Card ──
+component StremioLibraryCard inherits StudioPreviewCard {
+    VerticalLayout {
+        padding: 1.25 * root.unit;
+        spacing: 1 * root.unit;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Text {
+                text: @tr("Continue Watching (Library Cards)");
+                color: Theme.primary-foreground;
+                font-size: 1.1 * root.unit;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "3 items in progress";
+                color: Theme.text-muted;
+                font-size: 0.8 * root.unit;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 1 * root.unit;
+
+            MediaCard {
+                unit: root.unit;
+                item: {
+                    id: "tt15239678",
+                    title: "Dune: Part Two",
+                    description: "2024 • Sci-Fi",
+                    show-progress: true,
+                    progress-value: 0.65,
+                    can-play: true,
+                };
+            }
+
+            MediaCard {
+                unit: root.unit;
+                item: {
+                    id: "tt3731562",
+                    title: "Severance",
+                    description: "S2 E4 • Drama",
+                    show-progress: true,
+                    progress-value: 0.35,
+                    can-play: true,
+                };
+            }
+
+            MediaCard {
+                unit: root.unit;
+                item: {
+                    id: "tt0388629",
+                    title: "One Piece",
+                    description: "Ep. 1090 • Anime",
+                    show-progress: true,
+                    progress-value: 0.88,
+                    can-play: true,
+                };
+            }
+        }
+    }
+}
+
+// ── Native Form Controls Showcase Card ──
+component NativeControlsShowcaseCard inherits StudioPreviewCard {
+    VerticalLayout {
+        padding: 1.25 * root.unit;
+        spacing: 1 * root.unit;
+
+        Text {
+            text: @tr("Native Form Controls & Buttons");
+            color: Theme.primary-foreground;
+            font-size: 1.1 * root.unit;
+            font-weight: 700;
+        }
+
+        HorizontalLayout {
+            spacing: 1 * root.unit;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0.4 * root.unit;
+
+                Text { text: @tr("Text Field Input"); color: Theme.text-secondary; font-size: 0.8 * root.unit; font-weight: 600; }
+                NativeTextField {
+                    unit: root.unit;
+                    height: 2.6 * root.unit;
+                    placeholder-text: @tr("Search stream or title…");
+                    text: "Dune: Part Two";
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0.4 * root.unit;
+
+                Text { text: @tr("Dropdown Selection"); color: Theme.text-secondary; font-size: 0.8 * root.unit; font-weight: 600; }
+                SelectField {
+                    unit: root.unit;
+                    field-width: 20 * root.unit;
+                    value: "English TrueHD 7.1 Atmos";
+                    options: ["English TrueHD 7.1 Atmos", "Spanish AC3 5.1", "French AAC 2.0"];
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 0.4 * root.unit;
+            Text { text: @tr("Volume & Seek Bar Slider"); color: Theme.text-secondary; font-size: 0.8 * root.unit; font-weight: 600; }
+            Slider {
+                unit: root.unit;
+                height: 1.8 * root.unit;
+                value: 75;
+                minimum: 0;
+                maximum: 100;
+            }
+        }
+    }
+}
+
+// ── Addons Health Preview Card ──
+component AddonsHealthCard inherits StudioPreviewCard {
+    VerticalLayout {
+        padding: 1.25 * root.unit;
+        spacing: 1 * root.unit;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Text {
+                text: @tr("Installed Addons & Ecosystem Status");
+                color: Theme.primary-foreground;
+                font-size: 1.1 * root.unit;
+                font-weight: 700;
+            }
+
+            Chip {
+                unit: root.unit;
+                label: @tr("4 Online");
+                active: true;
+                active-color: Theme.secondary-accent;
+            }
+        }
+
+        NativeTextField {
+            unit: root.unit;
+            height: 2.4 * root.unit;
+            placeholder-text: @tr("Filter installed addons…");
+        }
+
+        VerticalLayout {
+            spacing: 0.6 * root.unit;
+
+            for addon in [
+                { name: "Cinemeta", ver: "v3.0.12", type: "Official", status: "Online" },
+                { name: "Torrentio", ver: "v4.2.0", type: "Community", status: "Online" },
+                { name: "OpenSubtitles v3", ver: "v1.0.0", type: "Official", status: "Online" },
+                { name: "Anime Kitsu", ver: "v2.1.0", type: "Community", status: "Online" }
+            ] : Rectangle {
+                height: 3.2 * root.unit;
+                border-radius: Theme.compact-radius;
+                background: Theme.overlay;
+                border-width: 1px;
+                border-color: Theme.card-border;
+
+                HorizontalLayout {
+                    padding-left: 1 * root.unit;
+                    padding-right: 1 * root.unit;
+                    alignment: space-between;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: addon.name + " (" + addon.ver + ")"; color: Theme.primary-foreground; font-size: 0.85 * root.unit; font-weight: 700; }
+                        Text { text: addon.type + " Addon"; color: Theme.text-muted; font-size: 0.75 * root.unit; }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 0.6 * root.unit;
+                        alignment: end;
+
+                        Chip {
+                            unit: root.unit;
+                            label: addon.type;
+                            active: addon.type == "Official";
+                            active-color: Theme.primary-accent;
+                        }
+
+                        PillButton {
+                            unit: root.unit;
+                            height: 2.2 * root.unit;
+                            icon-size: 0.9 * root.unit;
+                            label-font-size: 0.75 * root.unit;
+                            label: @tr("Configure");
+                            show-icon: true;
+                            icon-source: @image-url("../assets/images/icons/settings.svg");
+                            outlined: true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Main Stremio Native Theme Studio Page Component ──
+export component ThemePage inherits Rectangle {
+    in property <length> unit: 16px;
+    in property <color> current-accent: Theme.primary-accent;
+    in property <color> current-background: Theme.background;
+    in property <color> current-secondary-bg: Theme.secondary-background;
+    in property <color> current-card-bg: Theme.card-background;
+    in property <color> current-card-border: Theme.card-border;
+    in property <color> current-text-primary: Theme.primary-foreground;
+
+    private property <int> active-left-tab: 0; // 0: Colors, 1: Presets, 2: Typography, 3: Other
+    private property <int> active-canvas-tab: 0; // 0: Stremio Native, 1: Player, 2: Library, 3: Addons
+    in-out property <int> selected-preset-idx: Theme.active-preset-idx;
+    private property <bool> preset-dropdown-open: false;
+
+    private property <bool> sec-primary: true;
+    private property <bool> sec-secondary: true;
+    private property <bool> sec-accent: true;
+    private property <bool> sec-base: true;
+    private property <bool> sec-system: true;
+
+    private property <[ThemePreset]> presets: [
+        { name: "Stremio Official (Purple)", accent: #7b5bf5, background: #0c0b11, secondary: #1a173e, card: #151320, border: #201e2f, text: #ffffffe6 },
+        { name: "Dracula Dark", accent: #bd93f9, background: #282a36, secondary: #44475a, card: #21222c, border: #6272a4, text: #f8f8f2 },
+        { name: "Nordic Frost (Nord)", accent: #88c0d0, background: #2e3440, secondary: #3b4252, card: #434c5e, border: #4c566a, text: #eceff4 },
+        { name: "Catppuccin Mocha", accent: #cba6f7, background: #1e1e2e, secondary: #181825, card: #313244, border: #45475a, text: #cdd6f4 },
+        { name: "Tokyo Night", accent: #7aa2f7, background: #1a1b26, secondary: #24283b, card: #1f2335, border: #414868, text: #c0caf5 },
+        { name: "Cyberpunk Neon", accent: #ff007f, background: #0d0221, secondary: #02010a, card: #190a38, border: #2b0b57, text: #00f5d4 },
+        { name: "Rose Pine Moon", accent: #ea9a97, background: #232136, secondary: #2a273f, card: #393552, border: #44415a, text: #e0def4 },
+        { name: "Gruvbox Dark", accent: #fe8019, background: #1d2021, secondary: #282828, card: #3c3836, border: #504945, text: #ebdbb2 },
+        { name: "Midnight Blue Studio", accent: #3b82f6, background: #0b132b, secondary: #1c2541, card: #111b36, border: #1e294b, text: #ffffff },
+        { name: "Emerald Cyber", accent: #10b981, background: #064e3b, secondary: #047857, card: #065f46, border: #059669, text: #ffffff },
+        { name: "Sunset Crimson", accent: #f43f5e, background: #4c0519, secondary: #881337, card: #9f1239, border: #be123c, text: #ffffff },
+        { name: "Snow Light Mode", accent: #6366f1, background: #f8fafc, secondary: #e2e8f0, card: #ffffff, border: #cbd5e1, text: #0f172a },
+        { name: "Cream & Coral Warm", accent: #f97316, background: #fafaf9, secondary: #f5f5f4, card: #ffffff, border: #e7e5e4, text: #1c1917 },
+        { name: "OLED Pitch Black", accent: #a855f7, background: #000000, secondary: #121212, card: #181818, border: #282828, text: #ffffff },
+    ];
+
+    private property <[string]> preset-names: [
+        "Stremio Official (Purple)",
+        "Dracula Dark",
+        "Nordic Frost (Nord)",
+        "Catppuccin Mocha",
+        "Tokyo Night",
+        "Cyberpunk Neon",
+        "Rose Pine Moon",
+        "Gruvbox Dark",
+        "Midnight Blue Studio",
+        "Emerald Cyber",
+        "Sunset Crimson",
+        "Snow Light Mode",
+        "Cream & Coral Warm",
+        "OLED Pitch Black"
+    ];
+
+    callback close-page;
+    callback apply-preset(color, color, color, color, color, color);
+    callback change-color(string, color);
+    callback reset-theme;
+
+    public function apply-theme(accent: color, bg: color, sec_bg: color, card_bg: color, card_border: color, text: color) {
+        Theme.active-preset-idx = root.selected-preset-idx;
+        Theme.primary-accent = accent;
+        Theme.accent = accent;
+        Theme.background = bg;
+        Theme.secondary-background = sec_bg;
+        Theme.main-gradient = @linear-gradient(41deg, Theme.background 0%, Theme.secondary-background 100%);
+        Theme.card-background = card_bg;
+        Theme.card-border = card_border;
+        Theme.primary-foreground = text;
+        Theme.text-primary = text;
+        Theme.text-secondary = text.with-alpha(0.7);
+        Theme.text-muted = text.with-alpha(0.5);
+        Theme.modal-color = card_bg;
+        Theme.modal-background = card_bg;
+        Theme.sidebar-background = card_bg.with-alpha(0.85);
+        Theme.control-background = text.with-alpha(0.08);
+        Theme.overlay = text.with-alpha(0.08);
+        Theme.overlay-color = text.with-alpha(0.08);
+        Theme.overlay-hover = text.with-alpha(0.14);
+        Theme.divider = text.with-alpha(0.12);
+        root.apply-preset(accent, bg, sec_bg, card_bg, card_border, text);
+    }
+
+    public function update-theme-color(key: string, val: color) {
+        if (key == "accent") { Theme.primary-accent = val; Theme.accent = val; }
+        if (key == "accent_hover") { Theme.accent-hover = val; }
+        if (key == "secondary_accent") { Theme.secondary-accent = val; Theme.success = val; }
+        if (key == "tertiary_accent") { Theme.tertiary-accent = val; Theme.warning = val; }
+        if (key == "quaternary_accent") { Theme.quaternary-accent = val; Theme.info = val; }
+        if (key == "background") { Theme.background = val; }
+        if (key == "secondary_background") { Theme.secondary-background = val; }
+        if (key == "card_background") { Theme.card-background = val; }
+        if (key == "card_border") { Theme.card-border = val; }
+        if (key == "modal_background") { Theme.modal-background = val; Theme.modal-color = val; }
+        if (key == "sidebar_background") { Theme.sidebar-background = val; }
+        if (key == "title_bar") { Theme.title-bar = val; }
+        if (key == "text_primary") { Theme.primary-foreground = val; Theme.text-primary = val; }
+        if (key == "text_secondary") { Theme.text-secondary = val; }
+        if (key == "text_muted") { Theme.text-muted = val; }
+        if (key == "overlay") { Theme.overlay = val; Theme.overlay-color = val; Theme.control-background = val; }
+        if (key == "divider") { Theme.divider = val; }
+        if (key == "danger") { Theme.danger = val; }
+        if (key == "imdb") { Theme.imdb = val; }
+        root.change-color(key, val);
+    }
+
+    public function update-theme-gradient(key: string, grad: brush, start: color, end: color) {
+        if (key == "background" || key == "secondary_background") {
+            Theme.main-gradient = grad;
+            Theme.background = start;
+            Theme.secondary-background = end;
+        }
+        if (key == "card_background") {
+            Theme.card-background = start;
+            Theme.modal-background = start;
+            Theme.modal-color = start;
+        }
+        root.change-color(key, start);
+    }
+
+    public function select-preset-by-name(name: string) {
+        if (name == "Stremio Official (Purple)") { root.selected-preset-idx = 0; root.apply-theme(#7b5bf5, #0c0b11, #1a173e, #151320, #201e2f, #ffffffe6); }
+        else if (name == "Dracula Dark") { root.selected-preset-idx = 1; root.apply-theme(#bd93f9, #282a36, #44475a, #21222c, #6272a4, #f8f8f2); }
+        else if (name == "Nordic Frost (Nord)") { root.selected-preset-idx = 2; root.apply-theme(#88c0d0, #2e3440, #3b4252, #434c5e, #4c566a, #eceff4); }
+        else if (name == "Catppuccin Mocha") { root.selected-preset-idx = 3; root.apply-theme(#cba6f7, #1e1e2e, #181825, #313244, #45475a, #cdd6f4); }
+        else if (name == "Tokyo Night") { root.selected-preset-idx = 4; root.apply-theme(#7aa2f7, #1a1b26, #24283b, #1f2335, #414868, #c0caf5); }
+        else if (name == "Cyberpunk Neon") { root.selected-preset-idx = 5; root.apply-theme(#ff007f, #0d0221, #02010a, #190a38, #2b0b57, #00f5d4); }
+        else if (name == "Rose Pine Moon") { root.selected-preset-idx = 6; root.apply-theme(#ea9a97, #232136, #2a273f, #393552, #44415a, #e0def4); }
+        else if (name == "Gruvbox Dark") { root.selected-preset-idx = 7; root.apply-theme(#fe8019, #1d2021, #282828, #3c3836, #504945, #ebdbb2); }
+        else if (name == "Midnight Blue Studio") { root.selected-preset-idx = 8; root.apply-theme(#3b82f6, #0b132b, #1c2541, #111b36, #1e294b, #ffffff); }
+        else if (name == "Emerald Cyber") { root.selected-preset-idx = 9; root.apply-theme(#10b981, #064e3b, #047857, #065f46, #059669, #ffffff); }
+        else if (name == "Sunset Crimson") { root.selected-preset-idx = 10; root.apply-theme(#f43f5e, #4c0519, #881337, #9f1239, #be123c, #ffffff); }
+        else if (name == "Snow Light Mode") { root.selected-preset-idx = 11; root.apply-theme(#6366f1, #f8fafc, #e2e8f0, #ffffff, #cbd5e1, #0f172a); }
+        else if (name == "Cream & Coral Warm") { root.selected-preset-idx = 12; root.apply-theme(#f97316, #fafaf9, #f5f5f4, #ffffff, #e7e5e4, #1c1917); }
+        else if (name == "OLED Pitch Black") { root.selected-preset-idx = 13; root.apply-theme(#a855f7, #000000, #121212, #181818, #282828, #ffffff); }
+    }
+
+    width: 100%;
+    height: 100%;
+    background: Theme.main-gradient;
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // ── Top Stremio Native Header Bar ──
+        Rectangle {
+            height: 3.5 * root.unit;
+            background: transparent;
+            border-width: 1px;
+            border-color: Theme.card-border;
+
+            HorizontalLayout {
+                padding-left: 1.25 * root.unit;
+                padding-right: 1.25 * root.unit;
+                padding-top: 0.55 * root.unit;
+                padding-bottom: 0.55 * root.unit;
+                alignment: space-between;
+
+                // Left Action: Back to Settings
+                HorizontalLayout {
+                    spacing: 1 * root.unit;
+                    alignment: start;
+
+                    PillButton {
+                        unit: root.unit;
+                        height: 2.4 * root.unit;
+                        icon-size: 1.1 * root.unit;
+                        label-font-size: 0.85 * root.unit;
+                        label: @tr("Back to Settings");
+                        show-icon: true;
+                        icon-source: @image-url("../assets/images/icons/chevron-back.svg");
+                        outlined: true;
+                        clicked => { root.close-page(); }
+                    }
+                }
+
+                // Header Right Actions
+                HorizontalLayout {
+                    spacing: 0.6 * root.unit;
+                    alignment: end;
+
+                    PillButton {
+                        unit: root.unit;
+                        height: 2.4 * root.unit;
+                        icon-size: 1.1 * root.unit;
+                        label-font-size: 0.85 * root.unit;
+                        label: @tr("Reset Default");
+                        show-icon: true;
+                        icon-source: @image-url("../assets/images/icons/reset.svg");
+                        outlined: true;
+                        clicked => {
+                            root.selected-preset-idx = 0;
+                            root.apply-theme(#7b5bf5, #0c0b11, #1a173e, #151320, #201e2f, #ffffffe6);
+                            root.reset-theme();
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Main Workspace Body (Left Controls Column + Right Live Canvas) ──
+        HorizontalLayout {
+            spacing: 0px;
+
+            // ── Left Column: Tweakcn Sidebar Customizer Controls ──
+            Rectangle {
+                width: 24 * root.unit;
+                background: transparent;
+                border-width: 1px;
+                border-color: Theme.card-border;
+
+                VerticalLayout {
+                    padding: 1 * root.unit;
+                    spacing: 1 * root.unit;
+
+                    // Interactive Select Dropdown for Preset Selection
+                    SelectField {
+                        unit: root.unit;
+                        field-width: 22 * root.unit;
+                        value: root.preset-names[root.selected-preset-idx];
+                        options: root.preset-names;
+                        open <=> root.preset-dropdown-open;
+                        selected(val) => { root.select-preset-by-name(val); }
+                    }
+
+                    // Left Tab Switcher (Colors | Presets | Typography | Other)
+                    HorizontalLayout {
+                        height: 2.2 * root.unit;
+                        spacing: 0.25 * root.unit;
+
+                        for tab-title[t-idx] in [@tr("Colors"), @tr("Presets"), @tr("Typography"), @tr("Other")] : ButtonSurface {
+                            horizontal-stretch: 1;
+                            height: parent.height;
+                            background: root.active-left-tab == t-idx ? Theme.overlay-hover : transparent;
+                            border-radius: Theme.compact-radius;
+                            clicked => { root.active-left-tab = t-idx; }
+
+                            Text {
+                                text: tab-title;
+                                color: root.active-left-tab == t-idx ? Theme.primary-foreground : Theme.text-muted;
+                                font-size: 0.8 * root.unit;
+                                font-weight: root.active-left-tab == t-idx ? 700 : 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Tab 0: Colors Scroll View
+                    if (root.active-left-tab == 0) : ScrollView {
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                        VerticalLayout {
+                            padding-right: 0.5 * root.unit;
+                            spacing: 0.8 * root.unit;
+
+                            NativeTextField {
+                                height: 2.4 * root.unit;
+                                unit: root.unit;
+                                placeholder-text: @tr("Search theme tokens…");
+                            }
+
+                            // PRIMARY & BRAND Tokens
+                            AccordionSection {
+                                unit: root.unit;
+                                title: @tr("PRIMARY & BRAND");
+                                expanded <=> root.sec-primary;
+
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Background");
+                                    value: Theme.background;
+                                    fill-brush: Theme.main-gradient;
+                                    allow-gradient: true;
+                                    is-gradient: true;
+                                    edited(val) => { root.update-theme-color("background", val); }
+                                    gradient-edited(grad, start, end) => { root.update-theme-gradient("background", grad, start, end); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Text Primary");
+                                    value: Theme.primary-foreground;
+                                    edited(val) => { root.update-theme-color("text_primary", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Title Bar Header");
+                                    value: Theme.title-bar;
+                                    edited(val) => { root.update-theme-color("title_bar", val); }
+                                }
+                            }
+
+                            // SURFACES & MODALS Tokens
+                            AccordionSection {
+                                unit: root.unit;
+                                title: @tr("SURFACES & MODALS");
+                                expanded <=> root.sec-secondary;
+
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Secondary Surface");
+                                    value: Theme.secondary-background;
+                                    fill-brush: Theme.main-gradient;
+                                    allow-gradient: true;
+                                    is-gradient: true;
+                                    edited(val) => { root.update-theme-color("secondary_background", val); }
+                                    gradient-edited(grad, start, end) => { root.update-theme-gradient("secondary_background", grad, start, end); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Text Secondary");
+                                    value: Theme.text-secondary;
+                                    edited(val) => { root.update-theme-color("text_secondary", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Text Muted");
+                                    value: Theme.text-muted;
+                                    edited(val) => { root.update-theme-color("text_muted", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Modal / Dialog Surface");
+                                    value: Theme.modal-background;
+                                    edited(val) => { root.update-theme-color("modal_background", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Sidebar Surface");
+                                    value: Theme.sidebar-background;
+                                    edited(val) => { root.update-theme-color("sidebar_background", val); }
+                                }
+                            }
+
+                            // ACCENT Tokens
+                            AccordionSection {
+                                unit: root.unit;
+                                title: @tr("ACCENT & HIGHLIGHTS");
+                                expanded <=> root.sec-accent;
+
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Primary Accent");
+                                    value: Theme.primary-accent;
+                                    edited(val) => { root.update-theme-color("accent", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Accent Hover");
+                                    value: Theme.accent-hover;
+                                    edited(val) => { root.update-theme-color("accent_hover", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Secondary Accent");
+                                    value: Theme.secondary-accent;
+                                    edited(val) => { root.update-theme-color("secondary_accent", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Tertiary Accent");
+                                    value: Theme.tertiary-accent;
+                                    edited(val) => { root.update-theme-color("tertiary_accent", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Quaternary / Info");
+                                    value: Theme.quaternary-accent;
+                                    edited(val) => { root.update-theme-color("quaternary_accent", val); }
+                                }
+                            }
+
+                            // CARD & BASE Tokens
+                            AccordionSection {
+                                unit: root.unit;
+                                title: @tr("CARD & CONTAINER");
+                                expanded <=> root.sec-base;
+
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Card Background");
+                                    value: Theme.card-background;
+                                    allow-gradient: true;
+                                    edited(val) => { root.update-theme-color("card_background", val); }
+                                    gradient-edited(grad, start, end) => { root.update-theme-gradient("card_background", grad, start, end); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Card Border");
+                                    value: Theme.card-border;
+                                    edited(val) => { root.update-theme-color("card_border", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Overlay Surface");
+                                    value: Theme.overlay;
+                                    edited(val) => { root.update-theme-color("overlay", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Divider Lines");
+                                    value: Theme.divider;
+                                    edited(val) => { root.update-theme-color("divider", val); }
+                                }
+                            }
+
+                            // SYSTEM & BADGES Tokens
+                            AccordionSection {
+                                unit: root.unit;
+                                title: @tr("SYSTEM & BADGES");
+                                expanded <=> root.sec-system;
+
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Success / 4K Badge");
+                                    value: Theme.secondary-accent;
+                                    edited(val) => { root.update-theme-color("secondary_accent", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Warning / Seeders");
+                                    value: Theme.tertiary-accent;
+                                    edited(val) => { root.update-theme-color("tertiary_accent", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("Danger / Error");
+                                    value: Theme.danger;
+                                    edited(val) => { root.update-theme-color("danger", val); }
+                                }
+                                TweakcnColorRow {
+                                    unit: root.unit;
+                                    label: @tr("IMDb Rating Badge");
+                                    value: Theme.imdb;
+                                    edited(val) => { root.update-theme-color("imdb", val); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tab 1: Presets List View
+                    if (root.active-left-tab == 1) : ScrollView {
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                        VerticalLayout {
+                            padding-right: 0.5 * root.unit;
+                            spacing: 0.6 * root.unit;
+
+                            Text {
+                                text: @tr("SELECT PRESET THEME");
+                                color: Theme.text-muted;
+                                font-size: 0.75 * root.unit;
+                                font-weight: 700;
+                            }
+
+                            for p[p-idx] in root.presets : ButtonSurface {
+                                height: 3.2 * root.unit;
+                                background: root.selected-preset-idx == p-idx ? Theme.overlay-hover : Theme.overlay;
+                                border-radius: Theme.compact-radius;
+                                border-width: 1px;
+                                border-color: root.selected-preset-idx == p-idx ? Theme.primary-accent : Theme.card-border;
+                                clicked => {
+                                    root.selected-preset-idx = p-idx;
+                                    root.apply-theme(p.accent, p.background, p.secondary, p.card, p.border, p.text);
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 0.8 * root.unit;
+                                    padding-right: 0.8 * root.unit;
+                                    alignment: space-between;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: p.name;
+                                            color: Theme.primary-foreground;
+                                            font-size: 0.85 * root.unit;
+                                            font-weight: root.selected-preset-idx == p-idx ? 700 : 500;
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 0.3 * root.unit;
+                                        alignment: end;
+                                        for swatch in [p.background, p.card, p.accent] : Rectangle {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 1 * root.unit;
+                                            height: 1 * root.unit;
+                                            border-radius: 0.5 * root.unit;
+                                            background: swatch;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tab 2: Typography Customizer & Font Family Picker
+                    if (root.active-left-tab == 2) : ScrollView {
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                        VerticalLayout {
+                            padding-right: 0.5 * root.unit;
+                            spacing: 1 * root.unit;
+
+                            Text {
+                                text: @tr("Typography & Font Family");
+                                color: Theme.primary-foreground;
+                                font-size: 1 * root.unit;
+                                font-weight: 700;
+                            }
+
+                            // Base UI Scale (root-font-size)
+                            VerticalLayout {
+                                spacing: 0.4 * root.unit;
+
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: @tr("Root UI Font Scale");
+                                        color: Theme.text-secondary;
+                                        font-size: 0.8 * root.unit;
+                                        font-weight: 600;
+                                    }
+                                    Text {
+                                        text: (Math.round(Theme.root-font-size / 1px)) + " px";
+                                        color: Theme.primary-accent;
+                                        font-size: 0.8 * root.unit;
+                                        font-weight: 700;
+                                    }
+                                }
+
+                                Slider {
+                                    unit: root.unit;
+                                    height: 1.8 * root.unit;
+                                    value: Theme.root-font-size / 1px;
+                                    minimum: 12;
+                                    maximum: 20;
+                                    changed(val) => {
+                                        Theme.root-font-size = val * 1px;
+                                    }
+                                }
+                            }
+
+                            // Active Font Family Selection Dropdown
+                            VerticalLayout {
+                                spacing: 0.4 * root.unit;
+                                Text {
+                                    text: @tr("Active Font Family");
+                                    color: Theme.text-secondary;
+                                    font-size: 0.8 * root.unit;
+                                    font-weight: 600;
+                                }
+
+                                SelectField {
+                                    unit: root.unit;
+                                    field-width: 20 * root.unit;
+                                    value: Theme.font-family;
+                                    options: ["Plus Jakarta Sans", "Inter", "Outfit", "Roboto", "Segoe UI", "Cinzel", "Fira Code", "JetBrains Mono"];
+                                    selected(val) => { Theme.font-family = val; }
+                                }
+                            }
+
+                            // Categorized Font Family Presets
+                            VerticalLayout {
+                                spacing: 0.5 * root.unit;
+                                Text {
+                                    text: @tr("CURATED FONT PRESETS");
+                                    color: Theme.text-muted;
+                                    font-size: 0.75 * root.unit;
+                                    font-weight: 700;
+                                }
+
+                                for font-item in [
+                                    { name: "Plus Jakarta Sans", category: "Modern UI • Default" },
+                                    { name: "Inter", category: "Clean Tech & Neutral" },
+                                    { name: "Outfit", category: "Geometric Display" },
+                                    { name: "Roboto", category: "Material Design" },
+                                    { name: "Segoe UI", category: "Windows Native" },
+                                    { name: "Cinzel", category: "Cinematic Serif" },
+                                    { name: "Fira Code", category: "Monospace / Code" }
+                                ] : ButtonSurface {
+                                    height: 3.2 * root.unit;
+                                    background: Theme.font-family == font-item.name ? Theme.overlay-hover : Theme.overlay;
+                                    border-radius: Theme.compact-radius;
+                                    border-width: 1px;
+                                    border-color: Theme.font-family == font-item.name ? Theme.primary-accent : Theme.card-border;
+                                    clicked => { Theme.font-family = font-item.name; }
+
+                                    HorizontalLayout {
+                                        padding-left: 0.8 * root.unit;
+                                        padding-right: 0.8 * root.unit;
+                                        alignment: space-between;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 0.1 * root.unit;
+
+                                            Text {
+                                                text: font-item.name;
+                                                font-family: font-item.name;
+                                                color: Theme.primary-foreground;
+                                                font-size: 0.85 * root.unit;
+                                                font-weight: Theme.font-family == font-item.name ? 700 : 500;
+                                            }
+
+                                            Text {
+                                                text: font-item.category;
+                                                color: Theme.text-muted;
+                                                font-size: 0.7 * root.unit;
+                                            }
+                                        }
+
+                                        if (Theme.font-family == font-item.name) : Image {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 1 * root.unit;
+                                            height: 1 * root.unit;
+                                            source: @image-url("../assets/images/icons/checkmark.svg");
+                                            colorize: Theme.primary-accent;
+                                            image-fit: contain;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Comprehensive Type Scale Specimen Card
+                            Rectangle {
+                                border-radius: Theme.compact-radius;
+                                background: Theme.overlay;
+                                border-width: 1px;
+                                border-color: Theme.card-border;
+
+                                VerticalLayout {
+                                    padding: 1 * root.unit;
+                                    spacing: 0.6 * root.unit;
+
+                                    Text {
+                                        text: @tr("TYPE HIERARCHY SPECIMEN");
+                                        color: Theme.text-muted;
+                                        font-size: 0.75 * root.unit;
+                                        font-weight: 700;
+                                    }
+
+                                    Text {
+                                        text: "H1 Title (24px Bold)";
+                                        font-family: Theme.font-family;
+                                        color: Theme.primary-foreground;
+                                        font-size: 1.5 * root.unit;
+                                        font-weight: 700;
+                                    }
+
+                                    Text {
+                                        text: "H2 Subtitle (18px Semi-Bold)";
+                                        font-family: Theme.font-family;
+                                        color: Theme.primary-accent;
+                                        font-size: 1.1 * root.unit;
+                                        font-weight: 600;
+                                    }
+
+                                    Text {
+                                        text: @tr("Body text rendered using active font family. Clean legibility for media descriptions and stream details.");
+                                        font-family: Theme.font-family;
+                                        color: Theme.text-secondary;
+                                        font-size: 0.85 * root.unit;
+                                        wrap: word-wrap;
+                                    }
+
+                                    Text {
+                                        text: "4K HEVC • 21.4 GB • 1,420 Seeders • 2160p Remux";
+                                        font-family: Theme.font-family;
+                                        color: Theme.secondary-accent;
+                                        font-size: 0.75 * root.unit;
+                                        font-weight: 700;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tab 3: Other Customizers (Border Radius, Blur, Scrims)
+                    if (root.active-left-tab == 3) : ScrollView {
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                        VerticalLayout {
+                            padding-right: 0.5 * root.unit;
+                            spacing: 1 * root.unit;
+
+                            Text { text: @tr("Layout & Surfaces"); color: Theme.primary-foreground; font-size: 1 * root.unit; font-weight: 700; }
+
+                            VerticalLayout {
+                                spacing: 0.4 * root.unit;
+                                Text { text: @tr("Corner Radius (px)"); color: Theme.text-secondary; font-size: 0.8 * root.unit; }
+                                Slider { height: 2 * root.unit; unit: root.unit; value: 10; minimum: 0; maximum: 24; }
+                            }
+
+                            VerticalLayout {
+                                spacing: 0.4 * root.unit;
+                                Text { text: @tr("Glassmorphism Blur"); color: Theme.text-secondary; font-size: 0.8 * root.unit; }
+                                Slider { height: 2 * root.unit; unit: root.unit; value: 20; minimum: 0; maximum: 40; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Right Column: Stremio Native Live Canvas Grid ──
+            VerticalLayout {
+                horizontal-stretch: 1;
+                padding: 1.25 * root.unit;
+                spacing: 1.25 * root.unit;
+
+                // Canvas Top Sub-Tabs
+                HorizontalLayout {
+                    height: 2.4 * root.unit;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 0.5 * root.unit;
+                        for tab[c-idx] in ["Stremio Native", @tr("Player"), @tr("Library"), @tr("Addons")] : ButtonSurface {
+                            height: parent.height;
+                            background: root.active-canvas-tab == c-idx ? Theme.overlay-hover : transparent;
+                            border-radius: Theme.compact-radius;
+                            clicked => { root.active-canvas-tab = c-idx; }
+
+                            HorizontalLayout {
+                                padding-left: 1 * root.unit;
+                                padding-right: 1 * root.unit;
+
+                                Text {
+                                    text: tab;
+                                    color: root.active-canvas-tab == c-idx ? Theme.primary-foreground : Theme.text-muted;
+                                    font-size: 0.85 * root.unit;
+                                    font-weight: root.active-canvas-tab == c-idx ? 700 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Interactive Stremio Native Cards Grid View
+                ScrollView {
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                    // Sub-tab 0: Stremio Native 2x2 Grid View
+                    if (root.active-canvas-tab == 0) : HorizontalLayout {
+                        spacing: 1.25 * root.unit;
+                        alignment: start;
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 1.25 * root.unit;
+
+                            StremioMediaHeroCard { unit: root.unit; }
+                            StremioStreamsCard { unit: root.unit; }
+                        }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 1.25 * root.unit;
+
+                            StremioPlayerCard { unit: root.unit; }
+                            StremioLibraryCard { unit: root.unit; }
+                            NativeControlsShowcaseCard { unit: root.unit; }
+                        }
+                    }
+
+                    // Sub-tab 1: Player Focused View
+                    if (root.active-canvas-tab == 1) : VerticalLayout {
+                        spacing: 1.25 * root.unit;
+
+                        StremioPlayerCard { unit: root.unit; }
+                        StremioStreamsCard { unit: root.unit; }
+                        NativeControlsShowcaseCard { unit: root.unit; }
+                    }
+
+                    // Sub-tab 2: Library Focused View
+                    if (root.active-canvas-tab == 2) : VerticalLayout {
+                        spacing: 1.25 * root.unit;
+
+                        StremioLibraryCard { unit: root.unit; }
+                        StremioMediaHeroCard { unit: root.unit; }
+                        NativeControlsShowcaseCard { unit: root.unit; }
+                    }
+
+                    // Sub-tab 3: Addons Ecosystem View
+                    if (root.active-canvas-tab == 3) : VerticalLayout {
+                        spacing: 1.25 * root.unit;
+
+                        AddonsHealthCard { unit: root.unit; }
+                        NativeControlsShowcaseCard { unit: root.unit; }
+                    }
+                }
+            }
+        }
+    }
+}

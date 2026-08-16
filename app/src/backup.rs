@@ -77,6 +77,8 @@ pub enum BackupError {
     WeakPassphrase,
     #[error("secret encryption operation failed")]
     Encryption,
+    #[error("backup worker stopped unexpectedly")]
+    WorkerStopped,
 }
 
 pub async fn create_backup(
@@ -125,15 +127,30 @@ pub async fn create_backup(
     Ok(manifest)
 }
 
-pub fn preview_restore(path: &Path) -> Result<RestorePreview, BackupError> {
-    let (manifest, payload) = read_and_validate(path)?;
-    Ok(preview(manifest, &payload))
+pub async fn preview_restore(path: &Path) -> Result<RestorePreview, BackupError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (manifest, payload) = read_and_validate(&path)?;
+        Ok(preview(manifest, &payload))
+    })
+    .await
+    .map_err(|_| BackupError::WorkerStopped)?
 }
 
-pub async fn restore(path: &Path) -> Result<RestorePreview, BackupError> {
-    let (manifest, payload) = read_and_validate(path)?;
+pub async fn restore(path: &Path, expected_checksum: &str) -> Result<RestorePreview, BackupError> {
+    let path = path.to_path_buf();
+    let expected_checksum = expected_checksum.to_owned();
+    let (manifest, mut payload) = tokio::task::spawn_blocking(move || {
+        let (manifest, payload) = read_and_validate(&path)?;
+        verify_expected_checksum(&manifest, &expected_checksum)?;
+        Ok((manifest, payload))
+    })
+    .await
+    .map_err(|_| BackupError::WorkerStopped)??;
     let result_preview = preview(manifest, &payload);
-    let mut conn = crate::db::get_conn().map_err(|_| BackupError::Database)?;
+    let mut conn = crate::db::get_conn()
+        .await
+        .map_err(|_| BackupError::Database)?;
     let transaction = conn
         .transaction()
         .await
@@ -145,18 +162,25 @@ pub async fn restore(path: &Path) -> Result<RestorePreview, BackupError> {
             .map_err(|_| BackupError::Database)?;
     }
     for table in EXPORT_TABLES {
-        restore_table(
-            &transaction,
-            table,
-            payload.tables.get(table).cloned().unwrap_or_default(),
-        )
-        .await?;
+        let rows = payload.tables.remove(table).unwrap_or_default();
+        restore_table(&transaction, table, rows).await?;
     }
     transaction
         .commit()
         .await
         .map_err(|_| BackupError::Database)?;
     Ok(result_preview)
+}
+
+fn verify_expected_checksum(
+    manifest: &BackupManifestV1,
+    expected_checksum: &str,
+) -> Result<(), BackupError> {
+    if manifest.payload_checksum == expected_checksum {
+        Ok(())
+    } else {
+        Err(BackupError::Integrity)
+    }
 }
 
 pub fn decrypt_secret_payload(
@@ -178,7 +202,18 @@ pub fn decrypt_secret_payload(
     serde_json::from_slice(&plaintext).map_err(|_| BackupError::InvalidArchive)
 }
 
-pub fn read_secret_export(
+pub async fn read_secret_export(
+    path: &Path,
+    passphrase: &str,
+) -> Result<Vec<SecretExportEntry>, BackupError> {
+    let path = path.to_path_buf();
+    let passphrase = passphrase.to_owned();
+    tokio::task::spawn_blocking(move || read_secret_export_blocking(&path, &passphrase))
+        .await
+        .map_err(|_| BackupError::WorkerStopped)?
+}
+
+fn read_secret_export_blocking(
     path: &Path,
     passphrase: &str,
 ) -> Result<Vec<SecretExportEntry>, BackupError> {
@@ -194,7 +229,9 @@ pub fn read_secret_export(
 }
 
 async fn export_database() -> Result<DatabasePayload, BackupError> {
-    let conn = crate::db::get_conn().map_err(|_| BackupError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| BackupError::Database)?;
     let mut tables = BTreeMap::new();
     for table in EXPORT_TABLES {
         let columns = table_columns(table);
@@ -279,22 +316,47 @@ fn read_and_validate(path: &Path) -> Result<(BackupManifestV1, DatabasePayload),
     if manifest.version != BACKUP_VERSION {
         return Err(BackupError::UnsupportedVersion);
     }
-    let payload_bytes = {
-        let mut file = archive
+    let (payload, checksum) = {
+        let file = archive
             .by_name("database.json")
             .map_err(|_| BackupError::InvalidArchive)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|_| BackupError::Filesystem)?;
-        bytes
+        let mut reader = HashingReader::new(file);
+        let payload =
+            serde_json::from_reader(&mut reader).map_err(|_| BackupError::InvalidArchive)?;
+        std::io::copy(&mut reader, &mut std::io::sink()).map_err(|_| BackupError::Filesystem)?;
+        (payload, reader.finalize().to_hex().to_string())
     };
-    if blake3::hash(&payload_bytes).to_hex().as_str() != manifest.payload_checksum {
+    if checksum != manifest.payload_checksum {
         return Err(BackupError::Integrity);
     }
-    let payload: DatabasePayload =
-        serde_json::from_slice(&payload_bytes).map_err(|_| BackupError::InvalidArchive)?;
     validate_payload(&payload)?;
     Ok((manifest, payload))
+}
+
+struct HashingReader<R> {
+    inner: R,
+    hasher: blake3::Hasher,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: blake3::Hasher::new(),
+        }
+    }
+
+    fn finalize(self) -> blake3::Hash {
+        self.hasher.finalize()
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..read]);
+        Ok(read)
+    }
 }
 
 fn validate_payload(payload: &DatabasePayload) -> Result<(), BackupError> {
@@ -467,5 +529,31 @@ mod tests {
         let decrypted =
             decrypt_secret_payload(&encrypted, "correct horse battery staple").expect("decrypt");
         assert_eq!(decrypted[0].value, b"canary-secret");
+    }
+
+    #[test]
+    fn streaming_checksum_matches_the_original_json() {
+        let source = br#"{"tables":{"app_state":[["key","value"]]}}"#;
+        let mut reader = HashingReader::new(source.as_slice());
+        let _: DatabasePayload = serde_json::from_reader(&mut reader).expect("payload");
+
+        assert_eq!(reader.finalize(), blake3::hash(source));
+    }
+
+    #[test]
+    fn restore_rejects_a_checksum_other_than_the_previewed_archive() {
+        let manifest = BackupManifestV1 {
+            version: BACKUP_VERSION,
+            application_version: "test".to_owned(),
+            created_at: 0,
+            includes_secrets: false,
+            payload_checksum: "confirmed".to_owned(),
+            table_rows: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            verify_expected_checksum(&manifest, "replacement"),
+            Err(BackupError::Integrity)
+        );
     }
 }

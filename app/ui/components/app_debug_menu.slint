@@ -25,7 +25,7 @@ export component AppDebugMenu inherits Rectangle {
     callback state-selected(string);
 
     width: root.open ? 32 * root.unit : 3.25 * root.unit;
-    height: root.open ? 26 * root.unit : 3.25 * root.unit;
+    height: root.open ? 31 * root.unit : 3.25 * root.unit;
     border-radius: Theme.border-radius;
     border-width: 1px;
     border-color: Theme.surface-light-30;
@@ -99,7 +99,7 @@ export component AppDebugMenu inherits Rectangle {
 
                     for page in root.pages : MenuButton {
                         horizontal-stretch: 1;
-                        height: 2.5 * root.unit;
+                        height: 2.2 * root.unit;
                         unit: root.unit;
                         label: page.label;
                         label-font-size: 0.85 * root.unit;
@@ -125,7 +125,7 @@ export component AppDebugMenu inherits Rectangle {
 
                 for state in root.states : MenuButton {
                     horizontal-stretch: 1;
-                    height: 2.5 * root.unit;
+                    height: 2.2 * root.unit;
                     unit: root.unit;
                     label: state.label;
                     label-font-size: 0.85 * root.unit;

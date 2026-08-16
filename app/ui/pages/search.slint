@@ -12,9 +12,13 @@ export component SearchPage inherits Rectangle {
     in property <[BoardSection]> sections: [];
     in property <bool> loading: false;
     in property <int> catalog-count: 0;
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
     callback item-selected(string, string, string);
     callback catalog-visible(int);
     callback poster-requested(string);
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
 
     in property <length> unit: Theme.root-font-size;
     property <int> visible-count: root.width > 2100px ? 9 :
@@ -149,10 +153,16 @@ export component SearchPage inherits Rectangle {
                 card-width: root.card-width;
                 card-height: section-card-height;
                 items: section.items;
+                enable-hover-preview: root.enable-hover-preview;
+                hover-preview-delay: root.hover-preview-delay;
                 item-selected(id, media-type, video-id) => {
                     root.item-selected(id, media-type, video-id);
                 }
                 poster-requested(url) => { root.poster-requested(url); }
+                hover-preview-requested(id, media-type, x, y, width, height) => {
+                    root.hover-preview-requested(id, media-type, x, y, width, height);
+                }
+                hover-preview-dismissed => { root.hover-preview-dismissed(); }
             }
         }
     }

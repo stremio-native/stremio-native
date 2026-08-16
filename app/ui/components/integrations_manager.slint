@@ -1,8 +1,9 @@
-import { ListView, LineEdit } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { PillButton } from "button.slint";
 import { SelectField } from "select.slint";
 import { SettingsOption } from "settings_option.slint";
+import { NativeTextField } from "text_input.slint";
 
 export component IntegrationsManager inherits VerticalLayout {
     in property <length> unit: 16px;
@@ -17,9 +18,9 @@ export component IntegrationsManager inherits VerticalLayout {
     callback disconnect(string);
     callback close;
 
+    in-out property <bool> show-secret: false;
     private property <bool> notification: root.provider == "Webhook" || root.provider == "Telegram";
     spacing: 0;
-    width: 100%;
 
     for item in root.configured : SettingsOption {
         unit: root.unit;
@@ -43,23 +44,65 @@ export component IntegrationsManager inherits VerticalLayout {
             field-width: 16 * root.unit;
             unit: root.unit;
             value: root.provider;
-            options: ["Real-Debrid", "AllDebrid", "Premiumize", "Debrid-Link", "TorBox", "TMDB", "OMDb", "Fanart.tv", "RPDB", "Webhook", "Telegram"];
+            options: ["Real-Debrid", "AllDebrid", "Premiumize", "Debrid-Link", "TorBox", "TMDB", "OMDb", "MDBList", "Fanart.tv", "RPDB", "Webhook", "Telegram"];
             open: root.provider-open;
             toggle => { root.provider-open = !root.provider-open; }
-            selected(value) => { root.provider = value; root.provider-open = false; root.secret = ""; }
+            selected(value) => {
+                root.provider = value;
+                root.provider-open = false;
+                root.secret = "";
+                root.endpoint = "";
+                root.chat-id = "";
+                root.show-secret = false;
+            }
+        }
+    }
+
+    if (root.provider == "Webhook") : SettingsOption {
+        unit: root.unit;
+        label: @tr("Webhook Endpoint URL");
+        description: @tr("URL endpoint to receive HTTP webhook payloads.");
+        NativeTextField {
+            unit: root.unit;
+            width: 16 * root.unit;
+            text <=> root.endpoint;
+            placeholder-text: @tr("https://example.com/webhook");
+        }
+    }
+
+    if (root.provider == "Telegram") : SettingsOption {
+        unit: root.unit;
+        label: @tr("Telegram Chat ID");
+        description: @tr("Target chat or channel ID for notifications.");
+        NativeTextField {
+            unit: root.unit;
+            width: 16 * root.unit;
+            text <=> root.chat-id;
+            placeholder-text: @tr("e.g. 123456789");
         }
     }
 
     SettingsOption {
         unit: root.unit;
-        label: root.notification ? (root.provider == "Telegram" ? @tr("Telegram Chat ID") : @tr("Webhook Endpoint")) : @tr("API Key or Secret Token");
+        label: root.provider == "Telegram" ? @tr("Bot Token") : (root.provider == "Webhook" ? @tr("Secret Token (Optional)") : @tr("API Key or Secret Token"));
         description: @tr("Provider credentials stored securely in OS vault.");
-        LineEdit {
+        HorizontalLayout {
             width: 16 * root.unit;
-            height: 3.5 * root.unit;
-            text <=> root.secret;
-            input-type: InputType.password;
-            placeholder-text: @tr("Enter API key");
+            spacing: root.unit * 0.5;
+            NativeTextField {
+                unit: root.unit;
+                width: 11 * root.unit;
+                text <=> root.secret;
+                input-type: root.show-secret ? InputType.text : InputType.password;
+                placeholder-text: @tr("Enter API key");
+            }
+            PillButton {
+                unit: root.unit;
+                width: 4.5 * root.unit;
+                label: root.show-secret ? @tr("Hide") : @tr("Show");
+                outlined: true;
+                clicked => { root.show-secret = !root.show-secret; }
+            }
         }
     }
 
@@ -78,6 +121,7 @@ export component IntegrationsManager inherits VerticalLayout {
                 root.secret = "";
                 root.endpoint = "";
                 root.chat-id = "";
+                root.show-secret = false;
             }
         }
     }

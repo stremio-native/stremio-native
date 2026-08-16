@@ -1,0 +1,32 @@
+Subject: [PATCH] gcc wrapper: apply the unaligned-vector-move workaround to AVX2
+
+GCC on x86_64-w64-mingw32 emits 32/64-byte aligned vector moves against a stack
+it only guarantees 16-byte alignment for, and it does not always insert a
+realignment prologue, so those moves fault with STATUS_ACCESS_VIOLATION.
+
+Upstream already passes -Wa,-muse-unaligned-vector-move for AVX-512 builds.
+256-bit AVX2 code carries the identical defect: with GCC_ARCH=x86-64-v3, zimg's
+GraphBuilder::impl::build_subgraph() spilled `vmovdqa %ymm0,0x70(%rsp)` from a
+prologue that never realigned the stack, faulting on every mpv screenshot-raw
+(which is how stremio-native generates timeline thumbnails).
+
+Widening the gate from GCC_ARCH_HAS_AVX512 to GCC_ARCH_HAS_AVX covers both.
+AVX-512 implies AVX, so this strictly subsumes the previous condition.
+
+diff --git a/toolchain/gcc/gcc-compiler.in b/toolchain/gcc/gcc-compiler.in
+index d4bc4d8..1a97d9e 100644
+--- a/toolchain/gcc/gcc-compiler.in
++++ b/toolchain/gcc/gcc-compiler.in
+@@ -10,7 +10,12 @@ else
+     fi
+ fi
+
+-if [ "@GCC_ARCH_HAS_AVX512@" == "ON" ]; then
++# GCC on x86_64-w64-mingw32 emits 32/64-byte aligned vector moves against a
++# stack it only guarantees 16-byte alignment for, and it does not always insert
++# a realignment prologue, so those moves fault. Upstream applies this to AVX-512
++# only; 256-bit AVX2 code carries the identical defect, which crashed
++# zimg's GraphBuilder::impl::build_subgraph() on every mpv screenshot.
++if [ "@GCC_ARCH_HAS_AVX@" == "ON" ]; then
+     FLAGS="$FLAGS -Wa,-muse-unaligned-vector-move"
+ fi

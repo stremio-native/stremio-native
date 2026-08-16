@@ -7,7 +7,7 @@ use crate::{
     playback::PlaybackSelections,
 };
 use core_env::DesktopEnv;
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -115,9 +115,33 @@ pub fn setup_ui_callbacks(
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let detail_title = ui.get_detail_title().to_string();
-                        tracing::info!(title = %detail_title, "player page shown");
+                        let is_series = ui.get_detail_is_series();
+                        let player_title = if is_series {
+                            let active_ep = ui.get_detail_active_episode_idx();
+                            let episodes = ui.get_detail_episodes();
+                            if let Some(ep) = episodes.iter().nth(active_ep as usize) {
+                                let ep_title = ep.title.to_string();
+                                let season = ui.get_detail_active_season();
+                                let ep_num = ep.episode_num;
+                                if !ep_title.is_empty() && ep_title != detail_title {
+                                    if ep_num > 0 && season > 0 {
+                                        format!("{detail_title} - {ep_title} ({season}x{ep_num})")
+                                    } else {
+                                        format!("{detail_title} - {ep_title}")
+                                    }
+                                } else if ep_num > 0 && season > 0 {
+                                    format!("{detail_title} ({season}x{ep_num})")
+                                } else {
+                                    detail_title.clone()
+                                }
+                            } else {
+                                detail_title.clone()
+                            }
+                        } else {
+                            detail_title.clone()
+                        };
 
-                        ui.set_player_title(detail_title.into());
+                        ui.set_player_title(player_title.into());
                         ui.set_player_stream_name(stream_name.into());
                         ui.set_player_poster_image(ui.get_detail_poster());
                         ui.set_player_video_frame(slint::Image::default());
@@ -127,8 +151,6 @@ pub fn setup_ui_callbacks(
                         ui.set_player_buffering(false);
                         ui.set_player_buffering_percent(0.0);
                         ui.set_player_controls_visible(true);
-
-                        let is_series = ui.get_detail_is_series();
                         ui.set_player_is_series(is_series);
                         if is_series {
                             ui.set_player_seasons(ui.get_detail_seasons());

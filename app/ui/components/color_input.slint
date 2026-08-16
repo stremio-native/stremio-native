@@ -1,18 +1,1313 @@
 import { Theme } from "../theme.slint";
 import { ButtonSurface } from "button.slint";
+import { StremioTextInput } from "text_input.slint";
+import { ColorUtils, ParsedColor, CursorSample, SavedGradient } from "color_utils.slint";
+import { ScrollView } from "std-widgets.slint";
 
-// Swatch input – opens the color picker modal when clicked.
+// A single gradient stop. Positions are 0..1 so they can be handed straight to
+// `@linear-gradient` without a unit conversion.
+export struct ColorStop {
+    position: float,
+    color: color,
+}
+
+// Slint 1.17 has no way to grow an array from the language, so the gradient
+// keeps a fixed pool of slots and tracks how many are live. Five is the widest
+// the stop list stays readable at the panel's width.
+export global GradientLimits {
+    out property <int> max-stops: 5;
+}
+
+// ── Building blocks ───────────────────────────────────────────────────────────
+
+// Alpha is only legible against a checkerboard; every translucent surface in
+// the picker sits on one of these.
+component Checkerboard inherits Rectangle {
+    in property <length> cell: self.height / 2;
+    private property <int> columns: Math.max(1, Math.ceil(self.width / self.cell));
+    private property <int> rows: Math.max(1, Math.ceil(self.height / self.cell));
+
+    background: #ffffff;
+    clip: true;
+
+    for index in root.columns * root.rows : Rectangle {
+        private property <int> col-idx: Math.mod(index, root.columns);
+        private property <int> row-idx: Math.floor(index / root.columns);
+        x: self.col-idx * root.cell;
+        y: self.row-idx * root.cell;
+        width: root.cell;
+        height: root.cell;
+        background: Math.mod(self.col-idx + self.row-idx, 2) == 0 ? transparent : #c9ced6;
+    }
+}
+
+component ColorChip inherits Rectangle {
+    in property <color> value;
+    in property <brush> fill-brush: root.value;
+
+    Checkerboard {
+        width: 100%;
+        height: 100%;
+        cell: root.height / 2;
+        border-radius: root.border-radius;
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: root.border-radius;
+        background: root.fill-brush;
+        border-width: 1px;
+        border-color: Theme.primary-foreground.with-alpha(0.25);
+    }
+}
+
+// Round handle shared by every draggable control so they stay visually
+// consistent whatever they sit on.
+component DragHandle inherits Rectangle {
+    in property <color> value;
+    in property <bool> selected: false;
+    in property <bool> show-value: true;
+
+    border-radius: self.width / 2;
+    border-width: root.selected ? 3px : 2px;
+    border-color: #ffffff;
+    background: root.show-value ? root.value : transparent;
+    drop-shadow-blur: 4px;
+    drop-shadow-color: #00000073;
+}
+
+component SaturationValueField inherits Rectangle {
+    in property <float> hue;
+    in property <float> saturation;
+    in property <float> brightness;
+    in property <length> handle-size: 14px;
+    callback picked(float, float);
+
+    function pick(px: length, py: length) {
+        root.picked(Math.clamp(px / root.width, 0, 1), Math.clamp(1 - py / root.height, 0, 1));
+    }
+
+    border-radius: Theme.border-radius;
+    border-width: 1px;
+    border-color: Theme.primary-foreground.with-alpha(0.15);
+    clip: true;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(90deg, #ffffff 0%, hsv(root.hue, 1, 1) 100%);
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(180deg, #00000000 0%, #000000ff 100%);
+    }
+
+    TouchArea {
+        mouse-cursor: MouseCursor.crosshair;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.pick(self.mouse-x, self.mouse-y);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.pick(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+
+    // Drawn after the touch area so the handle is never swallowed by it.
+    DragHandle {
+        x: root.saturation * (root.width - self.width);
+        y: (1 - root.brightness) * (root.height - self.height);
+        width: root.handle-size;
+        height: root.handle-size;
+        value: hsv(root.hue, root.saturation, root.brightness);
+    }
+}
+
+// Track whose position is a read-only mirror of the owner's state: assigning to
+// it here would drop the binding that keeps it in sync.
+component TrackSlider inherits Rectangle {
+    in property <float> position;
+    in property <color> handle-color;
+    in property <length> handle-size: self.height * 1.5;
+    callback picked(float);
+
+    function pick(px: length) {
+        root.picked(Math.clamp((px - root.handle-size / 2) / (root.width - root.handle-size), 0, 1));
+    }
+
+    height: 12px;
+    border-radius: self.height / 2;
+
+    @children
+
+    TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.pick(self.mouse-x);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.pick(self.mouse-x);
+            }
+        }
+    }
+
+    DragHandle {
+        x: root.position * (root.width - self.width);
+        y: (root.height - self.height) / 2;
+        width: root.handle-size;
+        height: root.handle-size;
+        value: root.handle-color;
+    }
+}
+
+component HueSlider inherits TrackSlider {
+    in property <float> hue;
+    callback hue-picked(float);
+
+    position: root.hue / 360;
+    handle-color: hsv(root.hue, 1, 1);
+    background: @linear-gradient(90deg,
+        #ff0000 0%, #ffff00 16.667%, #00ff00 33.333%,
+        #00ffff 50%, #0000ff 66.667%, #ff00ff 83.333%, #ff0000 100%);
+    picked(value) => { root.hue-picked(value * 360); }
+}
+
+component AlphaSlider inherits TrackSlider {
+    in property <color> base;
+
+    handle-color: root.base.with-alpha(root.position);
+
+    Checkerboard {
+        width: 100%;
+        height: 100%;
+        cell: root.height / 2;
+        border-radius: root.height / 2;
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: root.height / 2;
+        background: @linear-gradient(90deg, root.base.with-alpha(0) 0%, root.base.with-alpha(1) 100%);
+    }
+}
+
+component TabButton inherits ButtonSurface {
+    in property <length> unit;
+    in property <string> label;
+    in property <bool> active;
+
+    height: 2.6 * root.unit;
+    background: transparent;
+
+    VerticalLayout {
+        alignment: space-between;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.primary-accent : Theme.text-secondary;
+            font-size: 1 * root.unit;
+            font-weight: root.active ? 700 : 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            height: 2px;
+            border-radius: 1px;
+            background: root.active ? Theme.primary-accent : transparent;
+        }
+    }
+}
+
+component IconButton inherits ButtonSurface {
+    in property <length> unit;
+    in property <image> icon;
+    in property <length> icon-size: 1.1 * root.unit;
+    in property <brush> icon-color: Theme.primary-foreground;
+    in property <angle> icon-rotation: 0deg;
+    in property <bool> outlined: true;
+
+    width: 2.5 * root.unit;
+    height: 2.5 * root.unit;
+    border-radius: Theme.compact-radius;
+    background: root.outlined ? Theme.overlay : transparent;
+
+    if (root.outlined) : Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: parent.border-radius;
+        border-width: 1px;
+        border-color: Theme.card-border;
+    }
+
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.icon-size;
+        height: root.icon-size;
+        source: root.icon;
+        colorize: root.icon-color;
+        image-fit: contain;
+        transform-rotation: root.icon-rotation;
+    }
+}
+
+// Cycling selector. Slint popups can't be nested inside the picker's own popup
+// reliably, so the control advances through its options on click instead of
+// dropping a list over the canvas.
+component CycleSelect inherits ButtonSurface {
+    in property <length> unit;
+    in property <string> label;
+
+    height: 2.4 * root.unit;
+    border-radius: Theme.compact-radius;
+    background: Theme.overlay;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: parent.border-radius;
+        border-width: 1px;
+        border-color: Theme.card-border;
+    }
+
+    HorizontalLayout {
+        padding-left: 0.7 * root.unit;
+        padding-right: 0.55 * root.unit;
+        spacing: 0.35 * root.unit;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: Theme.primary-foreground;
+            font-size: 0.9 * root.unit;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 0.75 * root.unit;
+            height: 0.75 * root.unit;
+            source: @image-url("../assets/images/icons/chevron-down.svg");
+            colorize: Theme.text-secondary;
+            image-fit: contain;
+        }
+    }
+}
+
+component AddButton inherits ButtonSurface {
+    in property <length> unit;
+    in property <string> label: @tr("BUTTON_ADD" => "Add");
+
+    height: 1.8 * root.unit;
+    background: transparent;
+    accessible-name: root.label;
+
+    HorizontalLayout {
+        spacing: 0.25 * root.unit;
+        alignment: end;
+
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 0.85 * root.unit;
+            height: 0.85 * root.unit;
+            source: @image-url("../assets/images/icons/add.svg");
+            colorize: root.enabled ? Theme.primary-accent : Theme.text-muted;
+            image-fit: contain;
+        }
+        Text {
+            text: root.label;
+            color: root.enabled ? Theme.primary-accent : Theme.text-muted;
+            font-size: 0.85 * root.unit;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component SectionHeader inherits HorizontalLayout {
+    in property <length> unit;
+    in property <string> label;
+
+    alignment: space-between;
+
+    Text {
+        text: root.label;
+        color: Theme.primary-foreground;
+        font-size: 0.95 * root.unit;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+
+    @children
+}
+
+// Text field that mirrors an external value but yields to the user while
+// focused, committing on Enter or blur.
+component EditableField inherits Rectangle {
+    in property <length> unit;
+    in property <string> display;
+    in property <bool> read-only: false;
+    in property <TextHorizontalAlignment> alignment: TextHorizontalAlignment.left;
+    in property <string> suffix: "";
+    callback committed(string);
+
+    public function refresh() {
+        if (!field.has-focus) {
+            field.text = root.display;
+        }
+    }
+
+    changed display => { root.refresh(); }
+    init => { root.refresh(); }
+    background: transparent;
+
+    TouchArea {
+        mouse-cursor: root.read-only ? MouseCursor.default : MouseCursor.text;
+        clicked => {
+            if (!root.read-only) {
+                field.focus-input();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0px;
+        padding-right: root.suffix == "" ? 0px : 0.55 * root.unit;
+
+        field := StremioTextInput {
+            horizontal-stretch: 1;
+            height: root.height;
+            read-only: root.read-only;
+            font-size: 0.9 * root.unit;
+            font-weight: 600;
+            // With a suffix the value hugs it, so "100" + "%" reads as one
+            // number instead of drifting to opposite ends of the field.
+            horizontal-alignment: root.suffix == "" ? root.alignment : TextHorizontalAlignment.right;
+            text-color: Theme.primary-foreground;
+            accepted => {
+                root.committed(self.text);
+                root.refresh();
+            }
+            changed has-focus => {
+                if (!self.has-focus) {
+                    root.committed(self.text);
+                    root.refresh();
+                }
+            }
+        }
+
+        if (root.suffix != "") : Text {
+            text: root.suffix;
+            color: Theme.text-secondary;
+            font-size: 0.9 * root.unit;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Format selector + colour text + opacity, laid out as the single divided
+// control the reference design uses.
+component ColorValueRow inherits HorizontalLayout {
+    in property <length> unit;
+    in property <color> value;
+    in-out property <int> format-mode;
+    callback edited(color);
+    callback opacity-edited(float);
+
+    spacing: 0.6 * root.unit;
+
+    CycleSelect {
+        unit: root.unit;
+        width: 5 * root.unit;
+        label: ColorUtils.format-name(root.format-mode);
+        accessible-name: @tr("Colour format");
+        clicked => { root.format-mode = Math.mod(root.format-mode + 1, 3); }
+    }
+
+    Rectangle {
+        horizontal-stretch: 1;
+        height: 2.4 * root.unit;
+        border-radius: Theme.compact-radius;
+        background: Theme.overlay;
+        border-width: 1px;
+        border-color: Theme.card-border;
+
+        HorizontalLayout {
+            padding-left: 0.6 * root.unit;
+            spacing: 0.5 * root.unit;
+
+            ColorChip {
+                y: (parent.height - self.height) / 2;
+                width: 1.15 * root.unit;
+                height: 1.15 * root.unit;
+                border-radius: self.width / 2;
+                value: root.value;
+            }
+
+            EditableField {
+                horizontal-stretch: 1;
+                unit: root.unit;
+                display: ColorUtils.format-text(root.value, root.format-mode);
+                committed(text) => {
+                    if (ColorUtils.parse(text, root.format-mode).valid) {
+                        root.edited(ColorUtils.parse(text, root.format-mode).value);
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Theme.card-border;
+            }
+
+            EditableField {
+                width: 3.6 * root.unit;
+                unit: root.unit;
+                alignment: TextHorizontalAlignment.center;
+                suffix: "%";
+                display: Math.round(root.value.alpha / 255 * 100);
+                committed(text) => {
+                    if (text.is-float()) {
+                        root.opacity-edited(Math.clamp(text.to-float() / 100, 0, 1));
+                    }
+                }
+            }
+        }
+    }
+}
+
+component SwatchButton inherits ButtonSurface {
+    in property <length> unit;
+    in property <bool> selected: false;
+
+    width: 2.2 * root.unit;
+    height: 2.2 * root.unit;
+    border-radius: self.width / 2;
+
+    @children
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: parent.border-radius;
+        border-width: root.selected ? 2px : 1px;
+        border-color: root.selected ? Theme.primary-accent : Theme.primary-foreground.with-alpha(0.2);
+    }
+}
+
+component GradientStopRow inherits HorizontalLayout {
+    in property <length> unit;
+    in property <ColorStop> stop;
+    in property <bool> selected;
+    in property <bool> removable;
+    callback select();
+    callback position-edited(float);
+    callback color-edited(color);
+    callback opacity-edited(float);
+    callback removed();
+
+    spacing: 0.5 * root.unit;
+    height: 2.6 * root.unit;
+
+    Rectangle {
+        width: 4 * root.unit;
+        border-radius: Theme.compact-radius;
+        background: Theme.overlay;
+        border-width: 1px;
+        border-color: root.selected ? Theme.primary-accent : Theme.card-border;
+
+        EditableField {
+            width: parent.width - 0.6 * root.unit;
+            height: parent.height;
+            x: 0.3 * root.unit;
+            unit: root.unit;
+            alignment: TextHorizontalAlignment.center;
+            suffix: "%";
+            display: Math.round(root.stop.position * 100);
+            committed(text) => {
+                if (text.is-float()) {
+                    root.position-edited(Math.clamp(text.to-float() / 100, 0, 1));
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        horizontal-stretch: 1;
+        border-radius: Theme.compact-radius;
+        background: root.selected ? Theme.overlay-hover : Theme.overlay;
+        border-width: 1px;
+        border-color: root.selected ? Theme.primary-accent : Theme.card-border;
+
+        HorizontalLayout {
+            padding-left: 0.55 * root.unit;
+            spacing: 0.45 * root.unit;
+
+            SwatchButton {
+                y: (parent.height - self.height) / 2;
+                unit: root.unit;
+                width: 1.15 * root.unit;
+                height: 1.15 * root.unit;
+                accessible-name: @tr("Edit stop colour");
+                clicked => { root.select(); }
+                ColorChip {
+                    width: 100%;
+                    height: 100%;
+                    border-radius: parent.border-radius;
+                    value: root.stop.color;
+                }
+            }
+
+            EditableField {
+                horizontal-stretch: 1;
+                unit: root.unit;
+                display: ColorUtils.hex(root.stop.color);
+                committed(text) => {
+                    if (ColorUtils.parse(text, 0).valid) {
+                        root.color-edited(ColorUtils.parse(text, 0).value);
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Theme.card-border;
+            }
+
+            EditableField {
+                width: 3.4 * root.unit;
+                unit: root.unit;
+                alignment: TextHorizontalAlignment.center;
+                suffix: "%";
+                display: Math.round(root.stop.color.alpha / 255 * 100);
+                committed(text) => {
+                    if (text.is-float()) {
+                        root.opacity-edited(Math.clamp(text.to-float() / 100, 0, 1));
+                    }
+                }
+            }
+        }
+    }
+
+    IconButton {
+        unit: root.unit;
+        width: 2.2 * root.unit;
+        height: 2.2 * root.unit;
+        y: (parent.height - self.height) / 2;
+        outlined: false;
+        enabled: root.removable;
+        icon: @image-url("../assets/images/icons/remove.svg");
+        icon-color: root.removable ? Theme.text-secondary : Theme.text-muted;
+        accessible-name: @tr("Remove stop");
+        clicked => { root.removed(); }
+    }
+}
+
+// ── Picker ────────────────────────────────────────────────────────────────────
+
+export component ColorPicker inherits Rectangle {
+    in property <length> unit: Theme.root-font-size;
+    in property <bool> allow-gradient: true;
+    in property <bool> allow-image: false;
+    in property <bool> show-close: false;
+    in-out property <color> value: #7f56d9ff;
+    in-out property <int> active-tab: 0; // 0: solid, 1: gradient, 2: image
+    in-out property <int> format-mode: 0;
+
+    in-out property <angle> gradient-angle: 135deg;
+    in-out property <int> gradient-kind: 0; // 0: linear, 1: radial
+    in-out property <int> gradient-stop-count: 2;
+    in-out property <int> active-stop: 0;
+    in-out property <[ColorStop]> gradient-stops: [
+        { position: 0.0, color: #7f56d9ff },
+        { position: 1.0, color: #432e73ff },
+        { position: 1.0, color: #432e73ff },
+        { position: 1.0, color: #432e73ff },
+        { position: 1.0, color: #432e73ff },
+    ];
+
+    callback input(color);
+    callback input-gradient(brush, color, color);
+    callback close-requested();
+
+    // HSV is the source of truth while editing: deriving it from the RGB value
+    // on every change would collapse the hue whenever saturation reaches zero.
+    private property <float> hue: 260;
+    private property <float> saturation: 0.6;
+    private property <float> brightness: 0.85;
+    private property <float> alpha: 1.0;
+    private property <bool> syncing: false;
+    private property <bool> picking: false;
+    private property <bool> picker-armed: false;
+
+    private property <int> tab: root.active-tab == 1 && !root.allow-gradient ? 0
+        : (root.active-tab == 2 && !root.allow-image ? 0 : root.active-tab);
+
+    pure function stop-color(index: int) -> color {
+        return root.gradient-stops[Math.min(index, root.gradient-stop-count - 1)].color;
+    }
+
+    pure function stop-position(index: int) -> float {
+        return root.gradient-stops[Math.min(index, root.gradient-stop-count - 1)].position;
+    }
+
+    out property <brush> gradient: root.gradient-kind == 1
+        ? @radial-gradient(circle,
+            root.stop-color(0) root.stop-position(0),
+            root.stop-color(1) root.stop-position(1),
+            root.stop-color(2) root.stop-position(2),
+            root.stop-color(3) root.stop-position(3),
+            root.stop-color(4) root.stop-position(4))
+        : @linear-gradient(root.gradient-angle,
+            root.stop-color(0) root.stop-position(0),
+            root.stop-color(1) root.stop-position(1),
+            root.stop-color(2) root.stop-position(2),
+            root.stop-color(3) root.stop-position(3),
+            root.stop-color(4) root.stop-position(4));
+
+    // The colour the HSV controls are editing: the solid value, or the selected
+    // gradient stop.
+    private property <color> edited-color: root.tab == 1 ? root.stop-color(root.active-stop) : root.value;
+
+    function adopt(target: color) {
+        root.hue = target.to-hsv().hue;
+        root.saturation = target.to-hsv().saturation;
+        root.brightness = target.to-hsv().value;
+        root.alpha = target.to-hsv().alpha;
+    }
+
+    private property <color> hsv-color: hsv(root.hue, root.saturation, root.brightness, root.alpha);
+
+    // Push the HSV editor state back out to whatever is being edited.
+    function commit() {
+        if (root.tab == 1) {
+            root.gradient-stops[root.active-stop].color = root.hsv-color;
+            root.emit-gradient();
+        } else {
+            root.value = root.hsv-color;
+            root.input(root.value);
+        }
+    }
+
+    function emit-gradient() {
+        root.input-gradient(root.gradient, root.stop-color(0), root.stop-color(root.gradient-stop-count - 1));
+    }
+
+    function apply-color(target: color) {
+        root.adopt(target);
+        root.commit();
+    }
+
+    public function select-stop(index: int) {
+        root.active-stop = Math.clamp(index, 0, root.gradient-stop-count - 1);
+        root.adopt(root.stop-color(root.active-stop));
+    }
+
+    function move-stop(index: int, position: float) {
+        root.gradient-stops[index].position = Math.clamp(position,
+            index == 0 ? 0 : root.gradient-stops[index - 1].position,
+            index == root.gradient-stop-count - 1 ? 1 : root.gradient-stops[index + 1].position);
+        root.emit-gradient();
+    }
+
+    // Insert before the last stop, halfway into the final span. Slots shift by
+    // hand because arrays are fixed size in this Slint version.
+    function add-stop() {
+        if (root.gradient-stop-count >= GradientLimits.max-stops) {
+            return;
+        }
+        root.gradient-stops[4] = root.gradient-stops[3];
+        if (root.gradient-stop-count - 1 <= 2) { root.gradient-stops[3] = root.gradient-stops[2]; }
+        if (root.gradient-stop-count - 1 <= 1) { root.gradient-stops[2] = root.gradient-stops[1]; }
+        root.gradient-stops[root.gradient-stop-count - 1] = {
+            position: (root.gradient-stops[root.gradient-stop-count - 2].position
+                + root.gradient-stops[root.gradient-stop-count].position) / 2,
+            color: root.stop-color(root.gradient-stop-count - 1),
+        };
+        root.active-stop = root.gradient-stop-count - 1;
+        root.gradient-stop-count += 1;
+        root.adopt(root.stop-color(root.active-stop));
+        root.emit-gradient();
+    }
+
+    function remove-stop(index: int) {
+        if (root.gradient-stop-count <= 2) {
+            return;
+        }
+        if (index <= 0) { root.gradient-stops[0] = root.gradient-stops[1]; }
+        if (index <= 1) { root.gradient-stops[1] = root.gradient-stops[2]; }
+        if (index <= 2) { root.gradient-stops[2] = root.gradient-stops[3]; }
+        if (index <= 3) { root.gradient-stops[3] = root.gradient-stops[4]; }
+        root.gradient-stop-count -= 1;
+        root.select-stop(Math.min(root.active-stop, root.gradient-stop-count - 1));
+        root.emit-gradient();
+    }
+
+    // Mirror the ramp end to end. Slint has no local variables, so the old
+    // values are staged in a scratch array before being written back.
+    private property <[ColorStop]> scratch: [
+        { position: 0.0, color: #000000 },
+        { position: 0.0, color: #000000 },
+        { position: 0.0, color: #000000 },
+        { position: 0.0, color: #000000 },
+        { position: 0.0, color: #000000 },
+    ];
+
+    function mirrored(index: int) -> ColorStop {
+        return {
+            position: 1 - root.scratch[root.gradient-stop-count - 1 - index].position,
+            color: root.scratch[root.gradient-stop-count - 1 - index].color,
+        };
+    }
+
+    function reverse-stops() {
+        root.scratch[0] = root.gradient-stops[0];
+        root.scratch[1] = root.gradient-stops[1];
+        root.scratch[2] = root.gradient-stops[2];
+        root.scratch[3] = root.gradient-stops[3];
+        root.scratch[4] = root.gradient-stops[4];
+        root.gradient-stops[0] = root.mirrored(0);
+        root.gradient-stops[1] = root.mirrored(1);
+        if (root.gradient-stop-count > 2) { root.gradient-stops[2] = root.mirrored(2); }
+        if (root.gradient-stop-count > 3) { root.gradient-stops[3] = root.mirrored(3); }
+        if (root.gradient-stop-count > 4) { root.gradient-stops[4] = root.mirrored(4); }
+        root.select-stop(root.gradient-stop-count - 1 - root.active-stop);
+        root.emit-gradient();
+    }
+
+    function set-stop-color(index: int, target: color) {
+        root.gradient-stops[index].color = target;
+        if (index == root.active-stop) {
+            root.adopt(target);
+        }
+        root.emit-gradient();
+    }
+
+    // Direction of the gradient in normalised box coordinates, matching CSS
+    // where 0deg points up.
+    private property <float> dir-x: Math.sin(root.gradient-angle);
+    private property <float> dir-y: -Math.cos(root.gradient-angle);
+    private property <float> reach: 1 / Math.max(Math.max(Math.abs(root.dir-x), Math.abs(root.dir-y)), 0.0001);
+
+    function angle-towards(nx: float, ny: float) -> angle {
+        return Math.mod(Math.atan2(nx, -ny) + 360deg, 360deg);
+    }
+
+    // A consumer binding a new colour re-seeds the HSV state. Our own commits
+    // land on exactly `hsv-color`, so skipping that case keeps the hue alive
+    // through fully desaturated or black values, where RGB can't carry it.
+    changed value => {
+        root.adopt(root.value);
+    }
+
+    init => { root.adopt(root.value); }
+
+    background: transparent;
+
+    // Screen sampling loop for the eyedropper. Idle unless a pick is running.
+    // The sample is stored first so one tick costs one native read.
+    private property <CursorSample> sample;
+    Timer {
+        interval: 40ms;
+        running: root.picking;
+        triggered => {
+            root.sample = ColorUtils.sample-cursor();
+            if (!root.sample.valid) {
+                root.picking = false;
+                return;
+            }
+            root.adopt(root.sample.value);
+            // Arm only once the button that started the pick has been released,
+            // so the opening click can't immediately confirm it.
+            if (!root.sample.pressed) {
+                root.picker-armed = true;
+            } else if (root.picker-armed) {
+                root.picking = false;
+                root.picker-armed = false;
+                root.commit();
+            }
+        }
+    }
+
+    VerticalLayout {
+        spacing: 1 * root.unit;
+        // Pack to the top: the picker is usually taller than its container and
+        // stretching would smear the sections apart.
+        alignment: start;
+
+        // ── Tabs ────────────────────────────────────────────────────────────
+        VerticalLayout {
+            spacing: 0px;
+
+            HorizontalLayout {
+                spacing: 1.5 * root.unit;
+
+                TabButton {
+                    unit: root.unit;
+                    width: 3.5 * root.unit;
+                    label: @tr("COLOR_TAB_SOLID" => "Solid");
+                    active: root.tab == 0;
+                    clicked => { root.active-tab = 0; root.adopt(root.value); }
+                }
+
+                if (root.allow-gradient) : TabButton {
+                    unit: root.unit;
+                    width: 5 * root.unit;
+                    label: @tr("COLOR_TAB_GRADIENT" => "Gradient");
+                    active: root.tab == 1;
+                    clicked => { root.active-tab = 1; root.select-stop(root.active-stop); }
+                }
+
+                if (root.allow-image) : TabButton {
+                    unit: root.unit;
+                    width: 3.5 * root.unit;
+                    label: @tr("COLOR_TAB_IMAGE" => "Image");
+                    active: root.tab == 2;
+                    clicked => { root.active-tab = 2; }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                if (root.show-close) : IconButton {
+                    unit: root.unit;
+                    width: 2 * root.unit;
+                    height: 2 * root.unit;
+                    outlined: false;
+                    icon-size: 0.9 * root.unit;
+                    icon: @image-url("../assets/images/icons/close.svg");
+                    icon-color: Theme.text-secondary;
+                    accessible-name: @tr("BUTTON_CLOSE" => "Close");
+                    clicked => { root.close-requested(); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.divider;
+            }
+        }
+
+        // ── Solid ───────────────────────────────────────────────────────────
+        if (root.tab == 0) : SaturationValueField {
+            // Square like the reference, but never so tall that the rest of the
+            // panel is pushed off a popup.
+            height: Math.min(self.width, 15 * root.unit);
+            hue: root.hue;
+            saturation: root.saturation;
+            brightness: root.brightness;
+            handle-size: 1.1 * root.unit;
+            picked(s, v) => {
+                root.saturation = s;
+                root.brightness = v;
+                root.commit();
+            }
+        }
+
+        // ── Gradient preview ────────────────────────────────────────────────
+        if (root.tab == 1) : canvas := Rectangle {
+            height: self.width;
+            border-radius: Theme.border-radius;
+            border-width: 1px;
+            border-color: Theme.primary-foreground.with-alpha(0.15);
+            background: root.gradient;
+            clip: true;
+
+            // Dashed guide running along the gradient axis between the handles.
+            for step in 49 : Rectangle {
+                private property <float> t: step / 48;
+                x: (canvas.width / 2) * (1 - root.dir-x * root.reach)
+                    + self.t * canvas.width * root.dir-x * root.reach - self.width / 2;
+                y: (canvas.height / 2) * (1 - root.dir-y * root.reach)
+                    + self.t * canvas.height * root.dir-y * root.reach - self.height / 2;
+                width: 4px;
+                height: 4px;
+                border-radius: 2px;
+                background: Math.mod(step, 2) == 0 ? #ffffffcc : transparent;
+            }
+
+            angle-start := Rectangle {
+                x: (canvas.width - self.width) / 2 * (1 - root.dir-x * root.reach);
+                y: (canvas.height - self.height) / 2 * (1 - root.dir-y * root.reach);
+                width: 1.5 * root.unit;
+                height: 1.5 * root.unit;
+
+                DragHandle {
+                    width: 100%;
+                    height: 100%;
+                    value: root.stop-color(0);
+                    selected: root.active-stop == 0;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.grab;
+                    moved => {
+                        if (self.pressed) {
+                            root.gradient-angle = root.angle-towards(
+                                1 - (parent.x + self.mouse-x) / (canvas.width / 2),
+                                1 - (parent.y + self.mouse-y) / (canvas.height / 2));
+                            root.emit-gradient();
+                        }
+                    }
+                    clicked => { root.select-stop(0); }
+                }
+            }
+
+            angle-end := Rectangle {
+                x: (canvas.width - self.width) / 2 * (1 + root.dir-x * root.reach);
+                y: (canvas.height - self.height) / 2 * (1 + root.dir-y * root.reach);
+                width: 1.5 * root.unit;
+                height: 1.5 * root.unit;
+
+                DragHandle {
+                    width: 100%;
+                    height: 100%;
+                    value: root.stop-color(root.gradient-stop-count - 1);
+                    selected: root.active-stop == root.gradient-stop-count - 1;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.grab;
+                    moved => {
+                        if (self.pressed) {
+                            root.gradient-angle = root.angle-towards(
+                                (parent.x + self.mouse-x) / (canvas.width / 2) - 1,
+                                (parent.y + self.mouse-y) / (canvas.height / 2) - 1);
+                            root.emit-gradient();
+                        }
+                    }
+                    clicked => { root.select-stop(root.gradient-stop-count - 1); }
+                }
+            }
+        }
+
+        // ── Gradient type + reverse ─────────────────────────────────────────
+        if (root.tab == 1) : HorizontalLayout {
+            alignment: space-between;
+
+            CycleSelect {
+                unit: root.unit;
+                width: 7 * root.unit;
+                label: root.gradient-kind == 1
+                    ? @tr("GRADIENT_RADIAL" => "Radial")
+                    : @tr("GRADIENT_LINEAR" => "Linear") + " " + Math.round(root.gradient-angle / 1deg) + "°";
+                clicked => {
+                    root.gradient-kind = Math.mod(root.gradient-kind + 1, 2);
+                    root.emit-gradient();
+                }
+            }
+
+            IconButton {
+                unit: root.unit;
+                icon: @image-url("../assets/images/icons/sort-up-down.svg");
+                icon-rotation: 90deg;
+                icon-color: Theme.text-secondary;
+                accessible-name: @tr("Reverse gradient");
+                clicked => { root.reverse-stops(); }
+            }
+        }
+
+        // ── Stop rail ───────────────────────────────────────────────────────
+        if (root.tab == 1) : rail := Rectangle {
+            height: 1.6 * root.unit;
+            border-radius: self.height / 2;
+            // Clip on the rail itself: the fills below would otherwise show
+            // square corners past the rounded outline.
+            clip: true;
+
+            Checkerboard {
+                width: 100%;
+                height: 100%;
+                cell: root.unit * 0.5;
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                background: @linear-gradient(90deg,
+                    root.stop-color(0) root.stop-position(0),
+                    root.stop-color(1) root.stop-position(1),
+                    root.stop-color(2) root.stop-position(2),
+                    root.stop-color(3) root.stop-position(3),
+                    root.stop-color(4) root.stop-position(4));
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: parent.border-radius;
+                border-width: 1px;
+                border-color: Theme.primary-foreground.with-alpha(0.2);
+            }
+
+            for index in root.gradient-stop-count : Rectangle {
+                x: root.gradient-stops[index].position * (parent.width - self.width);
+                y: (parent.height - self.height) / 2;
+                width: 1.5 * root.unit;
+                height: 1.5 * root.unit;
+
+                DragHandle {
+                    width: 100%;
+                    height: 100%;
+                    value: root.gradient-stops[index].color;
+                    selected: root.active-stop == index;
+                }
+
+                TouchArea {
+                    mouse-cursor: MouseCursor.grab;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            root.select-stop(index);
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            root.move-stop(index,
+                                (parent.x + self.mouse-x - parent.width / 2) / (rail.width - parent.width));
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Stop list ───────────────────────────────────────────────────────
+        if (root.tab == 1) : VerticalLayout {
+            spacing: 0.5 * root.unit;
+
+            SectionHeader {
+                unit: root.unit;
+                label: @tr("GRADIENT_STOPS" => "Stops");
+                AddButton {
+                    unit: root.unit;
+                    enabled: root.gradient-stop-count < GradientLimits.max-stops;
+                    clicked => { root.add-stop(); }
+                }
+            }
+
+            for index in root.gradient-stop-count : GradientStopRow {
+                unit: root.unit;
+                stop: root.gradient-stops[index];
+                selected: root.active-stop == index;
+                removable: root.gradient-stop-count > 2;
+                select => { root.select-stop(index); }
+                position-edited(position) => { root.move-stop(index, position); }
+                color-edited(value) => {
+                    root.set-stop-color(index, value.with-alpha(root.gradient-stops[index].color.alpha / 255));
+                }
+                opacity-edited(opacity) => {
+                    root.set-stop-color(index, root.gradient-stops[index].color.with-alpha(opacity));
+                }
+                removed => { root.remove-stop(index); }
+            }
+
+            Rectangle {
+                height: 0.25 * root.unit;
+            }
+
+            // Editing surface for the selected stop.
+            SaturationValueField {
+                height: 8 * root.unit;
+                hue: root.hue;
+                saturation: root.saturation;
+                brightness: root.brightness;
+                handle-size: 1.1 * root.unit;
+                picked(s, v) => {
+                    root.saturation = s;
+                    root.brightness = v;
+                    root.commit();
+                }
+            }
+        }
+
+        // ── Sliders (shared by both editing tabs) ───────────────────────────
+        if (root.tab != 2) : HorizontalLayout {
+            spacing: 0.7 * root.unit;
+
+            if (ColorUtils.eyedropper-available) : IconButton {
+                unit: root.unit;
+                icon: @image-url("../assets/images/icons/edit.svg");
+                icon-color: root.picking ? Theme.primary-accent : Theme.primary-foreground;
+                accessible-name: @tr("Pick a colour from the screen");
+                clicked => {
+                    root.picking = !root.picking;
+                    root.picker-armed = false;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 0.5 * root.unit;
+                alignment: center;
+
+                HueSlider {
+                    height: 0.75 * root.unit;
+                    handle-size: 1.1 * root.unit;
+                    hue: root.hue;
+                    hue-picked(value) => {
+                        root.hue = value;
+                        root.commit();
+                    }
+                }
+
+                AlphaSlider {
+                    height: 0.75 * root.unit;
+                    handle-size: 1.1 * root.unit;
+                    base: hsv(root.hue, root.saturation, root.brightness);
+                    position: root.alpha;
+                    picked(value) => {
+                        root.alpha = value;
+                        root.commit();
+                    }
+                }
+            }
+        }
+
+        // ── Value row ───────────────────────────────────────────────────────
+        if (root.tab != 2) : ColorValueRow {
+            unit: root.unit;
+            value: root.edited-color;
+            format-mode <=> root.format-mode;
+            edited(value) => {
+                root.apply-color(value.with-alpha(root.alpha));
+            }
+            opacity-edited(opacity) => {
+                root.alpha = opacity;
+                root.commit();
+            }
+        }
+
+        // ── Saved swatches ──────────────────────────────────────────────────
+        if (root.tab == 0) : VerticalLayout {
+            spacing: 0.6 * root.unit;
+
+            SectionHeader {
+                unit: root.unit;
+                label: @tr("COLOR_SAVED" => "Saved");
+                AddButton {
+                    unit: root.unit;
+                    clicked => { ColorUtils.save-color(root.value); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 0.45 * root.unit;
+                alignment: start;
+
+                for saved in ColorUtils.saved-colors : SwatchButton {
+                    unit: root.unit;
+                    selected: root.value == saved;
+                    accessible-name: ColorUtils.hex(saved);
+                    clicked => { root.apply-color(saved); }
+                    ColorChip {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: parent.border-radius;
+                        value: saved;
+                    }
+                }
+            }
+        }
+
+        if (root.tab == 1) : VerticalLayout {
+            spacing: 0.6 * root.unit;
+
+            SectionHeader {
+                unit: root.unit;
+                label: @tr("GRADIENT_SAVED" => "Saved");
+                AddButton {
+                    unit: root.unit;
+                    clicked => {
+                        ColorUtils.save-gradient({
+                            angle: root.gradient-angle,
+                            start: root.stop-color(0),
+                            end: root.stop-color(root.gradient-stop-count - 1),
+                        });
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 0.45 * root.unit;
+                alignment: start;
+
+                for saved in ColorUtils.saved-gradients : SwatchButton {
+                    unit: root.unit;
+                    clicked => {
+                        root.gradient-angle = saved.angle;
+                        root.gradient-stop-count = 2;
+                        root.gradient-stops[0] = { position: 0.0, color: saved.start };
+                        root.gradient-stops[1] = { position: 1.0, color: saved.end };
+                        root.select-stop(0);
+                        root.emit-gradient();
+                    }
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: parent.border-radius;
+                        background: @linear-gradient(saved.angle, saved.start 0%, saved.end 100%);
+                    }
+                }
+            }
+        }
+
+        // ── Image ───────────────────────────────────────────────────────────
+        if (root.tab == 2) : Rectangle {
+            height: 12 * root.unit;
+            border-radius: Theme.border-radius;
+            background: Theme.overlay;
+            Text {
+                text: @tr("Custom image / texture overlay");
+                color: Theme.text-secondary;
+                font-size: 0.95 * root.unit;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// Swatch input – opens the picker in a popup on click.
 export component ColorInput inherits ButtonSurface {
     in property <length> unit: Theme.root-font-size;
-    in property <color> value: #ffffffff;
+    in-out property <color> value: #ffffffff;
+    in property <brush> fill-brush: root.value;
+    in property <bool> is-gradient: false;
+    in property <bool> allow-gradient: true;
+    // Consumers that open their own dialog from `open-requested` turn the
+    // built-in popup off so only one picker appears.
+    in property <bool> use-popup: true;
     in property <string> transparent-label: @tr("BUTTON_COLOR_TRANSPARENT" => "Transparent");
     callback open-requested(color);
+    callback color-changed(color);
+    callback gradient-changed(brush, color, color);
 
-    height: 3.5 * root.unit;
-    border-radius: Theme.border-radius;
-    background: root.value;
-    accessible-name: root.value.alpha == 0 ? root.transparent-label : @tr("Choose color");
-    clicked => { root.open-requested(root.value); }
+    width: 5 * root.unit;
+    height: 2.2 * root.unit;
+    border-radius: Theme.compact-radius;
+    accessible-name: root.value.alpha == 0 ? root.transparent-label : @tr("Choose colour");
+
+    ColorChip {
+        width: 100%;
+        height: 100%;
+        border-radius: parent.border-radius;
+        value: root.value;
+        fill-brush: root.fill-brush;
+    }
+
+    clicked => {
+        root.open-requested(root.value);
+        if (root.use-popup) {
+            popup.show();
+        }
+    }
 
     if (root.value.alpha == 0) : Text {
         x: 0.5 * root.unit;
@@ -26,199 +1321,49 @@ export component ColorInput inherits ButtonSurface {
         vertical-alignment: center;
         overflow: elide;
     }
-}
 
-// HSVA color picker: 2D saturation/value canvas, hue strip, alpha strip, preset swatches.
-export component ColorPicker inherits Rectangle {
-    in property <length> unit: Theme.root-font-size;
-    in-out property <color> value: #ffffffff;
-    in-out property <float> hue: 0;
-    in-out property <float> sat: 1;
-    in-out property <float> val: 1;
-    in-out property <float> alpha: 1;
-    callback input(color);
-
-    background: transparent;
-
-    public function commit() {
-        root.value = hsv(root.hue, root.sat, root.val, root.alpha);
-        root.input(root.value);
-    }
-
-    // ── Saturation / Value canvas ──────────────────────────────────
-    sv-field := Rectangle {
-        x: 0px;
-        y: 0px;
-        width: parent.width;
-        height: parent.height - 7.5 * root.unit;
-        border-radius: 0.5 * root.unit;
-        border-width: 1px;
-        border-color: Theme.primary-foreground.with-alpha(0.15);
-        clip: true;
-
-        // White → hue-colour horizontal gradient
-        Rectangle {
-            width: parent.width;
-            height: parent.height;
-            background: @linear-gradient(90deg,
-                #ffffff 0%,
-                hsv(root.hue, 1, 1) 100%
-            );
-        }
-        // Transparent → black vertical gradient
-        Rectangle {
-            width: parent.width;
-            height: parent.height;
-            background: @linear-gradient(180deg,
-                #00000000 0%,
-                #000000ff 100%
-            );
-        }
-        // Selector circle
-        Rectangle {
-            x: root.sat * (parent.width - self.width);
-            y: (1 - root.val) * (parent.height - self.height);
-            width: 1.2 * root.unit;
-            height: 1.2 * root.unit;
-            border-radius: self.width / 2;
-            border-width: 2px;
-            border-color: root.val > 0.5 ? #000000 : #ffffff;
-            background: transparent;
-        }
-        TouchArea {
-            mouse-cursor: MouseCursor.crosshair;
-            moved => {
-                if (self.pressed) {
-                    root.sat = max(0, min(1, self.mouse-x / parent.width));
-                    root.val = max(0, min(1, 1 - self.mouse-y / parent.height));
-                    root.commit();
-                }
-            }
-            clicked => {
-                root.sat = max(0, min(1, self.mouse-x / parent.width));
-                root.val = max(0, min(1, 1 - self.mouse-y / parent.height));
-                root.commit();
-            }
-        }
-    }
-
-    // ── Hue slider ─────────────────────────────────────────────────
-    hue-rail := Rectangle {
-        x: 0px;
-        y: parent.height - 6 * root.unit;
-        width: parent.width;
-        height: 1.4 * root.unit;
-        border-radius: self.height / 2;
-        border-width: 1px;
-        border-color: Theme.primary-foreground.with-alpha(0.15);
-        background: @linear-gradient(90deg,
-            #ff0000 0%,     #ffff00 16.667%,
-            #00ff00 33.333%, #00ffff 50%,
-            #0000ff 66.667%, #ff00ff 83.333%,
-            #ff0000 100%
-        );
+    popup := PopupWindow {
+        x: -10 * root.unit;
+        y: root.height + 4px;
+        width: 24 * root.unit;
+        height: root.allow-gradient ? 42 * root.unit : 30 * root.unit;
+        close-policy: close-on-click-outside;
 
         Rectangle {
-            x: (root.hue / 360) * (parent.width - self.width);
-            y: (parent.height - self.height) / 2;
-            width: 0.9 * root.unit;
-            height: 1.8 * root.unit;
-            border-radius: self.width / 2;
-            border-width: 2px;
-            border-color: Theme.primary-foreground;
-            background: hsv(root.hue, 1, 1);
-        }
-
-        TouchArea {
-            mouse-cursor: MouseCursor.pointer;
-            moved => {
-                if (self.pressed) {
-                    root.hue = max(0, min(360, 360 * self.mouse-x / parent.width));
-                    root.commit();
-                }
-            }
-            clicked => {
-                root.hue = max(0, min(360, 360 * self.mouse-x / parent.width));
-                root.commit();
-            }
-        }
-    }
-
-    // ── Alpha slider ───────────────────────────────────────────────
-    alpha-rail := Rectangle {
-        x: 0px;
-        y: parent.height - 3.8 * root.unit;
-        width: parent.width;
-        height: 1.4 * root.unit;
-        border-radius: self.height / 2;
-        border-width: 1px;
-        border-color: Theme.primary-foreground.with-alpha(0.15);
-        background: @linear-gradient(90deg,
-            hsv(root.hue, root.sat, root.val, 0) 0%,
-            hsv(root.hue, root.sat, root.val, 1) 100%
-        );
-
-        Rectangle {
-            x: root.alpha * (parent.width - self.width);
-            y: (parent.height - self.height) / 2;
-            width: 0.9 * root.unit;
-            height: 1.8 * root.unit;
-            border-radius: self.width / 2;
-            border-width: 2px;
-            border-color: Theme.primary-foreground;
-            background: root.value;
-        }
-
-        TouchArea {
-            mouse-cursor: MouseCursor.pointer;
-            moved => {
-                if (self.pressed) {
-                    root.alpha = max(0, min(1, self.mouse-x / parent.width));
-                    root.commit();
-                }
-            }
-            clicked => {
-                root.alpha = max(0, min(1, self.mouse-x / parent.width));
-                root.commit();
-            }
-        }
-    }
-
-    // ── Preset swatches ────────────────────────────────────────────
-    HorizontalLayout {
-        x: 0px;
-        y: parent.height - 1.8 * root.unit;
-        width: parent.width;
-        height: 1.8 * root.unit;
-        spacing: 0.35 * root.unit;
-
-        for pc in [
-            #ffffffff, #000000ff, #00000000, #ffff00ff, #00ffffff,
-            #00ff00ff, #ff00ffff, #ff0000ff, #0000ffff, #00000080
-        ] : ButtonSurface {
-            horizontal-stretch: 1;
-            height: 1.8 * root.unit;
-            border-radius: 0.35 * root.unit;
-            background: pc;
+            width: 100%;
+            height: 100%;
+            border-radius: Theme.border-radius;
+            background: Theme.modal-color;
             border-width: 1px;
-            border-color: Theme.primary-foreground.with-alpha(0.25);
-            clicked => {
-                root.value = pc;
-                root.hue = pc.to-hsv().hue;
-                root.sat = pc.to-hsv().saturation;
-                root.val = pc.to-hsv().value;
-                root.alpha = pc.to-hsv().alpha;
-                root.input(root.value);
-            }
+            border-color: Theme.card-border;
+            drop-shadow-blur: Theme.outer-glow-blur;
+            drop-shadow-color: Theme.outer-glow-color;
+            clip: true;
 
-            if (pc.alpha == 0) : Text {
-                width: parent.width;
-                height: parent.height;
-                text: "Ø";
-                color: Theme.primary-foreground;
-                font-size: 0.75 * root.unit;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            ScrollView {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.width;
+
+                VerticalLayout {
+                    padding: 1.25 * root.unit;
+
+                    picker := ColorPicker {
+                        unit: root.unit;
+                        value: root.value;
+                        allow-gradient: root.allow-gradient;
+                        active-tab: root.is-gradient ? 1 : 0;
+                        show-close: true;
+                        close-requested => { popup.close(); }
+                        input(value) => {
+                            root.value = value;
+                            root.color-changed(value);
+                        }
+                        input-gradient(gradient, start, end) => {
+                            root.gradient-changed(gradient, start, end);
+                        }
+                    }
+                }
             }
         }
     }

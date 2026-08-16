@@ -1,6 +1,7 @@
-import { ListView, LineEdit } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ButtonSurface, PillButton } from "button.slint";
+import { NativeTextField } from "text_input.slint";
 
 export struct ProfileItem {
     id: string,
@@ -112,7 +113,7 @@ export component ProfilePicker inherits Rectangle {
             // credential state through conditional focus behavior.
             height: 52px;
             background: transparent;
-            LineEdit {
+            NativeTextField {
                 width: min(300px, parent.width);
                 x: (parent.width - self.width) / 2;
                 text <=> root.pin;

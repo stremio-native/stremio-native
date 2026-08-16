@@ -131,7 +131,9 @@ pub struct DownloadManager {
 }
 
 pub async fn list_jobs(profile_id: &str) -> Result<Vec<DownloadJob>, DownloadError> {
-    let conn = crate::db::get_conn().map_err(|_| DownloadError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| DownloadError::Database)?;
     let mut rows = conn
         .query(
             "SELECT id, profile_id, title, filename, destination, state, source_kind,
@@ -438,9 +440,24 @@ pub async fn project_active_profile(ui_weak: slint::Weak<crate::MainWindow>) {
                         ),
                         can_resume: matches!(
                             job.state,
-                            DownloadState::Paused | DownloadState::Failed
+                            DownloadState::Paused
+                                | DownloadState::Failed
+                                | DownloadState::Cancelled
                         ),
                         can_play: job.state == DownloadState::Completed,
+                        can_cancel: matches!(
+                            job.state,
+                            DownloadState::Queued
+                                | DownloadState::Resolving
+                                | DownloadState::Downloading
+                                | DownloadState::Paused
+                        ),
+                        can_delete: matches!(
+                            job.state,
+                            DownloadState::Completed
+                                | DownloadState::Failed
+                                | DownloadState::Cancelled
+                        ),
                     }
                 })
                 .collect::<Vec<_>>(),
@@ -728,7 +745,9 @@ impl DownloadManager {
 }
 
 async fn persist_new_job(job: &DownloadJob) -> Result<(), DownloadError> {
-    let conn = crate::db::get_conn().map_err(|_| DownloadError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| DownloadError::Database)?;
     conn.execute(
         "INSERT INTO download_jobs(
             id, profile_id, title, filename, destination, state, source_kind,
@@ -755,7 +774,9 @@ async fn persist_new_job(job: &DownloadJob) -> Result<(), DownloadError> {
 }
 
 async fn load_job(job_id: &str) -> Result<DownloadJob, DownloadError> {
-    let conn = crate::db::get_conn().map_err(|_| DownloadError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| DownloadError::Database)?;
     let mut rows = conn
         .query(
             "SELECT id, profile_id, title, filename, destination, state, source_kind,
@@ -804,7 +825,9 @@ async fn update_state(
     state: DownloadState,
     error_code: Option<&str>,
 ) -> Result<(), DownloadError> {
-    let conn = crate::db::get_conn().map_err(|_| DownloadError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| DownloadError::Database)?;
     conn.execute(
         "UPDATE download_jobs SET state = ?, error_code = ?, updated_at = ? WHERE id = ?",
         (
@@ -825,7 +848,9 @@ async fn update_progress(
     downloaded: u64,
     total: Option<u64>,
 ) -> Result<(), DownloadError> {
-    let conn = crate::db::get_conn().map_err(|_| DownloadError::Database)?;
+    let conn = crate::db::get_conn()
+        .await
+        .map_err(|_| DownloadError::Database)?;
     let completed_at = (state == DownloadState::Completed).then(|| chrono::Utc::now().timestamp());
     conn.execute(
         "UPDATE download_jobs

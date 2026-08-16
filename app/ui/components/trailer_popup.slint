@@ -1,0 +1,315 @@
+import { Theme } from "../theme.slint";
+import { ButtonSurface, PillButton, IconAction } from "button.slint";
+import { Chip } from "chip.slint";
+
+// Floating hover card shown above a catalog poster once the hover threshold in
+// MediaCard elapses. The video frame is pushed in from the preview MPV worker;
+// everything else is projected metadata for the hovered item.
+export component TrailerHoverPopup inherits Rectangle {
+    in property <length> unit: Theme.root-font-size;
+    in property <bool> active: false;
+
+    // Preview stream state.
+    in property <image> frame;
+    in property <bool> has-frame: false;
+    in property <bool> loading: false;
+    in property <bool> muted: true;
+    in property <string> status: "";
+
+    // Item metadata.
+    in property <image> poster;
+    in property <string> title: "";
+    in property <string> year: "";
+    in property <string> runtime: "";
+    in property <string> rating: "";
+    in property <string> description: "";
+    in property <[string]> genres: [];
+    in property <bool> in-library: false;
+
+    // Anchor geometry of the hovered card, in window coordinates.
+    in property <length> anchor-x: 0px;
+    in property <length> anchor-y: 0px;
+    in property <length> anchor-width: 0px;
+    in property <length> anchor-height: 0px;
+
+    callback toggle-muted();
+    callback play-requested();
+    callback toggle-library-requested();
+    callback pointer-entered();
+    callback pointer-left();
+
+    private property <int> pulse-tick: 0;
+    property <length> popup-width: min(26 * root.unit, max(18 * root.unit, root.width - 4 * root.unit));
+    property <length> video-height: root.popup-width * Theme.landscape-shape-ratio;
+    property <length> info-height: 12.5 * root.unit;
+    property <length> popup-height: root.video-height + root.info-height;
+    // Centre on the card, then keep the whole card inside the viewport so the
+    // first and last column of a grid stay fully readable.
+    property <length> desired-x: root.anchor-x + (root.anchor-width - root.popup-width) / 2;
+    property <length> desired-y: root.anchor-y + (root.anchor-height - root.popup-height) / 2;
+    property <length> popup-x: max(root.unit,
+        min(root.width - root.popup-width - root.unit, root.desired-x));
+    property <length> popup-y: max(root.unit,
+        min(root.height - root.popup-height - root.unit, root.desired-y));
+
+    background: transparent;
+    // Kept mounted through the fade-out so dismissal does not pop.
+    visible: root.active || card.opacity > 0.01;
+
+    card := Rectangle {
+        x: root.popup-x;
+        y: root.popup-y;
+        width: root.popup-width;
+        height: root.popup-height;
+        background: Theme.modal-background;
+        border-radius: Theme.border-radius;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        drop-shadow-blur: 2 * root.unit;
+        drop-shadow-color: Theme.background-dark-40;
+        opacity: root.active ? 1 : 0;
+        clip: true;
+
+        animate opacity { duration: Theme.motion-control; easing: ease-out; }
+
+        hover-area := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.play-requested(); }
+        }
+
+        // The popup covers the card that opened it, so it has to take over the
+        // hover contract or the preview would tear down on entry. Nested
+        // controls own the pointer while hovered, so the contract is derived
+        // from all of them at once: reacting to the individual `has-hover`
+        // edges would depend on the order Slint delivers enter and leave in.
+        private property <bool> pointer-inside: hover-area.has-hover
+            || mute-button.has-hover
+            || play-button.has-hover
+            || library-button.has-hover;
+        changed pointer-inside => {
+            if (self.pointer-inside) {
+                root.pointer-entered();
+            } else {
+                root.pointer-left();
+            }
+        }
+
+        VerticalLayout {
+            spacing: 0px;
+            padding: 0px;
+
+            video := Rectangle {
+                height: root.video-height;
+                background: Theme.background;
+                clip: true;
+
+                if (root.poster.width > 0) : Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.poster;
+                    image-fit: cover;
+                    opacity: root.has-frame ? 0 : 0.45;
+                    animate opacity { duration: Theme.motion-control; }
+                }
+
+                if (root.has-frame) : Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.frame;
+                    image-fit: contain;
+                }
+
+                // Buffering / unavailable indicator.
+                if (!root.has-frame) : Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: Theme.background-dark-40;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 0.75 * root.unit;
+
+                        Rectangle {
+                            height: 2 * root.unit;
+                            background: transparent;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 0.5 * root.unit;
+
+                                for index in 3 : Rectangle {
+                                    width: 0.6 * root.unit;
+                                    height: 0.6 * root.unit;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: self.width / 2;
+                                    background: Theme.primary-foreground;
+                                    opacity: root.loading
+                                        ? (root.pulse-tick == index ? 0.95 : 0.25)
+                                        : 0;
+                                    animate opacity { duration: Theme.motion-control; }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.loading
+                                ? @tr("TRAILER_PREVIEW_LOADING" => "Loading preview…")
+                                : root.status;
+                            color: Theme.text-secondary;
+                            font-size: 0.9 * root.unit;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                // Bottom scrim keeps the mute control legible over bright frames.
+                Rectangle {
+                    y: parent.height - 3 * root.unit;
+                    width: parent.width;
+                    height: 3 * root.unit;
+                    background: @linear-gradient(180deg,
+                        Theme.background.with-alpha(0) 0%,
+                        Theme.background.with-alpha(0.75) 100%);
+                }
+
+                mute-button := IconAction {
+                    x: parent.width - self.width - 0.75 * root.unit;
+                    y: parent.height - self.height - 0.75 * root.unit;
+                    width: 2.75 * root.unit;
+                    height: 2.75 * root.unit;
+                    unit: root.unit;
+                    icon-size: 1.25 * root.unit;
+                    icon-source: root.muted
+                        ? @image-url("../assets/images/icons/volume-off.svg")
+                        : @image-url("../assets/images/icons/volume-high.svg");
+                    label: root.muted
+                        ? @tr("TRAILER_PREVIEW_UNMUTE" => "Unmute preview")
+                        : @tr("TRAILER_PREVIEW_MUTE" => "Mute preview");
+                    clicked => { root.toggle-muted(); }
+                }
+            }
+
+            Rectangle {
+                height: root.info-height;
+                background: transparent;
+
+                VerticalLayout {
+                    padding-left: 1.25 * root.unit;
+                    padding-right: 1.25 * root.unit;
+                    padding-top: 0.9 * root.unit;
+                    padding-bottom: 0.9 * root.unit;
+                    spacing: 0.5 * root.unit;
+
+                    Text {
+                        text: root.title;
+                        color: Theme.primary-foreground;
+                        font-size: 1.15 * root.unit;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 0.75 * root.unit;
+                        alignment: start;
+
+                        if (root.year != "") : Text {
+                            text: root.year;
+                            color: Theme.text-secondary;
+                            font-size: 0.9 * root.unit;
+                            vertical-alignment: center;
+                        }
+                        if (root.runtime != "") : Text {
+                            text: root.runtime;
+                            color: Theme.text-secondary;
+                            font-size: 0.9 * root.unit;
+                            vertical-alignment: center;
+                        }
+                        if (root.rating != "") : HorizontalLayout {
+                            spacing: 0.25 * root.unit;
+
+                            Image {
+                                width: 0.9 * root.unit;
+                                height: 0.9 * root.unit;
+                                y: (parent.height - self.height) / 2;
+                                source: @image-url("../assets/images/icons/imdb.svg");
+                                colorize: Theme.imdb;
+                                image-fit: contain;
+                            }
+                            Text {
+                                text: root.rating;
+                                color: Theme.text-secondary;
+                                font-size: 0.9 * root.unit;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    if (root.genres.length > 0) : HorizontalLayout {
+                        height: 1.75 * root.unit;
+                        spacing: 0.4 * root.unit;
+                        alignment: start;
+
+                        for genre in root.genres : Chip {
+                            unit: 0.75 * root.unit;
+                            height: parent.height;
+                            label: genre;
+                        }
+                    }
+
+                    Text {
+                        vertical-stretch: 1;
+                        text: root.description;
+                        color: Theme.text-muted;
+                        font-size: 0.9 * root.unit;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+
+                    HorizontalLayout {
+                        height: 2.75 * root.unit;
+                        spacing: 0.5 * root.unit;
+                        alignment: start;
+
+                        play-button := PillButton {
+                            unit: root.unit;
+                            height: parent.height;
+                            width: 9 * root.unit;
+                            primary: true;
+                            show-icon: true;
+                            icon-source: @image-url("../assets/images/icons/play.svg");
+                            icon-size: 1.1 * root.unit;
+                            label-font-size: 0.95 * root.unit;
+                            label: @tr("TRAILER_PREVIEW_PLAY_FULL" => "Play Full");
+                            clicked => { root.play-requested(); }
+                        }
+
+                        library-button := PillButton {
+                            unit: root.unit;
+                            height: parent.height;
+                            width: 10.5 * root.unit;
+                            show-icon: true;
+                            icon-size: 1.1 * root.unit;
+                            label-font-size: 0.95 * root.unit;
+                            icon-source: root.in-library
+                                ? @image-url("../assets/images/icons/checkmark.svg")
+                                : @image-url("../assets/images/icons/add-to-library.svg");
+                            label: root.in-library
+                                ? @tr("TRAILER_PREVIEW_IN_LIBRARY" => "In Library")
+                                : @tr("TRAILER_PREVIEW_ADD_LIBRARY" => "Add to Library");
+                            clicked => { root.toggle-library-requested(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pulse := Timer {
+        interval: 350ms;
+        running: root.active && root.loading && !root.has-frame;
+        triggered => { root.pulse-tick = Math.mod(root.pulse-tick + 1, 3); }
+    }
+}

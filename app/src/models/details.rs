@@ -534,7 +534,21 @@ fn reload_stream_for_video(rt: &Arc<Runtime<DesktopEnv, AppModel>>, video_id: St
         .meta_details
         .selected
         .as_ref()
-        .map(|selected| selected.meta_path.clone());
+        .map(|selected| selected.meta_path.clone())
+        .or_else(|| {
+            let selected = model.player.selected.as_ref()?;
+            let meta_request = selected.meta_request.as_ref()?;
+            Some(meta_request.path.clone())
+        })
+        .or_else(|| {
+            let meta_item = model.player.meta_item.as_ref()?.content.as_ref()?.ready()?;
+            Some(ResourcePath {
+                resource: "meta".to_string(),
+                r#type: meta_item.preview.r#type.clone(),
+                id: meta_item.preview.id.clone(),
+                extra: Vec::new(),
+            })
+        });
     drop(model);
 
     if let Some(meta_path) = meta_path {
@@ -619,7 +633,9 @@ fn sync_series_details(ui: &MainWindow, meta_item: Option<&MetaItem>, episodes: 
 
         // Default to season 1 if active season not found in list
         let active_season = {
-            let mut s = get_active_season().lock().unwrap();
+            let mut s = get_active_season()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !seasons.contains(&*s) && !seasons.is_empty() {
                 *s = seasons[0];
             }
@@ -639,7 +655,9 @@ fn sync_series_details(ui: &MainWindow, meta_item: Option<&MetaItem>, episodes: 
         ui.set_detail_episode_names(slint::ModelRc::new(ep_names_model));
 
         let active_episode_idx = {
-            let mut ep = get_active_episode_idx().lock().unwrap();
+            let mut ep = get_active_episode_idx()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *ep >= episodes.len() {
                 *ep = 0;
             }
@@ -727,6 +745,7 @@ pub(crate) fn projection_fingerprint(
                 fingerprint.u64(3);
                 fingerprint.str(&meta.preview.id);
                 fingerprint.str(&meta.preview.name);
+                fingerprint.optional_str(meta.preview.logo.as_ref().map(url::Url::as_str));
                 fingerprint.optional_str(meta.preview.description.as_deref());
                 fingerprint.optional_str(meta.preview.release_info.as_deref());
                 fingerprint.optional_str(meta.preview.runtime.as_deref());
@@ -877,6 +896,17 @@ pub fn sync(
         &meta_item.preview.poster,
         ui_weak,
     ));
+    let logo_url = meta_item
+        .preview
+        .logo
+        .as_ref()
+        .map(url::Url::as_str)
+        .unwrap_or_default();
+    ui.set_detail_logo_url(logo_url.into());
+    ui.set_detail_logo(crate::image_cache::get_poster_image(
+        &meta_item.preview.logo,
+        ui_weak,
+    ));
     let background = meta_item
         .preview
         .background
@@ -910,6 +940,9 @@ pub fn sync(
         );
         let poster = crate::image_cache::get_poster_image(&meta_item.preview.poster, ui_weak);
         ui.set_discover_preview_poster(poster);
+        ui.set_discover_preview_logo_url(logo_url.into());
+        let logo = crate::image_cache::get_poster_image(&meta_item.preview.logo, ui_weak);
+        ui.set_discover_preview_logo(logo);
 
         // Sync genres from links
         let slint_genres = projected_links(meta_item, &["genre", "genres"]);
@@ -946,6 +979,8 @@ pub fn sync(
 
         let poster = crate::image_cache::get_poster_image(&meta_item.preview.poster, ui_weak);
         ui.set_detail_poster(poster);
+        let logo = crate::image_cache::get_poster_image(&meta_item.preview.logo, ui_weak);
+        ui.set_detail_logo(logo);
 
         let genres = projected_links(meta_item, &["genre", "genres"]);
         ui.set_detail_genres(slint::ModelRc::new(slint::VecModel::from(genres)));
@@ -1006,6 +1041,27 @@ pub fn sync(
 
         if id_changed {
             crate::metadata_enrichment::request(ui_weak.clone(), selected_id.to_owned());
+            let is_anime = selected_id.starts_with("kitsu:")
+                || meta_item.preview.r#type.eq_ignore_ascii_case("anime")
+                || meta_item.preview.links.iter().any(|link| {
+                    category_matches(&link.category, &["genre", "genres"])
+                        && (link.name.eq_ignore_ascii_case("anime")
+                            || link.name.eq_ignore_ascii_case("animation"))
+                });
+            let year = meta_item.preview.release_info.clone().or_else(|| {
+                meta_item
+                    .preview
+                    .released
+                    .map(|d| d.format("%Y").to_string())
+            });
+            crate::ratings::fetch_and_project(
+                ui_weak.clone(),
+                selected_id.to_owned(),
+                meta_item.preview.name.clone(),
+                year,
+                is_series,
+                is_anime,
+            );
         }
 
         if id_changed || route_opened {
@@ -1057,7 +1113,10 @@ pub fn sync(
             };
             videos_for_active_season = series_videos(meta_item, active_season);
 
-            let search_query = get_search_query().lock().unwrap().to_lowercase();
+            let search_query = get_search_query()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .to_lowercase();
             let now = chrono::Utc::now();
 
             for video in &videos_for_active_season {

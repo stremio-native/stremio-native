@@ -1,10 +1,11 @@
-import { ListView, LineEdit } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { MediaCardItem } from "../components/media_card.slint";
 import { MediaCardGridRow, MediaGridPlaceholder } from "../components/media_carousel.slint";
 import { EmptyState } from "../components/feedback.slint";
 import { SelectField } from "../components/select.slint";
 import { ButtonSurface, PillButton } from "../components/button.slint";
+import { NativeTextField } from "../components/text_input.slint";
 
 export struct LibraryRow {
     cols: [MediaCardItem],
@@ -27,6 +28,11 @@ export component LibraryPage inherits Rectangle {
     private property <bool> local-mode: root.active-type == "Local";
     private property <[LibraryRow]> visible-rows: root.local-mode ? root.local-rows : root.rows;
 
+    in property <bool> enable-hover-preview: false;
+    in property <duration> hover-preview-delay: 1200ms;
+
+    callback hover-preview-requested(string, string, length, length, length, length);
+    callback hover-preview-dismissed();
     callback type-changed(string);
     callback sort-changed(string);
     callback item-selected(string, string, string);
@@ -104,7 +110,8 @@ export component LibraryPage inherits Rectangle {
                     }
                 }
 
-                if (root.local-mode) : LineEdit {
+                if (root.local-mode) : NativeTextField {
+                    unit: root.unit;
                     horizontal-stretch: 1;
                     text <=> root.local-root-path;
                     placeholder-text: @tr("Folder path to add");
@@ -302,6 +309,12 @@ export component LibraryPage inherits Rectangle {
                     spacing: 0.5 * root.unit;
                     library-context-menu: !root.local-mode;
                     continue-watching-context-menu: root.continue-watching-mode;
+                    enable-hover-preview: root.enable-hover-preview && !root.local-mode;
+                    hover-preview-delay: root.hover-preview-delay;
+                    hover-preview-requested(id, media-type, x, y, width, height) => {
+                        root.hover-preview-requested(id, media-type, x, y, width, height);
+                    }
+                    hover-preview-dismissed => { root.hover-preview-dismissed(); }
                     item-selected(id, media-type, video-id) => {
                         if (root.local-mode) {
                             root.local-play(id);
