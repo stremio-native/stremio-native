@@ -10,7 +10,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit},
 };
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -191,12 +191,12 @@ pub fn decrypt_secret_payload(
         return Err(BackupError::InvalidArchive);
     }
     let salt = &encrypted[4..20];
-    let nonce = &encrypted[20..44];
+    let nonce = <&XNonce>::try_from(&encrypted[20..44]).map_err(|_| BackupError::InvalidArchive)?;
     let ciphertext = &encrypted[44..];
     let mut key = derive_key(passphrase, salt)?;
     let cipher = XChaCha20Poly1305::new((&key).into());
     let plaintext = cipher
-        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .decrypt(nonce, ciphertext)
         .map_err(|_| BackupError::Encryption)?;
     key.fill(0);
     serde_json::from_slice(&plaintext).map_err(|_| BackupError::InvalidArchive)
@@ -395,12 +395,14 @@ fn encrypt_secrets(mut export: SecretExport) -> Result<Vec<u8>, BackupError> {
     }
     let mut salt = [0_u8; 16];
     let mut nonce = [0_u8; 24];
-    rand::rng().fill_bytes(&mut salt);
-    rand::rng().fill_bytes(&mut nonce);
+    let mut rng = rand::rng();
+    rng.fill_bytes(&mut salt);
+    rng.fill_bytes(&mut nonce);
     let mut key = derive_key(&export.passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new((&key).into());
+    let cipher_nonce = XNonce::from(nonce);
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
+        .encrypt(&cipher_nonce, plaintext.as_ref())
         .map_err(|_| BackupError::Encryption)?;
     key.fill(0);
     let mut output = Vec::with_capacity(44 + ciphertext.len());

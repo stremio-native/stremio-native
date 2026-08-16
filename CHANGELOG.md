@@ -60,6 +60,7 @@ This file records notable changes to Stremio Native relative to the initial sour
 - Switched Windows linking to `rust-lld` with the required static-ICU duplicate-symbol compatibility flags, and moved release builds from serial fat LTO to parallel ThinLTO with optimized build scripts for substantially shorter link and code-generation times.
 - Added opt-in Hotpath profiling for application entry points, database and navigation operations, image/thumbnail work, channels, allocations, Tokio, and Reqwest while retaining Chrome traces in profiling builds.
 - Updated the workspace dependency set, including Turso 0.7.2, Moka 0.12.16, async-trait 0.1.92, base64 0.23.1, Blake3 1.8.6, futures 0.3.34, HTTP 1.5.0, thiserror 2.0.20, `open` 5.4.1, and pkg-config 0.3.34.
+- Integrated the pending dependency updates for rand 0.10.2, ChaCha20Poly1305 0.11.0, and windows-rs 0.62.2, including the rand 0.10 RNG-trait migration, and pinned the cargo-deb installer action to 2.85.4.
 - Added the top-level GPL-3.0-only license and standardized author, maintainer, diagnostics, release-package, and Flatpak metadata on the current project identity and contact address.
 - Refreshed the README with CI and release badges, v1.0.5 downloads, modern CPU/GPU requirements, the rewrite feedback notice, and an expanded current-feature overview; repository, issue, workflow, and package links now target the `stremio-native/stremio-native` organization repository.
 
