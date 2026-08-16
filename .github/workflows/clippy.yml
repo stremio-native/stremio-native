@@ -9,6 +9,9 @@ on:
       - "**/*.slint"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - "vcpkg.json"
+      - "triplets/**"
+      - "vcpkg-overlays/**"
       - ".github/workflows/clippy.yml"
   push:
     branches: [main]
@@ -17,6 +20,9 @@ on:
       - "**/*.slint"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - "vcpkg.json"
+      - "triplets/**"
+      - "vcpkg-overlays/**"
       - ".github/workflows/clippy.yml"
 
 env:
@@ -28,6 +34,15 @@ jobs:
   clippy:
     name: Rust workspace
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
+      VCPKG_DEFAULT_TRIPLET: x64-linux-v3-static-release
+      VCPKGRS_TRIPLET: x64-linux-v3-static-release
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
+      VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/vcpkg-overlays
+      PKG_CONFIG_PATH: ${{ github.workspace }}/vcpkg_installed/x64-linux-v3-static-release/lib/pkgconfig
+      LIBTORRENT_STATIC: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,6 +54,27 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang cmake ninja-build pkg-config libssl-dev libtorrent-rasterbar-dev libboost-dev libclang-dev libgtk-3-dev libayatana-appindicator3-dev libmpv-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libegl1-mesa-dev
+          sudo apt-get install -y build-essential clang cmake ninja-build pkg-config libssl-dev libclang-dev libgtk-3-dev libayatana-appindicator3-dev libmpv-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libegl1-mesa-dev
+      - name: Restore libtorrent cache
+        id: libtorrent-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: vcpkg_installed
+          key: Linux-vcpkg-x64-linux-v3-static-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
+          restore-keys: |
+            Linux-vcpkg-x64-linux-v3-static-release-v1-
+      - name: Install static libtorrent 2.1.1
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "84bab45d415d22042bd0b9081aea57f362da3f35"
+          vcpkgDirectory: "${{ github.workspace }}/vcpkg"
+          vcpkgJsonGlob: "vcpkg.json"
+          runVcpkgInstall: true
+      - name: Save libtorrent cache
+        if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: vcpkg_installed
+          key: Linux-vcpkg-x64-linux-v3-static-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
