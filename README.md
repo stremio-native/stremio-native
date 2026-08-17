@@ -43,12 +43,12 @@ See the [changelog](CHANGELOG.md) for the current build's implementation notes a
 
 | Platform | Format | Link |
 | :--- | :--- | :--- |
-| **Windows** | Installer | [StremioSetup-v1.0.5-x64.exe](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/StremioSetup-v1.0.5-x64.exe) |
-| **Windows** | Updater ZIP | [stremio-native-v1.0.5-x86_64-pc-windows-msvc.zip](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-v1.0.5-x86_64-pc-windows-msvc.zip) |
-| **Arch Linux** | Pacman `.pkg.tar.zst` | [stremio-native-1.0.5-1-x86_64.pkg.tar.zst](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-1.0.5-1-x86_64.pkg.tar.zst) |
-| **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.5-1_amd64.deb](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native_1.0.5-1_amd64.deb) |
-| **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.5-1.fc44.x86_64.rpm](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-1.0.5-1.fc44.x86_64.rpm) |
-| **Linux** | Standalone binary | [stremio-native-v1.0.5-x86_64-unknown-linux-gnu](https://github.com/stremio-native/stremio-native/releases/download/v1.0.5/stremio-native-v1.0.5-x86_64-unknown-linux-gnu) |
+| **Windows** | Installer | [StremioSetup-v1.0.6-x64.exe](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/StremioSetup-v1.0.6-x64.exe) |
+| **Windows** | Updater ZIP | [stremio-native-v1.0.6-x86_64-pc-windows-msvc.zip](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native-v1.0.6-x86_64-pc-windows-msvc.zip) |
+| **Arch Linux** | Pacman `.pkg.tar.zst` | [stremio-native-1.0.6-1-x86_64.pkg.tar.zst](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native-1.0.6-1-x86_64.pkg.tar.zst) |
+| **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.6-1_amd64.deb](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native_1.0.6-1_amd64.deb) |
+| **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.6-1.fc44.x86_64.rpm](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native-1.0.6-1.fc44.x86_64.rpm) |
+| **Linux** | Standalone binary | [stremio-native-v1.0.6-x86_64-unknown-linux-gnu](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native-v1.0.6-x86_64-unknown-linux-gnu) |
 
 ---
 
