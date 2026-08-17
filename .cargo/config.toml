@@ -8,6 +8,19 @@ STREAM_SERVER_SKIP_WINDOWS_RESOURCES = "1"
 VCPKGRS_TRIPLET = "x64-windows-v3-static-md-release"
 VCPKG_INSTALLED_DIR = { value = "vcpkg_installed", relative = true }
 
+[unstable]
+# The repository pins nightly in rust-toolchain.toml, so keep the compiler's
+# parallel frontend profile-scoped instead of duplicating it in every target.
+profile-rustflags = true
+
+[profile.dev]
+# Four threads match the smallest CI runners and still accelerate the large
+# Slint/application crates without the oversubscription of eight per rustc.
+rustflags = ["-Zthreads=4"]
+
+[profile.release]
+rustflags = ["-Zthreads=4"]
+
 [target.'cfg(all(target_arch = "x86_64", windows, target_env = "msvc"))']
 # Match the pinned MPV x86-64-v3 baseline. Rust and native libraries use the
 # dynamic MSVC runtime so rust-skia's published Windows binaries can be used.
@@ -39,9 +52,39 @@ rustflags = [
     # nondeterministically with LNK1318 LIMIT (12).
     "-C",
     "link-arg=/PDBPAGESIZE:16384",
+    # Reserve 8 MiB of virtual stack for the GUI/FFI main thread. This costs
+    # little physical memory on 64-bit Windows and gives debug builds plus the
+    # crash path substantially more headroom than the PE default.
+    "-C",
+    "link-arg=/STACK:8388608",
+]
+
+[target.'cfg(all(target_arch = "aarch64", windows, target_env = "msvc"))']
+# This configures Rust linking only. ARM64 builders must still override the
+# x64 vcpkg default above with an ARM64-compatible triplet and native runtime.
+rustflags = [
+    "-C",
+    "linker=rust-lld",
+    "-C",
+    "link-arg=/STACK:8388608",
 ]
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
 # Keep official x64 artifacts reproducible across CI runners; `native` would
 # silently make the release depend on whichever CPU happened to build it.
 rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+# Keep debug builds responsive without optimizing the entire dependency graph.
+# These crates own the application's image decode, hashing/compression, and
+# intentionally expensive password/key-derivation hot paths.
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.argon2]
+opt-level = 3

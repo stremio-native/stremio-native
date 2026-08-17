@@ -97,6 +97,8 @@ export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, CastDevice, Bo
 // Windows drives the notification area itself and renders this panel instead of
 // the platform menu; see `tray/windows.rs`.
 export { TrayPanel } from "tray_panel.slint";
+export { CrashDialog } from "crash_dialog.slint";
+
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/images/app_icon.png");

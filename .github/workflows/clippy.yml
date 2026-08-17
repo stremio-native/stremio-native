@@ -9,6 +9,8 @@ on:
       - "**/*.slint"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/config.toml"
       - "vcpkg.json"
       - "triplets/**"
       - "vcpkg-overlays/**"
@@ -20,6 +22,8 @@ on:
       - "**/*.slint"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/config.toml"
       - "vcpkg.json"
       - "triplets/**"
       - "vcpkg-overlays/**"
@@ -47,8 +51,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-07-31
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install native dependencies

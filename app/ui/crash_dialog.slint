@@ -1,0 +1,304 @@
+import { Theme } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { ButtonSurface } from "components/button.slint";
+
+component CrashActionButton inherits ButtonSurface {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> primary: false;
+
+    height: 36px;
+    border-radius: 8px;
+    accessible-name: root.text;
+    background: root.primary ? (root.has-hover ? Theme.accent-hover : Theme.accent)
+               : (root.has-hover ? Theme.overlay-hover : Theme.card-background);
+    border-width: root.has-focus ? 2px : (root.primary ? 0px : 1px);
+    border-color: root.has-focus ? Theme.surface-light
+                  : root.has-hover ? Theme.primary-accent.with-alpha(0.5)
+                  : Theme.card-border;
+
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 7px;
+        alignment: center;
+
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                width: 14px;
+                height: 14px;
+                source: root.icon;
+                colorize: root.primary ? #ffffff : Theme.text-primary;
+                image-fit: contain;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.text;
+                color: root.primary ? #ffffff : Theme.text-primary;
+                font-size: 12.5px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component CrashDialog inherits Window {
+    title: "Stremio closed unexpectedly";
+    icon: @image-url("assets/images/app_icon.png");
+    width: 680px;
+    height: 480px;
+    background: Theme.background;
+    default-font-family: Theme.font-family;
+
+    in property <string> app-version: "";
+    in property <string> build-version: "";
+    in property <string> dump-path: "";
+    in property <string> log-path: "";
+    in property <string> error-message: "";
+    in-out property <bool> copied-notification: false;
+
+    callback open-folder();
+    callback copy-report();
+    callback report-github();
+    callback restart-app();
+    callback close-dialog();
+
+    VerticalLayout {
+        padding-left: 22px;
+        padding-right: 22px;
+        padding-top: 20px;
+        padding-bottom: 20px;
+        spacing: 16px;
+
+        // Header
+        HorizontalLayout {
+            spacing: 14px;
+            alignment: start;
+
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 42px;
+                    height: 42px;
+                    border-radius: 10px;
+                    background: Theme.danger.with-alpha(0.15);
+                    border-width: 1px;
+                    border-color: Theme.danger.with-alpha(0.3);
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                width: 22px;
+                                height: 22px;
+                                source: @image-url("assets/images/icons/warning.svg");
+                                colorize: Theme.danger;
+                                image-fit: contain;
+                            }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 3px;
+                alignment: center;
+
+                Text {
+                    text: "Stremio closed unexpectedly";
+                    font-size: 16.5px;
+                    font-weight: 700;
+                    color: Theme.primary-foreground;
+                }
+                Text {
+                    text: "A diagnostic crash dump and log have been saved to your local drive.";
+                    font-size: 12.5px;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+
+        // Diagnostic details card
+        Rectangle {
+            background: Theme.card-background;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                Text {
+                    vertical-stretch: 0;
+                    text: "Version: " + root.app-version + (root.build-version != "" ? " (" + root.build-version + ")" : "");
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    vertical-stretch: 0;
+                    Text {
+                        text: "Crash Dump File:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-muted;
+                    }
+                    Rectangle {
+                        background: Theme.background.with-alpha(0.6);
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.card-border;
+                        min-height: 34px;
+                        vertical-stretch: 0;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.dump-path != "" ? root.dump-path : "No minidump written";
+                                font-size: 11px;
+                                color: Theme.primary-foreground;
+                                wrap: char-wrap;
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    vertical-stretch: 0;
+                    Text {
+                        text: "Application Log:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-muted;
+                    }
+                    Rectangle {
+                        background: Theme.background.with-alpha(0.6);
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.card-border;
+                        min-height: 34px;
+                        vertical-stretch: 0;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.log-path != "" ? root.log-path : "No application log available";
+                                font-size: 11px;
+                                color: Theme.primary-foreground;
+                                wrap: char-wrap;
+                            }
+                        }
+                    }
+                }
+
+                if root.error-message != "": VerticalLayout {
+                    spacing: 4px;
+                    vertical-stretch: 1;
+
+                    Text {
+                        text: "Details:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-muted;
+                    }
+                    Rectangle {
+                        background: Theme.background.with-alpha(0.6);
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.card-border;
+                        vertical-stretch: 1;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            ScrollView {
+                                viewport-width: self.width;
+                                horizontal-scrollbar-policy: always-off;
+
+                                details-text := Text {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    text: root.error-message;
+                                    font-size: 11px;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: left;
+                                    vertical-alignment: top;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.error-message == "": Rectangle {
+                    vertical-stretch: 1;
+                    background: transparent;
+                }
+            }
+        }
+
+        // Footer Actions
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: space-between;
+
+            // Left side actions (Diagnostics & Reporting)
+            HorizontalLayout {
+                spacing: 7px;
+                alignment: start;
+
+                CrashActionButton {
+                    text: "Report on GitHub";
+                    icon: @image-url("assets/images/icons/open-in-browser.svg");
+                    clicked => { root.report-github(); }
+                }
+
+                CrashActionButton {
+                    text: root.copied-notification ? "Copied!" : "Copy Report";
+                    icon: @image-url("assets/images/icons/edit.svg");
+                    clicked => { root.copy-report(); }
+                }
+
+                CrashActionButton {
+                    text: "Open Folder";
+                    icon: @image-url("assets/images/icons/local-import.svg");
+                    clicked => { root.open-folder(); }
+                }
+            }
+
+            // Right side primary actions
+            HorizontalLayout {
+                spacing: 7px;
+                alignment: end;
+
+                CrashActionButton {
+                    text: "Close";
+                    clicked => { root.close-dialog(); }
+                }
+
+                CrashActionButton {
+                    text: "Restart App";
+                    primary: true;
+                    icon: @image-url("assets/images/icons/reset.svg");
+                    clicked => { root.restart-app(); }
+                }
+            }
+        }
+    }
+}

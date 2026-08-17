@@ -1,0 +1,6 @@
+[toolchain]
+# Matches rustc 8ab9fdff5a91b9f2b5ed57fb0275452d9a0d0280, the repository's
+# previously used local nightly, while making local and CI builds reproducible.
+channel = "nightly-2026-07-31"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

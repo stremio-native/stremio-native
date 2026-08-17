@@ -95,9 +95,17 @@ pub use app_model::{AppModel, AppModelField};
 pub use discord::DiscordRpc;
 pub use navigation::{DetailsPresentation, NavigationController, NavigationIntent, Tab};
 
+fn main() -> anyhow::Result<()> {
+    if crash_handler::run_helper_from_args()? {
+        return Ok(());
+    }
+
+    run_application()
+}
+
 #[tokio::main]
 #[cfg_attr(feature = "profiling", hotpath::main)]
-async fn main() -> anyhow::Result<()> {
+async fn run_application() -> anyhow::Result<()> {
     let startup_started = Instant::now();
     // Core callbacks may originate on native threads (notably libmpv's actor),
     // so register the process runtime before any model or playback work starts.

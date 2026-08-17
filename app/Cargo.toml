@@ -46,8 +46,10 @@ notify.workspace = true
 turso = { workspace = true }
 chrono = { workspace = true }
 chacha20poly1305.workspace = true
+crash-handler.workspace = true
+minidumper.workspace = true
 mimalloc = "0.1.52"
-arboard = "3.6.1"
+arboard = { version = "3.6.1", default-features = false }
 hex = "0.4.3"
 open = "5.4.1"
 percent-encoding.workspace = true

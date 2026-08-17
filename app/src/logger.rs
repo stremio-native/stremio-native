@@ -11,9 +11,10 @@ fn should_record(metadata: &tracing::Metadata<'_>) -> bool {
 }
 
 pub struct LoggerGuards {
-    pub _file_guard: tracing_appender::non_blocking::WorkerGuard,
+    _crash_reporter: Option<crate::crash_handler::CrashReporter>,
+    _file_guard: tracing_appender::non_blocking::WorkerGuard,
     #[cfg(any(debug_assertions, feature = "profiling"))]
-    pub _chrome_guard: Option<tracing_chrome::FlushGuard>,
+    _chrome_guard: Option<tracing_chrome::FlushGuard>,
 }
 
 pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<LoggerGuards> {
@@ -88,7 +89,13 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
         default_panic_hook(panic_info);
     }));
 
-    crate::crash_handler::init_crash_handler(paths.logs());
+    let crash_reporter = match crate::crash_handler::init_crash_handler(paths.logs()) {
+        Ok(reporter) => Some(reporter),
+        Err(error) => {
+            tracing::error!(%error, "failed to initialize out-of-process crash reporting");
+            None
+        }
+    };
     tracing::info!(path = %log_path.display(), "file logging initialized");
     if profile.mode.enabled() {
         let output = profile
@@ -102,6 +109,7 @@ pub fn init_logger(profile: &ProfileConfig, paths: &AppPaths) -> anyhow::Result<
     }
 
     Ok(LoggerGuards {
+        _crash_reporter: crash_reporter,
         _file_guard: file_guard,
         #[cfg(any(debug_assertions, feature = "profiling"))]
         _chrome_guard: chrome_guard,
