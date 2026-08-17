@@ -1,24 +1,9 @@
-name: Desktop release builds
+name: Desktop release builds
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main]
     tags: ["v*"]
-    paths:
-      - "**/*.rs"
-      - "**/*.slint"
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - "mpv.lock.json"
-      - "vcpkg.json"
-      - "triplets/**"
-      - "vcpkg-overlays/**"
-      - "setup/**"
-      - "scripts/generate_release_notes.py"
-      - ".github/workflows/**"
 
 env:
   CARGO_TERM_COLOR: always
