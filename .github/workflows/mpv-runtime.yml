@@ -129,14 +129,14 @@ jobs:
           sed -n '20,60p' packages/mpv.cmake
 
       - name: Restore package sources
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: winbuild/src_packages
           key: mpv-sources-${{ inputs.gcc_arch }}-${{ github.run_id }}
           restore-keys: mpv-sources-${{ inputs.gcc_arch }}-
 
       - name: Restore compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: mpv-ccache-${{ inputs.gcc_arch }}-${{ hashFiles('.github/patches/mpv-winbuild-avx-stack-alignment.patch', '.github/patches/mpv-omniphony.patch') }}-${{ github.run_id }}
