@@ -19,7 +19,7 @@ license = "GPL-3.0-only"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 async-trait = "0.1.92"
 axum = "0.8.9"
 base64 = "0.23.1"
