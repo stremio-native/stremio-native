@@ -130,6 +130,26 @@ impl Drop for UpdaterHandle {
     }
 }
 
+/// Runs `work` on a detached OS thread rather than Tokio's blocking pool.
+///
+/// `self_update`'s GitHub calls have no timeout and can't be cancelled, and a
+/// `spawn_blocking` task in that state would make dropping the Tokio runtime
+/// (at process shutdown) block indefinitely waiting for it to finish. A plain
+/// `std::thread` isn't tracked by the runtime at all, so it can never delay
+/// shutdown; if the caller stops awaiting the returned receiver, the thread is
+/// simply left to finish (or hang) on its own without blocking anything else.
+fn run_blocking_detached<T, F>(work: F) -> tokio::sync::oneshot::Receiver<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx
+}
+
 pub(crate) fn installer_handoff() -> (InstallerRequest, InstallerLauncher) {
     let (sender, receiver) = mpsc::sync_channel(1);
     (InstallerRequest(sender), InstallerLauncher(receiver))
@@ -241,9 +261,9 @@ impl Updater {
             false,
         );
 
-        let result = tokio::task::spawn_blocking(fetch_latest_stable)
+        let result = run_blocking_detached(fetch_latest_stable)
             .await
-            .context("update-check task failed")
+            .context("update-check thread disconnected")
             .and_then(|result| result);
 
         match result {
@@ -300,12 +320,12 @@ impl Updater {
 
         if !update.can_install {
             let version = update.release.version.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = run_blocking_detached(move || {
                 open::that(release_page_url(&version))
                     .context("failed to open the GitHub release page")
             })
             .await
-            .context("release-page task failed")
+            .context("release-page thread disconnected")
             .and_then(|result| result);
             if let Err(error) = result {
                 tracing::warn!(%error, "failed to open GitHub release page");
@@ -318,9 +338,9 @@ impl Updater {
 
         project_installing(views.clone(), &update.release.version);
         let version = update.release.version.clone();
-        let result = tokio::task::spawn_blocking(move || stage_installer(&version))
+        let result = run_blocking_detached(move || stage_installer(&version))
             .await
-            .context("updater task failed")
+            .context("updater thread disconnected")
             .and_then(|result| result)
             .and_then(|installer| self.installer_request.queue(installer));
 
