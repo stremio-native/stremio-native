@@ -59,6 +59,7 @@ enum Command {
         position: Duration,
     },
     Clear,
+    Shutdown,
 }
 
 /// Cheap, clonable handle to the media-session worker. Every method is a
@@ -99,7 +100,9 @@ impl MediaSession {
             .spawn(move || {
                 let mut worker = Worker::new(on_event, commands_clone, runtime);
                 while let Ok(command) = receiver.recv() {
-                    worker.handle(command);
+                    if ! worker.handle(command) {
+                        break;
+                    }
                 }
                 // Channel closed: drop controls and wake lock on this thread,
                 // which detaches SMTC and restores the execution state where it
@@ -144,6 +147,10 @@ impl MediaSession {
         self.send(Command::Clear);
     }
 
+    pub fn shutdown(&self) {
+        self.send(Command::Shutdown);
+    }
+
     fn send(&self, command: Command) {
         // A disconnected worker only happens during shutdown; nothing to do.
         let _ = self.commands.send(command);
@@ -180,7 +187,7 @@ impl Worker {
         }
     }
 
-    fn handle(&mut self, command: Command) {
+    fn handle(&mut self, command: Command) -> bool {
         match command {
             Command::Attach { hwnd } => self.attach(hwnd),
             Command::Metadata {
@@ -194,7 +201,9 @@ impl Worker {
             }
             Command::Playback { playing, position } => self.set_playback(playing, position),
             Command::Clear => self.clear(),
+            Command::Shutdown => return false,
         }
+        true
     }
 
     fn attach(&mut self, hwnd: Option<usize>) {
