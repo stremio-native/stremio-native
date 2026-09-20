@@ -19,7 +19,8 @@ use playback_mpv::{
 };
 use slint::{
     BorrowedOpenGLTextureBuilder, BorrowedOpenGLTextureOrigin, ComponentHandle, ModelRc,
-    SharedString, VecModel, winit_030::WinitWindowAccessor,
+    SharedString, VecModel,
+    winit_030::{WinitWindowAccessor, winit},
 };
 use stremio_core::{
     models::{
@@ -4545,8 +4546,12 @@ fn create_render_context(
             "MPV requires Slint's NativeOpenGL renderer, got {graphics_api:?}"
         ));
     };
+    let x11_display = window_weak
+        .upgrade()
+        .and_then(|ui| ui.window().with_winit_window(x11_display_handle))
+        .flatten();
     let redraw_weak = window_weak.clone();
-    let render_context = source.create_context(get_proc_address, move || {
+    let render_context = source.create_context(get_proc_address, x11_display, move || {
         crate::performance::counters().record_mpv_redraw_post();
         let redraw_weak = redraw_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -4571,6 +4576,21 @@ fn create_render_context(
         "MPV is sharing Slint's OpenGL context"
     );
     Ok(render_context)
+}
+
+/// Extracts the raw Xlib `Display*` from winit's window, when running under
+/// X11. MPV needs this to open its own VA display inside the embedded render
+/// context; without it, VAAPI hwaccel device creation fails and decode
+/// silently falls back to software, and EGL/VAAPI zero-copy interop is
+/// unavailable so every frame is copied through the CPU instead.
+fn x11_display_handle(
+    window: &winit::window::Window,
+) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    let RawDisplayHandle::Xlib(handle) = window.display_handle().ok()?.as_raw() else {
+        return None;
+    };
+    handle.display
 }
 
 fn ensure_render_target(ui: &MainWindow, context: &mut RenderContext) -> anyhow::Result<bool> {
