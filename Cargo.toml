@@ -10,7 +10,7 @@ members = [
     "server-connector",
     "stream-ranking",
 ]
-exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core"]
+exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core", "vendor/rustix-0.37.28"]
 
 [workspace.package]
 authors = ["perpetus <perpetus.github@gmail.com>"]
@@ -81,6 +81,13 @@ i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
 # only Slint's incremental physics animations survive virtualized scrolling.
 # See vendor/i-slint-core/PATCHES.md.
 i-slint-core = { path = "vendor/i-slint-core" }
+# rustix 0.37.28's build.rs unconditionally enables the internal `rustc_attrs`
+# feature via an insufficient compiler probe, which the pinned nightly below
+# doesn't satisfy. A version bump is blocked by souvlaki's zbus 3.x -> async-io
+# 1.13.0 chain (hard-pins `rustix = "^0.37.1"`, no upgrade available). This
+# backports rustix's own 0.38+ fix (making that probe opt-in-only) to 0.37.28.
+# See vendor/rustix-0.37.28/PATCHES.md.
+rustix = { path = "vendor/rustix-0.37.28" }
 
 [profile.release]
 opt-level = 3
