@@ -27,7 +27,11 @@ profile-rustflags = true
 rustflags = ["-Zthreads=4"]
 
 [profile.release]
-rustflags = ["-Zthreads=4"]
+# -Zthreads=4 was removed here (2026-09-20): it caused a nondeterministic
+# SIGSEGV in rustc's LLVM codegen backend during release builds on this host.
+# See the "Build quirks" note in CLAUDE.md and the commit that made this
+# change for the full investigation.
+rustflags = []
 
 [target.'cfg(all(target_arch = "x86_64", windows, target_env = "msvc"))']
 # Match the pinned MPV x86-64-v3 baseline. Rust and native libraries use the
