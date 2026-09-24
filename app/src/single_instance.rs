@@ -26,6 +26,7 @@ pub struct PrimaryInstance {
     pub initial_command: Option<AppCommand>,
     pub commands: UnboundedReceiver<AppCommand>,
     pub start_hidden: bool,
+    pub listener_task: tokio::task::JoinHandle<()>,
 }
 
 pub enum InstanceStartup {
@@ -60,12 +61,13 @@ pub async fn acquire(args: impl IntoIterator<Item = OsString>) -> anyhow::Result
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
-    tokio::spawn(accept_commands(listener, commands_tx));
+    let listener_task = tokio::spawn(accept_commands(listener, commands_tx));
 
     Ok(InstanceStartup::Primary(PrimaryInstance {
         initial_command,
         commands: commands_rx,
         start_hidden: arguments.start_hidden,
+        listener_task,
     }))
 }
 

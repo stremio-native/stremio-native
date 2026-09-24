@@ -612,7 +612,7 @@ fn hardware_decoding_option(enabled: bool) -> &'static str {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        "auto-copy"
+        "vaapi"
     }
 }
 
@@ -1594,6 +1594,7 @@ fn drain_events(
             EVENT_NONE => return,
             EVENT_COMMAND_REPLY if event.error < 0 => {
                 let error = client.api.operation_error(event.error).to_string();
+                tracing::warn!(reply_userdata = event.reply_userdata, %error, "MPV async command failed");
                 sink(PlaybackEvent::Warning(error));
             }
             EVENT_COMMAND_REPLY => {}
