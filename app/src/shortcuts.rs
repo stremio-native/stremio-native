@@ -45,6 +45,7 @@ pub enum HotkeyAction {
     TogglePictureInPicture,
     CaptureFrame,
     CloseOverlayOrPlayer,
+    QuitApplication,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -96,6 +97,13 @@ impl KeyChord {
         Self {
             ctrl: true,
             shift: true,
+            ..Self::new(key)
+        }
+    }
+
+    fn ctrl(key: impl Into<String>) -> Self {
+        Self {
+            ctrl: true,
             ..Self::new(key)
         }
     }
@@ -180,6 +188,12 @@ impl HotkeyConfig {
             player(HotkeyAction::TogglePictureInPicture, KeyChord::new("p")),
             player(HotkeyAction::CaptureFrame, KeyChord::ctrl_shift("s")),
             player(HotkeyAction::CloseOverlayOrPlayer, KeyChord::new("escape")),
+            HotkeyBinding {
+                action: HotkeyAction::QuitApplication,
+                context: HotkeyContext::Global,
+                chord: KeyChord::ctrl("q"),
+                behavior: HotkeyBehavior::Press,
+            },
         ];
         bindings.shrink_to_fit();
         Self {
@@ -547,6 +561,13 @@ fn invoke_action(ui: &MainWindow, action: HotkeyAction, last_subtitle_index: &mu
                 ui.invoke_player_close();
             }
         }
+        HotkeyAction::QuitApplication => {
+            tracing::info!("quit requested from keyboard shortcut");
+            if let Err(error) = slint::quit_event_loop() {
+                tracing::warn!(%error, "failed to request UI event-loop shutdown");
+            }
+            return;
+        }
     }
     ui.invoke_player_activity();
 }
@@ -875,6 +896,7 @@ fn action_id(action: HotkeyAction) -> &'static str {
         HotkeyAction::TogglePictureInPicture => "toggle-picture-in-picture",
         HotkeyAction::CaptureFrame => "capture-frame",
         HotkeyAction::CloseOverlayOrPlayer => "close-overlay-or-player",
+        HotkeyAction::QuitApplication => "quit-application",
     }
 }
 
@@ -914,6 +936,7 @@ fn action_label(action: HotkeyAction) -> &'static str {
         HotkeyAction::TogglePictureInPicture => "Picture in picture",
         HotkeyAction::CaptureFrame => "Capture frame",
         HotkeyAction::CloseOverlayOrPlayer => "Close overlay or player",
+        HotkeyAction::QuitApplication => "Quit",
     }
 }
 

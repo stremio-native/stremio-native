@@ -42,6 +42,7 @@ pub const RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 pub const RENDER_PARAM_OPENGL_FBO: c_int = 3;
 pub const RENDER_PARAM_FLIP_Y: c_int = 4;
 pub const RENDER_PARAM_X11_DISPLAY: c_int = 8;
+pub const RENDER_PARAM_WL_DISPLAY: c_int = 9;
 pub const RENDER_PARAM_ADVANCED_CONTROL: c_int = 10;
 pub const RENDER_PARAM_SKIP_RENDERING: c_int = 13;
 pub const RENDER_UPDATE_FRAME: u64 = 1 << 0;

@@ -12,10 +12,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use playback_mpv::{
-    EndReason, HdrMode, OmniphonyAudioSettings, PlaybackCommand, PlaybackController, PlaybackEvent,
-    PlaybackRuntime, PlaybackState, PlayerConfig, PreviewConfig, PreviewRuntime, RenderContext,
-    RenderOutcome, RenderSource, SpatialAudioMode, ThumbnailConfig, ThumbnailRuntime,
-    ThumbnailSource,
+    EndReason, HdrMode, NativeDisplay, OmniphonyAudioSettings, PlaybackCommand,
+    PlaybackController, PlaybackEvent, PlaybackRuntime, PlaybackState, PlayerConfig,
+    PreviewConfig, PreviewRuntime, RenderContext, RenderOutcome, RenderSource,
+    SpatialAudioMode, ThumbnailConfig, ThumbnailRuntime, ThumbnailSource,
 };
 use slint::{
     BorrowedOpenGLTextureBuilder, BorrowedOpenGLTextureOrigin, ComponentHandle, ModelRc,
@@ -4546,12 +4546,12 @@ fn create_render_context(
             "MPV requires Slint's NativeOpenGL renderer, got {graphics_api:?}"
         ));
     };
-    let x11_display = window_weak
+    let native_display = window_weak
         .upgrade()
-        .and_then(|ui| ui.window().with_winit_window(x11_display_handle))
+        .and_then(|ui| ui.window().with_winit_window(native_display_handle))
         .flatten();
     let redraw_weak = window_weak.clone();
-    let render_context = source.create_context(get_proc_address, x11_display, move || {
+    let render_context = source.create_context(get_proc_address, native_display, move || {
         crate::performance::counters().record_mpv_redraw_post();
         let redraw_weak = redraw_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -4578,19 +4578,21 @@ fn create_render_context(
     Ok(render_context)
 }
 
-/// Extracts the raw Xlib `Display*` from winit's window, when running under
-/// X11. MPV needs this to open its own VA display inside the embedded render
-/// context; without it, VAAPI hwaccel device creation fails and decode
-/// silently falls back to software, and EGL/VAAPI zero-copy interop is
-/// unavailable so every frame is copied through the CPU instead.
-fn x11_display_handle(
-    window: &winit::window::Window,
-) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
+/// Extracts the raw native display handle from winit's window (Xlib under
+/// X11/XWayland, `wl_display` under a native Wayland compositor). MPV needs
+/// this to open its own VA display inside the embedded render context;
+/// without it, VAAPI hwaccel device creation fails and decode silently falls
+/// back to software, and EGL/VAAPI zero-copy interop is unavailable so every
+/// frame is copied through the CPU instead. Cage and other pure-Wayland
+/// kiosk compositors never expose an Xlib handle (no XWayland), so the
+/// Wayland fallback is required there, not just a nice-to-have.
+fn native_display_handle(window: &winit::window::Window) -> Option<NativeDisplay> {
     use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-    let RawDisplayHandle::Xlib(handle) = window.display_handle().ok()?.as_raw() else {
-        return None;
-    };
-    handle.display
+    match window.display_handle().ok()?.as_raw() {
+        RawDisplayHandle::Xlib(handle) => handle.display.map(NativeDisplay::X11),
+        RawDisplayHandle::Wayland(handle) => Some(NativeDisplay::Wayland(handle.display)),
+        _ => None,
+    }
 }
 
 fn ensure_render_target(ui: &MainWindow, context: &mut RenderContext) -> anyhow::Result<bool> {

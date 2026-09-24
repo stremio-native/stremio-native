@@ -16,8 +16,20 @@ use crate::ffi::{
     MpvClient, MpvError, MpvOpenGlFbo, MpvOpenGlInitParams, MpvRenderContext, MpvRenderParam,
     RENDER_PARAM_ADVANCED_CONTROL, RENDER_PARAM_API_TYPE, RENDER_PARAM_FLIP_Y,
     RENDER_PARAM_INVALID, RENDER_PARAM_OPENGL_FBO, RENDER_PARAM_OPENGL_INIT_PARAMS,
-    RENDER_PARAM_SKIP_RENDERING, RENDER_PARAM_X11_DISPLAY, RENDER_UPDATE_FRAME,
+    RENDER_PARAM_SKIP_RENDERING, RENDER_PARAM_WL_DISPLAY, RENDER_PARAM_X11_DISPLAY,
+    RENDER_UPDATE_FRAME,
 };
+
+/// The native windowing-system display handle mpv needs to open its own VA
+/// display inside the embedded render context. Without one, VAAPI hwaccel
+/// device creation fails (decode silently falls back to software) and
+/// EGL/VAAPI zero-copy interop is unavailable, so every decoded frame gets
+/// copied through the CPU instead of imported directly as a GPU texture.
+#[derive(Clone, Copy)]
+pub enum NativeDisplay {
+    X11(NonNull<c_void>),
+    Wayland(NonNull<c_void>),
+}
 
 /// OpenGL function resolver supplied by Slint while its context is current.
 pub type OpenGlProcAddress<'a> = &'a dyn Fn(&CStr) -> *const c_void;
@@ -776,10 +788,10 @@ impl RenderSource {
     pub fn create_context(
         &self,
         resolver: OpenGlProcAddress<'_>,
-        x11_display: Option<std::ptr::NonNull<c_void>>,
+        display: Option<NativeDisplay>,
         request_redraw: impl FnMut() + Send + 'static,
     ) -> Result<RenderContext, MpvError> {
-        ResolverBridge::create(&self.client, resolver, x11_display, request_redraw)
+        ResolverBridge::create(&self.client, resolver, display, request_redraw)
     }
 }
 
@@ -796,7 +808,7 @@ impl<'a> ResolverBridge<'a> {
     fn create(
         client: &Arc<MpvClient>,
         resolver: OpenGlProcAddress<'a>,
-        x11_display: Option<std::ptr::NonNull<c_void>>,
+        display: Option<NativeDisplay>,
         request_redraw: impl FnMut() + Send + 'static,
     ) -> Result<RenderContext, MpvError> {
         // SAFETY: Slint invokes this function with its OpenGL context current,
@@ -848,11 +860,12 @@ impl<'a> ResolverBridge<'a> {
         // Without this, mpv can't open a VA display for VAAPI hwaccel (decode
         // falls back to software) or EGL/VAAPI zero-copy interop, even though
         // VAAPI itself works fine outside the embedded render context.
-        if let Some(display) = x11_display {
-            params.push(MpvRenderParam {
-                param_type: RENDER_PARAM_X11_DISPLAY,
-                data: display.as_ptr(),
-            });
+        if let Some(display) = display {
+            let (param_type, ptr) = match display {
+                NativeDisplay::X11(ptr) => (RENDER_PARAM_X11_DISPLAY, ptr.as_ptr()),
+                NativeDisplay::Wayland(ptr) => (RENDER_PARAM_WL_DISPLAY, ptr.as_ptr()),
+            };
+            params.push(MpvRenderParam { param_type, data: ptr });
         }
         params.push(MpvRenderParam {
             param_type: RENDER_PARAM_INVALID,
