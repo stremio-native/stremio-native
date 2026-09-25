@@ -1,6 +1,13 @@
 import { Theme } from "../theme.slint";
 import { ButtonSurface } from "button.slint";
 
+// How many text inputs currently have keyboard focus. The native hotkey dispatcher (shortcuts.rs) reads it so a bare
+// letter hotkey (Toggle Fullscreen is "f") is not stolen from a field the user is typing in: without an active IME
+// session (sway, kiosks) nothing else tells it that a text field wants the key.
+export global TextInputFocus {
+    in-out property <int> active: 0;
+}
+
 // Slint equivalent of the official unstyled TextInput wrapper. Visual styles
 // belong to the reusable consumer, just as they do in stremio-web.
 export component StremioTextInput inherits Rectangle {
@@ -24,6 +31,14 @@ export component StremioTextInput inherits Rectangle {
     public function focus-input() { editor.focus(); }
 
     background: transparent;
+
+    changed has-focus => {
+        if (root.has-focus) {
+            TextInputFocus.active += 1;
+        } else if (TextInputFocus.active > 0) {
+            TextInputFocus.active -= 1;
+        }
+    }
 
     if (root.text == "") : Text {
         x: root.content-left;

@@ -745,6 +745,15 @@ pub fn install_platform_shortcuts(ui: &MainWindow, media_session: Arc<MediaSessi
                 let Some(chord) = dispatcher.chord(&event.logical_key) else {
                     return EventResult::Propagate;
                 };
+                // A text field that has focus keeps its keystrokes even when no IME session is active (sway, kiosks):
+                // otherwise a bare letter hotkey such as "f" would be swallowed while typing. Chords with Ctrl, Alt or
+                // Meta (Ctrl+Q ...) still work; the player hosts no text input.
+                if !ui.get_show_player()
+                    && !(chord.ctrl || chord.alt || chord.meta)
+                    && ui.global::<crate::TextInputFocus>().get_active() > 0
+                {
+                    return EventResult::Propagate;
+                }
                 let binding = dispatch_config
                     .read()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())

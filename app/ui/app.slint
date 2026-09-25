@@ -7,7 +7,7 @@ import { ButtonSurface, MenuButton, PillButton, IconAction, IconActionPair } fro
 import { Checkbox } from "components/checkbox.slint";
 import { RadioButton } from "components/radio_button.slint";
 import { NumberInput } from "components/number_input.slint";
-import { StremioTextInput, NativeTextField, SearchBar, SearchField } from "components/text_input.slint";
+import { StremioTextInput, NativeTextField, SearchBar, SearchField, TextInputFocus } from "components/text_input.slint";
 import { Slider } from "components/slider.slint";
 import { PopupMenuSurface, ModalDialog, BottomSheet, ContextMenuSurface } from "components/overlays.slint";
 import { OnboardingModal } from "components/onboarding.slint";
@@ -91,7 +91,7 @@ component GuideSectionTitle inherits Text {
     vertical-alignment: center;
 }
 
-export { ColorUtils, ParsedColor, CursorSample, SavedGradient }
+export { ColorUtils, ParsedColor, CursorSample, SavedGradient, TextInputFocus }
 export { Theme, IconData, MediaCardItem, StreamLink, EpisodeItem, CastDevice, BoardSection, DiscoverRow, LibraryRow, AddonItem, CalendarRow, CalendarCell, CalendarMediaItem, SearchSuggestion, DownloadItem, HotkeyItem }
 
 // Windows drives the notification area itself and renders this panel instead of
@@ -1199,14 +1199,19 @@ export component MainWindow inherits Window {
             enabled: !root.effective-show-player;
             activated => { root.gamepad-modal-open = !root.gamepad-modal-open; }
         }
+        // Escape closes the shortcuts / gamepad guides; with nothing to close it goes back like Backspace does (the
+        // remote's Back button arrives as Escape). One binding: Slint rejects two with the same keys.
         KeyBinding {
             keys: @keys(Escape);
-            enabled: !root.effective-show-player
-                && (root.shortcuts-modal-open || root.gamepad-modal-open);
+            enabled: !root.effective-show-player;
             activated => {
-                root.shortcuts-modal-open = false;
-                root.gamepad-modal-open = false;
-                app-shortcuts.focus();
+                if (root.shortcuts-modal-open || root.gamepad-modal-open) {
+                    root.shortcuts-modal-open = false;
+                    root.gamepad-modal-open = false;
+                    app-shortcuts.focus();
+                } else {
+                    root.navigation-back();
+                }
             }
         }
     }

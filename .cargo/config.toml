@@ -22,9 +22,9 @@ PKG_CONFIG_PATH = "/opt/libtorrent-2.1.1/lib/pkgconfig"
 profile-rustflags = true
 
 [profile.dev]
-# Four threads match the smallest CI runners and still accelerate the large
-# Slint/application crates without the oversubscription of eight per rustc.
-rustflags = ["-Zthreads=4"]
+# -Zthreads=4 was removed here too (2026-09-25): on this host it made a plain `cargo check` (dev profile)
+# crash rustc with a SIGSEGV, the same failure that was already fixed for the release profile below.
+rustflags = []
 
 [profile.release]
 # -Zthreads=4 was removed here (2026-09-20): it caused a nondeterministic
