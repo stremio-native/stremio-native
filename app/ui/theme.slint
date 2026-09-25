@@ -29,8 +29,8 @@ export global Theme {
     in-out property <color> surface-light-90: #ffffffe6;
     in-out property <color> background-dark-20: #00000033;
     in-out property <color> background-dark-40: #00000066;
-    in-out property <color> secondary-variant-light: #8fafff;
-    in-out property <color> secondary-variant-light-90: #8fafffe6;
+    in-out property <color> secondary-variant-light: Theme.primary-accent.brighter(0.4);
+    in-out property <color> secondary-variant-light-90: Theme.primary-accent.brighter(0.4).with-alpha(0.9);
     in-out property <color> primary-light: #8152a3;
 
     in-out property <brush> main-gradient: @linear-gradient(

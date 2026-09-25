@@ -369,6 +369,20 @@ fn apply_theme(ui: &MainWindow, config: &config::AppConfig) {
     set_color!(&config.theme.text_muted, set_text_muted);
     set_color!(&config.theme.skeleton_base, set_skeleton_base);
     set_color!(&config.theme.skeleton_shimmer, set_skeleton_shimmer);
+    // The theme editor sets these paired globals together (see ThemePage.update-theme-color), but
+    // startup only restored the semantic ones. Anything reading `primary-accent`,
+    // `primary-foreground`, ... (selected sidebar items, buttons, most text) therefore fell back to
+    // the built-in purple/white after a restart. Mirror the editor here.
+    set_color!(&config.theme.accent, set_primary_accent);
+    set_color!(&config.theme.success, set_secondary_accent);
+    set_color!(&config.theme.warning, set_tertiary_accent);
+    set_color!(&config.theme.info, set_quaternary_accent);
+    set_color!(&config.theme.text_primary, set_primary_foreground);
+    set_color!(&config.theme.modal_background, set_modal_color);
+    set_color!(&config.theme.overlay, set_overlay_color);
+    if let Some(color) = config::parse_color(&config.theme.accent) {
+        theme.set_outer_glow_color(color.with_alpha(0.37));
+    }
     if !config.theme.font_family.is_empty() {
         theme.set_font_family(config.theme.font_family.as_str().into());
     }
