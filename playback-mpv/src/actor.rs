@@ -612,7 +612,7 @@ fn hardware_decoding_option(enabled: bool) -> &'static str {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        "auto-copy"
+        "vaapi"
     }
 }
 
@@ -1568,10 +1568,18 @@ fn configure_hdr_mode(client: &MpvClient, mode: HdrMode) -> Result<(), MpvError>
         .and_then(|()| client.set_flag("hdr-compute-peak", compute_peak))
 }
 
+/// Returns `(target-colorspace-hint, tone-mapping, hdr-compute-peak)` for a mode.
+///
+/// Every mode except `Disabled` uses the fixed `bt.2390` curve with per-frame
+/// peak detection off. `tone-mapping=auto` plus `hdr-compute-peak=yes` runs a
+/// compute shader each frame and rendered through an rgba16f framebuffer, which
+/// pinned the Render engine of the i5-7400T's HD 630 at ~100% at 3840x2160 and
+/// made HDR playback stutter. `Disabled` (`clip`, no advanced processing) stays as
+/// the cheapest fallback.
 fn hdr_properties(mode: HdrMode) -> (bool, &'static str, bool) {
     match mode {
-        HdrMode::Auto | HdrMode::Passthrough => (true, "auto", true),
-        HdrMode::ToneMap => (false, "auto", true),
+        HdrMode::Auto | HdrMode::Passthrough => (true, "bt.2390", false),
+        HdrMode::ToneMap => (false, "bt.2390", false),
         HdrMode::Disabled => (false, "clip", false),
     }
 }
@@ -1594,6 +1602,7 @@ fn drain_events(
             EVENT_NONE => return,
             EVENT_COMMAND_REPLY if event.error < 0 => {
                 let error = client.api.operation_error(event.error).to_string();
+                tracing::warn!(reply_userdata = event.reply_userdata, %error, "MPV async command failed");
                 sink(PlaybackEvent::Warning(error));
             }
             EVENT_COMMAND_REPLY => {}
@@ -2157,6 +2166,24 @@ mod logic_tests {
 
     #[test]
     fn hdr_properties_should_disable_passthrough_for_tone_mapping() {
-        assert_eq!(hdr_properties(HdrMode::ToneMap), (false, "auto", true));
+        assert_eq!(hdr_properties(HdrMode::ToneMap), (false, "bt.2390", false));
+    }
+
+    #[test]
+    fn hdr_properties_should_never_enable_compute_peak() {
+        for mode in [
+            HdrMode::Auto,
+            HdrMode::Passthrough,
+            HdrMode::ToneMap,
+            HdrMode::Disabled,
+        ] {
+            assert!(!hdr_properties(mode).2, "{mode:?} must not enable hdr-compute-peak");
+        }
+    }
+
+    #[test]
+    fn hdr_properties_auto_should_use_the_cheap_default() {
+        assert_eq!(hdr_properties(HdrMode::Auto), (true, "bt.2390", false));
+        assert_eq!(hdr_properties(HdrMode::Disabled), (false, "clip", false));
     }
 }

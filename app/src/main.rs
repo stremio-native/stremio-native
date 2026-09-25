@@ -95,15 +95,33 @@ pub use app_model::{AppModel, AppModelField};
 pub use discord::DiscordRpc;
 pub use navigation::{DetailsPresentation, NavigationController, NavigationIntent, Tab};
 
+// Background effect tasks (catalog fetches, etc.) are spawned via detached
+// `tokio::spawn` calls throughout the app and are never tracked or aborted on
+// shutdown. If one is still mid-poll (e.g. blocked inside a synchronous mutex)
+// when the window closes, Tokio's implicit `Runtime::drop()` would otherwise
+// wait for it forever. Building the runtime explicitly lets us bound that wait
+// with `shutdown_timeout` instead. This runs strictly after `close_and_checkpoint_db`
+// (bounded separately by its own `SHUTDOWN_CHECKPOINT_TIMEOUT` in db.rs) has already
+// completed, so the two timeouts are independent, sequential budgets, not a shared
+// or coupled deadline — this one was lowered from 2s to 1s on 2026-09-18 to reduce
+// worst-case shutdown latency, accepting that a slow revalidation/catalog fetch has
+// less time to finish before being cut off.
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn main() -> anyhow::Result<()> {
     if crash_handler::run_helper_from_args()? {
         return Ok(());
     }
 
-    run_application()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build the Tokio runtime");
+    let res = runtime.block_on(run_application());
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+    res
 }
 
-#[tokio::main]
 #[cfg_attr(feature = "profiling", hotpath::main)]
 async fn run_application() -> anyhow::Result<()> {
     let startup_started = Instant::now();
@@ -141,6 +159,7 @@ async fn run_app(
         initial_command,
         commands,
         start_hidden,
+        listener_task,
     } = primary_instance;
 
     slint::BackendSelector::new()
@@ -224,6 +243,7 @@ async fn run_app(
             tray,
             updater,
             os_media_session,
+            listener_task,
         )
         .await;
         if let Err(error) = &result {
@@ -270,22 +290,26 @@ async fn run_app(
 
 struct AppSession {
     server_handle: stream_server::ServerHandle,
+    media_session: Arc<media_session::MediaSession>,
     native_playback: Option<mpv_integration::NativePlayback>,
     command_task: tokio::task::JoinHandle<()>,
     tray: Option<tray::Tray>,
     updater: updater::UpdaterHandle,
     download_ui_task: tokio::task::JoinHandle<()>,
+    single_instance_listener: tokio::task::JoinHandle<()>,
 }
 
 impl AppSession {
     fn shutdown(mut self) -> anyhow::Result<()> {
         self.updater.shutdown();
+        self.media_session.shutdown();
         // The event loop has ended, so changing the tray's visibility would
         // write to a finalized Slint property. Dropping it removes the native
         // icon without re-entering Slint's property system.
         drop(self.tray.take());
         self.command_task.abort();
         self.download_ui_task.abort();
+        self.single_instance_listener.abort();
         let playback_result = match self.native_playback.take() {
             Some(playback) => playback.shutdown(),
             None => Ok(()),
@@ -345,6 +369,20 @@ fn apply_theme(ui: &MainWindow, config: &config::AppConfig) {
     set_color!(&config.theme.text_muted, set_text_muted);
     set_color!(&config.theme.skeleton_base, set_skeleton_base);
     set_color!(&config.theme.skeleton_shimmer, set_skeleton_shimmer);
+    // The theme editor sets these paired globals together (see ThemePage.update-theme-color), but
+    // startup only restored the semantic ones. Anything reading `primary-accent`,
+    // `primary-foreground`, ... (selected sidebar items, buttons, most text) therefore fell back to
+    // the built-in purple/white after a restart. Mirror the editor here.
+    set_color!(&config.theme.accent, set_primary_accent);
+    set_color!(&config.theme.success, set_secondary_accent);
+    set_color!(&config.theme.warning, set_tertiary_accent);
+    set_color!(&config.theme.info, set_quaternary_accent);
+    set_color!(&config.theme.text_primary, set_primary_foreground);
+    set_color!(&config.theme.modal_background, set_modal_color);
+    set_color!(&config.theme.overlay, set_overlay_color);
+    if let Some(color) = config::parse_color(&config.theme.accent) {
+        theme.set_outer_glow_color(color.with_alpha(0.37));
+    }
     if !config.theme.font_family.is_empty() {
         theme.set_font_family(config.theme.font_family.as_str().into());
     }
@@ -359,6 +397,7 @@ async fn finish_startup(
     tray: Option<tray::Tray>,
     updater: updater::UpdaterHandle,
     media_session: Arc<media_session::MediaSession>,
+    single_instance_listener: tokio::task::JoinHandle<()>,
 ) -> anyhow::Result<AppSession> {
     let ui_weak = ui.as_weak();
 
@@ -754,11 +793,13 @@ async fn finish_startup(
     tracing::info!("background application startup completed");
     Ok(AppSession {
         server_handle,
+        media_session,
         native_playback,
         command_task,
         tray,
         updater,
         download_ui_task,
+        single_instance_listener,
     })
 }
 

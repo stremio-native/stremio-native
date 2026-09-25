@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 const SERVICE_NAME: &str = "stremio-native";
+/// How long a keyring *read* may block before it is treated as a locked vault.
+/// A locked Secret Service collection makes `get_secret()` wait on an unlock
+/// prompt; on a kiosk compositor that prompt can be invisible, which left the
+/// app stuck on "Authenticating..." forever. Reads happen at startup, so bounding
+/// them turns a silent hang into a normal `Locked` error (login screen).
+const GET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 type MemoryEntry = (SecretKind, Vec<u8>);
 type MemoryEntries = HashMap<CredentialRef, MemoryEntry>;
 
@@ -130,16 +136,20 @@ impl CredentialStore for PlatformCredentialStore {
     async fn get(&self, reference: &CredentialRef) -> Result<SecretValue, CredentialError> {
         let _guard = self.gate.lock().await;
         let reference = reference.clone();
-        tokio::task::spawn_blocking(move || {
+        let read = tokio::task::spawn_blocking(move || {
             let entry = keyring::Entry::new(SERVICE_NAME, reference.expose_id())
                 .map_err(map_keyring_error)?;
             entry
                 .get_secret()
                 .map(SecretValue::new)
                 .map_err(map_keyring_error)
-        })
-        .await
-        .map_err(|_| CredentialError::WorkerStopped)?
+        });
+        // The blocking thread may stay parked on an unanswered unlock prompt; we
+        // stop waiting for it (releasing the gate) and report the vault as locked.
+        tokio::time::timeout(GET_TIMEOUT, read)
+            .await
+            .map_err(|_| CredentialError::Locked)?
+            .map_err(|_| CredentialError::WorkerStopped)?
     }
 
     async fn delete(&self, reference: &CredentialRef) -> Result<(), CredentialError> {

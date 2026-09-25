@@ -16,8 +16,20 @@ use crate::ffi::{
     MpvClient, MpvError, MpvOpenGlFbo, MpvOpenGlInitParams, MpvRenderContext, MpvRenderParam,
     RENDER_PARAM_ADVANCED_CONTROL, RENDER_PARAM_API_TYPE, RENDER_PARAM_FLIP_Y,
     RENDER_PARAM_INVALID, RENDER_PARAM_OPENGL_FBO, RENDER_PARAM_OPENGL_INIT_PARAMS,
-    RENDER_PARAM_SKIP_RENDERING, RENDER_UPDATE_FRAME,
+    RENDER_PARAM_SKIP_RENDERING, RENDER_PARAM_WL_DISPLAY, RENDER_PARAM_X11_DISPLAY,
+    RENDER_UPDATE_FRAME,
 };
+
+/// The native windowing-system display handle mpv needs to open its own VA
+/// display inside the embedded render context. Without one, VAAPI hwaccel
+/// device creation fails (decode silently falls back to software) and
+/// EGL/VAAPI zero-copy interop is unavailable, so every decoded frame gets
+/// copied through the CPU instead of imported directly as a GPU texture.
+#[derive(Clone, Copy)]
+pub enum NativeDisplay {
+    X11(NonNull<c_void>),
+    Wayland(NonNull<c_void>),
+}
 
 /// OpenGL function resolver supplied by Slint while its context is current.
 pub type OpenGlProcAddress<'a> = &'a dyn Fn(&CStr) -> *const c_void;
@@ -776,9 +788,10 @@ impl RenderSource {
     pub fn create_context(
         &self,
         resolver: OpenGlProcAddress<'_>,
+        display: Option<NativeDisplay>,
         request_redraw: impl FnMut() + Send + 'static,
     ) -> Result<RenderContext, MpvError> {
-        ResolverBridge::create(&self.client, resolver, request_redraw)
+        ResolverBridge::create(&self.client, resolver, display, request_redraw)
     }
 }
 
@@ -795,6 +808,7 @@ impl<'a> ResolverBridge<'a> {
     fn create(
         client: &Arc<MpvClient>,
         resolver: OpenGlProcAddress<'a>,
+        display: Option<NativeDisplay>,
         request_redraw: impl FnMut() + Send + 'static,
     ) -> Result<RenderContext, MpvError> {
         // SAFETY: Slint invokes this function with its OpenGL context current,
@@ -829,7 +843,7 @@ impl<'a> ResolverBridge<'a> {
         };
         let mut advanced_control: c_int = 1;
         let api_type = c"opengl";
-        let mut params = [
+        let mut params = vec![
             MpvRenderParam {
                 param_type: RENDER_PARAM_API_TYPE,
                 data: api_type.as_ptr().cast_mut().cast(),
@@ -842,11 +856,21 @@ impl<'a> ResolverBridge<'a> {
                 param_type: RENDER_PARAM_ADVANCED_CONTROL,
                 data: (&mut advanced_control as *mut c_int).cast(),
             },
-            MpvRenderParam {
-                param_type: RENDER_PARAM_INVALID,
-                data: std::ptr::null_mut(),
-            },
         ];
+        // Without this, mpv can't open a VA display for VAAPI hwaccel (decode
+        // falls back to software) or EGL/VAAPI zero-copy interop, even though
+        // VAAPI itself works fine outside the embedded render context.
+        if let Some(display) = display {
+            let (param_type, ptr) = match display {
+                NativeDisplay::X11(ptr) => (RENDER_PARAM_X11_DISPLAY, ptr.as_ptr()),
+                NativeDisplay::Wayland(ptr) => (RENDER_PARAM_WL_DISPLAY, ptr.as_ptr()),
+            };
+            params.push(MpvRenderParam { param_type, data: ptr });
+        }
+        params.push(MpvRenderParam {
+            param_type: RENDER_PARAM_INVALID,
+            data: std::ptr::null_mut(),
+        });
         let mut raw_context = std::ptr::null_mut();
         // SAFETY: Slint's context is current. Parameter storage and the resolver
         // bridge remain valid for the synchronous context creation call.

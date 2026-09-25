@@ -7,6 +7,14 @@ STREAM_SERVER_SKIP_WINDOWS_RESOURCES = "1"
 # binaries. External CI values still take precedence over these local defaults.
 VCPKGRS_TRIPLET = "x64-windows-v3-static-md-release"
 VCPKG_INSTALLED_DIR = { value = "vcpkg_installed", relative = true }
+# stream-server's libtorrent-sys build script locates libtorrent-rasterbar via
+# pkg-config, which requires >= 2.1.1. The distro package is older, so a
+# matching build lives at /opt/libtorrent-2.1.1 instead. This only supplies a
+# default: Cargo's [env] table has no syntax to append to an existing
+# PKG_CONFIG_PATH (no variable interpolation, only plain-value-if-unset or
+# force-overwrite), so a shell that already exports PKG_CONFIG_PATH without
+# this directory must still add it manually.
+PKG_CONFIG_PATH = "/opt/libtorrent-2.1.1/lib/pkgconfig"
 
 [unstable]
 # The repository pins nightly in rust-toolchain.toml, so keep the compiler's
@@ -14,12 +22,16 @@ VCPKG_INSTALLED_DIR = { value = "vcpkg_installed", relative = true }
 profile-rustflags = true
 
 [profile.dev]
-# Four threads match the smallest CI runners and still accelerate the large
-# Slint/application crates without the oversubscription of eight per rustc.
-rustflags = ["-Zthreads=4"]
+# -Zthreads=4 was removed here too (2026-09-25): on this host it made a plain `cargo check` (dev profile)
+# crash rustc with a SIGSEGV, the same failure that was already fixed for the release profile below.
+rustflags = []
 
 [profile.release]
-rustflags = ["-Zthreads=4"]
+# -Zthreads=4 was removed here (2026-09-20): it caused a nondeterministic
+# SIGSEGV in rustc's LLVM codegen backend during release builds on this host.
+# See the "Build quirks" note in CLAUDE.md and the commit that made this
+# change for the full investigation.
+rustflags = []
 
 [target.'cfg(all(target_arch = "x86_64", windows, target_env = "msvc"))']
 # Match the pinned MPV x86-64-v3 baseline. Rust and native libraries use the

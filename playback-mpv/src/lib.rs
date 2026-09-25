@@ -25,8 +25,9 @@ pub use preview::{
     PreviewUnavailableReason,
 };
 pub use render::{
-    OpenGlContextProfile, OpenGlDiagnostics, OpenGlProcAddress, OpenGlProfile, RenderContext,
-    RenderOutcome, RenderSource, VideoShaderSupport, VideoShaderUnsupportedReason, VideoTexture,
+    NativeDisplay, OpenGlContextProfile, OpenGlDiagnostics, OpenGlProcAddress, OpenGlProfile,
+    RenderContext, RenderOutcome, RenderSource, VideoShaderSupport, VideoShaderUnsupportedReason,
+    VideoTexture,
 };
 pub use thumbnail::{
     ThumbnailConfig, ThumbnailController, ThumbnailEvent, ThumbnailFrame, ThumbnailQuality,
