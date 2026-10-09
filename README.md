@@ -36,6 +36,8 @@ See the [changelog](CHANGELOG.md) for the current build's implementation notes a
 > **⚠️ Full UI Rewrite & Feedback Notice**: Stremio Native is a complete ground-up rewrite in Rust & Slint UI. As a result, some features may not be fully implemented or might not work as intended in all scenarios. If you encounter any bugs, unexpected behavior, or missing features, please [raise an issue on GitHub](https://github.com/stremio-native/stremio-native/issues) so the developer can look into it!
 >
 > **💻 Modern Hardware Requirements**: Current precompiled release binaries require a **modern CPU** (`x86-64-v3` architecture baseline with AVX2/BMI2 instruction support) and a **modern GPU** (OpenGL 3.3+ support for Skia UI rendering & Anime4K/FSR upscaler shaders, with hardware GPU video decoding for H.264, HEVC, AV1, and VP9).
+>
+> **🖥️ Older PCs (Linux)**: For CPUs without AVX2 (e.g. Intel 2nd/3rd gen Core "Sandy/Ivy Bridge", AMD Phenom/FX), use the **`x86_64-v2`** portable Linux binary, or [build for your own CPU](#building-for-older-cpus-linux).
 
 ---
 
@@ -49,6 +51,7 @@ See the [changelog](CHANGELOG.md) for the current build's implementation notes a
 | **Debian / Ubuntu** | `.deb` | [stremio-native_1.0.6-1_amd64.deb](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native_1.0.6-1_amd64.deb) |
 | **Fedora / RHEL** | `.rpm` | [stremio-native-1.0.6-1.fc44.x86_64.rpm](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native-1.0.6-1.fc44.x86_64.rpm) |
 | **Linux** | Standalone binary | [stremio-native-v1.0.6-x86_64-unknown-linux-gnu](https://github.com/stremio-native/stremio-native/releases/download/v1.0.6/stremio-native-v1.0.6-x86_64-unknown-linux-gnu) |
+| **Linux (older CPUs, no AVX2)** | Standalone binary | `stremio-native-<version>-x86_64-v2-unknown-linux-gnu` on the [releases page](https://github.com/stremio-native/stremio-native/releases) |
 
 ---
 
@@ -136,6 +139,31 @@ Settings, logs, and image caches are stored in `./storage/` inside the project d
 On Windows, `setup/create_setup.cmd` runs `scripts/stage_windows_msvc_runtime.ps1` for both fresh and `SKIP_BUILD=1` builds. The script copies the newest x64 `Microsoft.VC143.CRT` DLLs beside the packaged app, validates runtime imports with `dumpbin`, and writes a SHA-256 manifest. This app-local deployment supports the project's per-user, non-admin installer.
 
 Timeline previews reuse the same packaged libmpv library as the main player. Building or running the application does not depend on the implementation-reference checkout under `docs/thumbfast`.
+
+### Building for Older CPUs (Linux)
+
+`.cargo/config.toml` targets `x86-64-v3` (AVX2) on Linux. To build for an older
+CPU, override the Rust CPU target and use the matching vcpkg triplet for the
+static libtorrent/OpenSSL dependencies:
+
+```bash
+export VCPKGRS_TRIPLET=x64-linux-v2-static-release
+export VCPKG_INSTALLED_DIR="$PWD/vcpkg_installed"
+export PKG_CONFIG_PATH="$VCPKG_INSTALLED_DIR/$VCPKGRS_TRIPLET/lib/pkgconfig"
+export LIBTORRENT_STATIC=1
+"$VCPKG_ROOT/vcpkg" install --x-manifest-root="$PWD" \
+  --x-install-root="$VCPKG_INSTALLED_DIR" --triplet="$VCPKGRS_TRIPLET" \
+  --overlay-triplets="$PWD/triplets" --overlay-ports="$PWD/vcpkg-overlays"
+# RUSTFLAGS replaces the x86-64-v3 rustflags from .cargo/config.toml.
+# Use target-cpu=native instead when building on the machine that will run it.
+RUSTFLAGS="-C target-cpu=x86-64-v2" cargo build --release --package stremio-native
+```
+
+The Linux build links the distribution's `libmpv`, which is already built for
+generic x86-64, so video decoding is unaffected by this setting. For hardware
+decoding on pre-Broadwell Intel GPUs (Sandy Bridge, Ivy Bridge, Haswell),
+install the VA-API driver `i965-va-driver`; the newer `intel-media-va-driver`
+does not support them.
 
 ### CI & Releases
 

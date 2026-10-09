@@ -10,7 +10,7 @@ members = [
     "server-connector",
     "stream-ranking",
 ]
-exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core"]
+exclude = ["vendor/i-slint-renderer-skia", "vendor/i-slint-core", "vendor/rustix-0.37"]
 
 [workspace.package]
 authors = ["perpetus <perpetus.github@gmail.com>"]
@@ -81,6 +81,11 @@ i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
 # only Slint's incremental physics animations survive virtualized scrolling.
 # See vendor/i-slint-core/PATCHES.md.
 i-slint-core = { path = "vendor/i-slint-core" }
+# zbus 3 (souvlaki's pure-Rust MPRIS backend) pins async-io 1.x, which pins
+# rustix 0.37. Its build script enables `rustc_attrs` on any nightly, and the
+# pinned nightly no longer accepts the attributes that cfg gates, so the Linux
+# build fails. See vendor/rustix-0.37/PATCHES.md.
+rustix = { path = "vendor/rustix-0.37" }
 
 [profile.release]
 opt-level = 3

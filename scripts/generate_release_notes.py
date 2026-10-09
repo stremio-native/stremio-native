@@ -28,6 +28,10 @@ ASSET_PATTERNS = (
         "stremio-native-v*-x86_64-unknown-linux-gnu",
         "Linux x64 portable",
     ),
+    (
+        "stremio-native-v*-x86_64-v2-unknown-linux-gnu",
+        "Linux x64 portable (legacy CPUs without AVX2)",
+    ),
     ("*.deb", "Debian / Ubuntu Package"),
     ("*.pkg.tar.zst", "Arch Linux Package"),
     ("*.rpm", "Fedora / RedHat RPM Package"),

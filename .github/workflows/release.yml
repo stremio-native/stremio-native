@@ -1,4 +1,5 @@
-name: Desktop release builds
+
+name: Desktop release builds
 
 on:
   workflow_dispatch:
@@ -193,17 +194,31 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Linux x64
+    name: Linux x64 (${{ matrix.baseline }})
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Primary build: packaged as .deb/.pkg/.rpm and the default portable binary.
+          - baseline: v3
+            artifact: stremio-native-linux-x64
+          # Legacy build for CPUs without AVX2/BMI2 (e.g. Intel Sandy/Ivy Bridge,
+          # AMD pre-Excavator). Shipped as an extra portable binary only; libmpv
+          # is the distro's own generic build, so only Rust and vcpkg code change.
+          - baseline: v2
+            artifact: stremio-native-linux-x64-v2
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_INSTALLED_DIR: ${{ github.workspace }}/vcpkg_installed
-      VCPKG_DEFAULT_TRIPLET: x64-linux-v3-static-release
-      VCPKGRS_TRIPLET: x64-linux-v3-static-release
+      VCPKG_DEFAULT_TRIPLET: x64-linux-${{ matrix.baseline }}-static-release
+      VCPKGRS_TRIPLET: x64-linux-${{ matrix.baseline }}-static-release
       VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/triplets
       VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/vcpkg-overlays
-      PKG_CONFIG_PATH: ${{ github.workspace }}/vcpkg_installed/x64-linux-v3-static-release/lib/pkgconfig
+      PKG_CONFIG_PATH: ${{ github.workspace }}/vcpkg_installed/x64-linux-${{ matrix.baseline }}-static-release/lib/pkgconfig
       LIBTORRENT_STATIC: "1"
+      # Overrides the x86-64-v3 target rustflags in .cargo/config.toml.
+      RUSTFLAGS: -C target-cpu=x86-64-${{ matrix.baseline }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -212,6 +227,8 @@ jobs:
         with:
           toolchain: nightly-2026-07-31
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.baseline }}
       - name: Restore apt cache
         id: apt-cache
         uses: actions/cache/restore@v6
@@ -233,9 +250,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: vcpkg_installed
-          key: Linux-vcpkg-x64-linux-v3-static-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
+          key: Linux-vcpkg-x64-linux-${{ matrix.baseline }}-static-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
           restore-keys: |
-            Linux-vcpkg-x64-linux-v3-static-release-v1-
+            Linux-vcpkg-x64-linux-${{ matrix.baseline }}-static-release-v1-
       - name: Install static libtorrent 2.1.1
         uses: lukka/run-vcpkg@v11
         with:
@@ -248,21 +265,24 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: vcpkg_installed
-          key: Linux-vcpkg-x64-linux-v3-static-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
+          key: Linux-vcpkg-x64-linux-${{ matrix.baseline }}-static-release-v1-${{ hashFiles('vcpkg.json', 'triplets/**', 'vcpkg-overlays/**') }}
       - name: Build release
         run: cargo build --locked --release --package stremio-native
       - name: Install cargo-deb
+        if: matrix.baseline == 'v3'
         uses: taiki-e/install-action@v2.85.4
         with:
           tool: cargo-deb
       - name: Build DEB Package
+        if: matrix.baseline == 'v3'
         run: cargo deb --package stremio-native --no-build
       - uses: actions/upload-artifact@v7
         with:
-          name: stremio-native-linux-x64
+          name: ${{ matrix.artifact }}
           path: target/release/stremio-native
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
+        if: matrix.baseline == 'v3'
         with:
           name: stremio-native-linux-deb
           path: target/debian/*.deb
@@ -440,6 +460,15 @@ jobs:
           linux_asset="release/stremio-native-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu"
           cp "$linux_binary" "$linux_asset"
           chmod +x "$linux_asset"
+
+          legacy_binary="$(find artifacts/stremio-native-linux-x64-v2 -type f -name stremio-native | head -n 1)"
+          if [[ -z "$legacy_binary" ]]; then
+            echo "Missing required Linux x86-64-v2 release binary" >&2
+            exit 1
+          fi
+          legacy_asset="release/stremio-native-${GITHUB_REF_NAME}-x86_64-v2-unknown-linux-gnu"
+          cp "$legacy_binary" "$legacy_asset"
+          chmod +x "$legacy_asset"
 
           (cd release && sha256sum * > SHA256SUMS.txt)
           find release -maxdepth 1 -type f -printf '%f\n' | sort
