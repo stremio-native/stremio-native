@@ -468,7 +468,8 @@ impl ItemRc {
 
     /// Returns the clip rect that applies to this item (in window coordinates) as well as the
     /// item's (unclipped) geometry (also in window coordinates).
-    fn absolute_clip_rect_and_geometry(&self) -> (LogicalRect, LogicalRect) {
+    // STREMIO-NATIVE PATCH: crate-visible for `spatial_navigation.rs`.
+    pub(crate) fn absolute_clip_rect_and_geometry(&self) -> (LogicalRect, LogicalRect) {
         let geometry = self
             .local_to_window_transform(|_| false)
             .outer_transformed_rect(&self.geometry().cast())

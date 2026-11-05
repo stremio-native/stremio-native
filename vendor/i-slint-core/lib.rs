@@ -53,6 +53,8 @@ pub mod partial_renderer;
 pub mod platform;
 pub mod properties;
 pub mod renderer;
+// STREMIO-NATIVE PATCH: keyboard spatial navigation.
+pub mod spatial_navigation;
 #[cfg(feature = "rtti")]
 pub mod rtti;
 pub mod sharedvector;

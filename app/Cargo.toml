@@ -19,6 +19,10 @@ slint = { workspace = true, features = [
     "system-tray",
     "unstable-winit-030",
 ] }
+# Direct access to the vendored engine's keyboard spatial navigation
+# (vendor/i-slint-core/spatial_navigation.rs). Resolves to the
+# `[patch.crates-io]` copy; must match the version `slint` pulls in.
+i-slint-core = { version = "=1.17.1", default-features = false }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["rt"] }
 serde = { workspace = true, features = ["derive"] }

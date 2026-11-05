@@ -10104,6 +10104,7 @@ dependencies = [
  "hex",
  "hotpath",
  "http",
+ "i-slint-core",
  "image",
  "keepawake",
  "media-integrations",

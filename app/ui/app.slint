@@ -778,6 +778,14 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-tidb-show-preview: true;
     in-out property <bool> settings-hide-spoilers: false;
     in-out property <bool> settings-gamepad-support: false;
+    in-out property <bool> settings-keyboard-navigation: false;
+    // Keyboard navigation focus ring, positioned from Rust (keyboard_nav.rs)
+    // in window coordinates.
+    in-out property <bool> kbnav-ring-visible: false;
+    in-out property <length> kbnav-ring-x: 0px;
+    in-out property <length> kbnav-ring-y: 0px;
+    in-out property <length> kbnav-ring-width: 0px;
+    in-out property <length> kbnav-ring-height: 0px;
     in-out property <bool> settings-play-in-background: true;
     in-out property <bool> settings-subtitles-auto-select: true;
     in-out property <string> settings-subtitles-font: "Roboto";
@@ -851,6 +859,7 @@ export component MainWindow inherits Window {
     callback settings-change-tidb-show-preview(bool);
     callback settings-change-hide-spoilers(bool);
     callback settings-change-gamepad-support(bool);
+    callback settings-change-keyboard-navigation(bool);
     callback settings-change-play-in-background(bool);
     callback settings-change-subtitles-auto-select(bool);
     callback settings-change-subtitles-font(string);
@@ -1209,6 +1218,22 @@ export component MainWindow inherits Window {
                 app-shortcuts.focus();
             }
         }
+    }
+
+    // Keyboard navigation focus ring. Purely visual (no TouchArea), drawn above
+    // everything; keyboard_nav.rs keeps it on the focused target.
+    Rectangle {
+        z: 10000;
+        visible: root.settings-keyboard-navigation && root.kbnav-ring-visible
+            && !root.effective-show-player;
+        x: root.kbnav-ring-x - 3px;
+        y: root.kbnav-ring-y - 3px;
+        width: root.kbnav-ring-width + 6px;
+        height: root.kbnav-ring-height + 6px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        border-radius: 0.5 * root.ui-unit;
+        background: transparent;
     }
 
     // Visual layout routing
@@ -1952,6 +1977,7 @@ export component MainWindow inherits Window {
                         tidb-show-preview: settings-tidb-show-preview;
                         hide-spoilers: settings-hide-spoilers;
                         gamepad-support: settings-gamepad-support;
+                        keyboard-navigation: settings-keyboard-navigation;
                         play-in-background: settings-play-in-background;
                         subtitles-auto-select: settings-subtitles-auto-select;
                         subtitles-font: settings-subtitles-font;
@@ -2068,6 +2094,7 @@ export component MainWindow inherits Window {
                         change-tidb-show-preview(val) => { settings-change-tidb-show-preview(val); }
                         change-hide-spoilers(val) => { settings-change-hide-spoilers(val); }
                         change-gamepad-support(val) => { settings-change-gamepad-support(val); }
+                        change-keyboard-navigation(val) => { settings-change-keyboard-navigation(val); }
                         change-play-in-background(val) => { settings-change-play-in-background(val); }
                         change-subtitles-auto-select(val) => { settings-change-subtitles-auto-select(val); }
                         change-subtitles-font(val) => { settings-change-subtitles-font(val); }

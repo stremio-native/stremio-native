@@ -39,6 +39,8 @@ pub struct AppConfig {
     pub download_bandwidth_limit_bps: u64,
     pub region: String,
     pub home_row_order: Vec<String>,
+    /// Arrow keys move a focus ring between clickable items, Enter clicks.
+    pub keyboard_navigation: bool,
 }
 
 fn default_font_family() -> String {
@@ -171,6 +173,7 @@ impl Default for AppConfig {
             download_bandwidth_limit_bps: 0,
             region: "US".to_owned(),
             home_row_order: Vec::new(),
+            keyboard_navigation: false,
         }
     }
 }

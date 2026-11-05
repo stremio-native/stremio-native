@@ -1244,6 +1244,17 @@ pub fn setup(
         let runtime = runtime.clone();
         move |value| update_profile_settings(&runtime, |settings| settings.gamepad_support = value)
     });
+    ui.on_settings_change_keyboard_navigation({
+        let weak = ui.as_weak();
+        move |value| {
+            let mut cfg = crate::config::load_config();
+            cfg.keyboard_navigation = value;
+            crate::config::save_config(&cfg);
+            if let Some(ui) = weak.upgrade() {
+                crate::keyboard_nav::set_enabled(&ui, value);
+            }
+        }
+    });
     ui.on_settings_change_play_in_background({
         let runtime = runtime.clone();
         move |value| {

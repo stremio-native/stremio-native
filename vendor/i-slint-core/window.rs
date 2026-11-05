@@ -526,6 +526,13 @@ pub struct WindowInner {
     pub(crate) prevent_focus_change: Cell<bool>,
     cursor_blinker: RefCell<pin_weak::rc::PinWeak<crate::input::TextCursorBlinker>>,
 
+    // STREMIO-NATIVE PATCH: keyboard spatial navigation. The item that holds
+    // the virtual (pointer-emulated) keyboard-navigation focus, and the hook
+    // the application installs to receive key presses nothing else consumed.
+    // See `spatial_navigation.rs`.
+    pub(crate) spatial_focus: RefCell<ItemWeak>,
+    pub(crate) unhandled_key_hook: RefCell<Option<Rc<crate::spatial_navigation::UnhandledKeyHook>>>,
+
     pinned_fields: Pin<Box<WindowPinnedFields>>,
 
     menubar: RefCell<Option<vtable::VWeak<MenuVTable>>>,
@@ -591,6 +598,9 @@ impl WindowInner {
             focus_item: Default::default(),
             last_ime_text: Default::default(),
             cursor_blinker: Default::default(),
+            // STREMIO-NATIVE PATCH: keyboard spatial navigation.
+            spatial_focus: Default::default(),
+            unhandled_key_hook: Default::default(),
             active_popups: Default::default(),
             next_popup_id: Cell::new(NonZeroU32::MIN),
             had_popup_on_press: Default::default(),
@@ -1081,6 +1091,20 @@ impl WindowInner {
             item = None;
         }
 
+        // STREMIO-NATIVE PATCH: keyboard spatial navigation. A single-line
+        // TextInput consumes Up/Down (it moves the cursor to the line start or
+        // end), which would trap keyboard navigation inside every search box.
+        // Offer those two keys to the application hook first.
+        if internal_key_event.event_type == KeyEventType::KeyPressed
+            && item.as_ref().is_some_and(crate::spatial_navigation::is_single_line_text_input)
+            && (internal_key_event.key_event.text.starts_with(key_codes::UpArrow)
+                || internal_key_event.key_event.text.starts_with(key_codes::DownArrow))
+            && self.call_unhandled_key_hook(&internal_key_event)
+        {
+            self.ensure_tree_instantiated();
+            return crate::input::KeyEventResult::EventAccepted;
+        }
+
         let item_list = {
             let mut tmp = Vec::new();
             let mut item = item.clone();
@@ -1117,6 +1141,16 @@ impl WindowInner {
                 return crate::input::KeyEventResult::EventAccepted;
             }
             item = focus_item.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+
+        // STREMIO-NATIVE PATCH: keyboard spatial navigation. Nothing in the
+        // focus chain wanted this key; let the application have it before the
+        // built-in Tab / Escape handling.
+        if internal_key_event.event_type == KeyEventType::KeyPressed
+            && self.call_unhandled_key_hook(&internal_key_event)
+        {
+            self.ensure_tree_instantiated();
+            return crate::input::KeyEventResult::EventAccepted;
         }
 
         // Make Tab/Backtab handle keyboard focus

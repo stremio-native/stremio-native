@@ -85,3 +85,43 @@ the git repo, and `item_tree.rs` has a test-only trait impl that no longer
 matches. Both predate this fork. The tests added to
 `animations/physics_simulation.rs` therefore document the curve but do not run
 in CI; the math they assert was verified independently.
+
+## Keyboard spatial navigation
+
+Arrow-key navigation for a UI built around the pointer. Rather than making
+every `.slint` component focusable, the engine treats each reachable, enabled
+`TouchArea` (and editable `TextInput`) as a navigation target and drives it
+like a mouse: moving the focus sends a synthetic pointer move (so existing
+`has-hover` styling shows), activating sends a press/release (so existing
+`clicked` handlers run), and targets scrolled out of a `Flickable` are revealed
+first. Targets are collected in mouse hit-test order and hit-tested, so items
+under a modal scrim are unreachable, exactly as they are to a click. This needs
+item geometry, clip rects and the mouse dispatcher, none of which the public API
+exposes — hence the engine.
+
+The application decides policy through a hook and a small API; see
+`app/src/keyboard_nav.rs`.
+
+### `spatial_navigation.rs` *(new)*
+
+- `SpatialDirection`, `SpatialNavResult`, `UnhandledKeyHook`.
+- `WindowInner::set_unhandled_key_hook`, `spatial_navigate`,
+  `spatial_activate`, `spatial_focus_item`, `spatial_refresh_hover`,
+  `spatial_clear`, `spatial_focus_rect`, `text_input_has_focus`.
+
+### `window.rs`
+
+- `WindowInner` gains `spatial_focus` and `unhandled_key_hook`.
+- `process_key_input` calls the hook for key presses the focus chain did not
+  accept, before the built-in Tab/Escape handling.
+- It also offers Up/Down to the hook *before* dispatch when a single-line
+  `TextInput` has focus; upstream consumes them there (cursor to line
+  start/end), which would trap navigation in every search field.
+
+### `item_tree.rs`
+
+- `ItemRc::absolute_clip_rect_and_geometry` is `pub(crate)` (was private).
+
+### `lib.rs`
+
+- `pub mod spatial_navigation;`

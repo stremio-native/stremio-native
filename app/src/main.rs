@@ -48,6 +48,7 @@ mod deep_link;
 pub mod diagnostics;
 pub mod downloads;
 mod gpu_prewarm;
+mod keyboard_nav;
 pub mod image_cache;
 pub mod integrations;
 pub mod local_library;
@@ -188,6 +189,7 @@ async fn run_app(
     ui.set_loading(true);
     let os_media_session = Arc::new(media_session::MediaSession::for_window(&ui));
     shortcuts::install_platform_shortcuts(&ui, os_media_session.clone());
+    keyboard_nav::install(&ui);
 
     // Request the native window before scheduling any optional shell service or
     // application-engine work. The event loop below owns first-paint priority.
@@ -404,6 +406,7 @@ async fn finish_startup(
     ui.set_settings_tidb_show_recap(config.tidb_show_recap);
     ui.set_settings_tidb_show_credits(config.tidb_show_credits);
     ui.set_settings_tidb_show_preview(config.tidb_show_preview);
+    keyboard_nav::set_enabled(&ui, config.keyboard_navigation);
     ui.set_operations_region(config.region.clone().into());
     ui.set_operations_bandwidth_mbps(
         if config.download_bandwidth_limit_bps == 0 {

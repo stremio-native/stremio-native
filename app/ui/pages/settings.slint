@@ -195,6 +195,7 @@ export component SettingsPage inherits Rectangle {
     in-out property <bool> tidb-show-preview: true;
     in-out property <bool> hide-spoilers: false;
     in-out property <bool> gamepad-support: false;
+    in-out property <bool> keyboard-navigation: false;
     in-out property <bool> play-in-background: true;
     in-out property <bool> subtitles-auto-select: true;
     in-out property <string> subtitles-font: "Roboto";
@@ -294,6 +295,7 @@ export component SettingsPage inherits Rectangle {
     callback change-tidb-show-preview(bool);
     callback change-hide-spoilers(bool);
     callback change-gamepad-support(bool);
+    callback change-keyboard-navigation(bool);
     callback change-play-in-background(bool);
     callback change-subtitles-auto-select(bool);
     callback change-subtitles-font(string);
@@ -715,6 +717,11 @@ export component SettingsPage inherits Rectangle {
                         unit: root.unit;
                         label: @tr("SETTINGS_GAMEPAD" => "Enable gamepad support");
                         ToggleSwitch { unit: root.unit; checked: root.gamepad-support; toggled => { root.change-gamepad-support(self.checked); } }
+                    }
+                    SettingsOption {
+                        unit: root.unit;
+                        label: @tr("SETTINGS_KEYBOARD_NAVIGATION" => "Enable keyboard navigation");
+                        ToggleSwitch { unit: root.unit; checked: root.keyboard-navigation; toggled => { root.change-keyboard-navigation(self.checked); } }
                     }
                     SettingsOption {
                         unit: root.unit;
